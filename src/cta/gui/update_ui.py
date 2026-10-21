@@ -185,5 +185,5 @@ class UpdateController(QObject):
             QMessageBox.warning(self.win, "Update failed", f"Could not start the installer:\n{e}")
             return
         self.win.status_label.setText("Installing update - CTA will restart…")
-        self.win.close()
+        self.win.quit_app()
         QApplication.instance().quit()

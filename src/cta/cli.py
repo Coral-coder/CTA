@@ -251,6 +251,36 @@ def cmd_selftest(args):
     except Exception as e:  # noqa: BLE001
         print(f"FAIL: DJ engine: {e}")
         ok = False
+    try:
+        import socket
+        import urllib.request
+
+        import qrcode
+        from PySide6.QtNetwork import QLocalServer  # noqa: F401  (single-instance check)
+
+        from .dj.engine import Engine
+        from .dj.stream import StreamServer
+
+        q = qrcode.QRCode()
+        q.add_data("http://192.168.1.2:8000/?pin=123456")
+        q.make(fit=True)
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        srv = StreamServer(Engine(), port=port, pin="1234")
+        srv.start()
+        try:
+            page = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read()
+            icon = urllib.request.urlopen(f"http://127.0.0.1:{port}/apple-touch-icon.png", timeout=5).read()
+        finally:
+            srv.stop()
+        if b"CTA live remote" not in page or icon[:4] != b"\x89PNG":
+            raise RuntimeError("phone page or home-screen icon missing")
+        print(f"phone remote / mix server: OK (QR {len(q.get_matrix())} modules)")
+    except Exception as e:  # noqa: BLE001
+        print(f"FAIL: phone remote: {e}")
+        ok = False
     _ = dsp  # imported to verify packaging
     print("SELFTEST " + ("PASSED" if ok else "FAILED"))
     return 0 if ok else 1
@@ -296,6 +326,8 @@ def build_parser():
     p.add_argument("--version", action="version", version=f"CTA {__version__}")
     p.add_argument("--db", help="database file (default: per-user data folder)")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--background", action="store_true",
+                   help="start the desktop app as a mix server in the system tray (no window)")
     sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("scan", help="add folders and analyse new/changed files")
@@ -365,5 +397,5 @@ def main(argv=None) -> int:
     if not args.cmd or args.fn is None:
         from .gui.app import run_gui
 
-        return run_gui(db_path=args.db)
+        return run_gui(db_path=args.db, background=args.background)
     return args.fn(args)

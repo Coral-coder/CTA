@@ -16,7 +16,8 @@ MODEL = os.path.join(ROOT, "build_models", "discogs-effnet-bsdynamic-1.onnx")
 sys.path.insert(0, SRC)
 from cta import __version__  # noqa: E402
 
-datas = [(os.path.join(SRC, "cta", "discogs400_labels.txt"), "cta"), (os.path.join(SRC, "cta", "icon.png"), "cta")]
+datas = [(os.path.join(SRC, "cta", "discogs400_labels.txt"), "cta"), (os.path.join(SRC, "cta", "icon.png"), "cta"),
+         (os.path.join(SRC, "cta", "app-icon-180.png"), "cta"), (os.path.join(SRC, "cta", "app-icon-512.png"), "cta")]
 if os.path.exists(MODEL):
     datas.append((MODEL, "models"))
     datas.append((os.path.join(ROOT, "THIRD_PARTY_NOTICES.md"), "."))
@@ -30,14 +31,15 @@ hiddenimports = (
     + collect_submodules("onnxruntime.capi")
     + collect_submodules("pylibrb")
     + collect_submodules("rtmidi")
-    + ["mutagen", "platformdirs", "sounddevice", "_sounddevice", "scipy.signal", "scipy.signal._sosfilt"]
+    + collect_submodules("qrcode")
+    + ["PySide6.QtNetwork", "mutagen", "platformdirs", "sounddevice", "_sounddevice", "scipy.signal", "scipy.signal._sosfilt"]
 )
 excludes = [
     "tkinter", "yaml", "matplotlib", "pandas", "IPython", "pytest", "essentia",
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtQml", "PySide6.QtQuick",
     "PySide6.Qt3DCore", "PySide6.QtMultimedia", "PySide6.QtCharts", "PySide6.QtDataVisualization",
     "PySide6.QtPdf", "PySide6.QtSql", "PySide6.QtTest", "PySide6.QtDesigner", "PySide6.QtBluetooth",
-    "PySide6.QtPositioning", "PySide6.QtSensors", "PySide6.QtSerialPort", "PySide6.QtNetwork",
+    "PySide6.QtPositioning", "PySide6.QtSensors", "PySide6.QtSerialPort",
 ]
 
 

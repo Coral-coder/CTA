@@ -164,11 +164,19 @@ class SetlistOptions:
     mix: MixSettings = field(default_factory=MixSettings)
 
 
-def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions) -> list[int]:
+def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None) -> list[int]:
     """Beam search for a sequence that maximises transition quality while
-    following the requested tempo ramp and energy curve."""
+    following the requested tempo ramp and energy curve. Tracks in exclude
+    (e.g. already played tonight) are never picked after the seed."""
     if lib.n == 0:
         return []
+    banned = np.zeros(lib.n, bool)
+    if exclude:
+        ex = [int(i) for i in exclude if 0 <= int(i) < lib.n]
+        if ex:
+            banned[ex] = True
+            banned |= np.isin(lib.dedup_code, lib.dedup_code[ex])
+        banned[seed_idx] = False
     length = max(1, min(opt.length, lib.n))
     rng = np.random.default_rng(opt.seed)
     s = opt.mix
@@ -195,7 +203,7 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions) -> list[int]
                 total = 0.7 * total + 0.3 * t_score
             if opt.variety > 0:
                 total = total + rng.gumbel(size=lib.n) * 0.08 * opt.variety
-            ok = sc.valid.copy()
+            ok = sc.valid & ~banned
             used = np.isin(lib.dedup_code, lib.dedup_code[seq])
             used[seq] = True
             ok &= ~used

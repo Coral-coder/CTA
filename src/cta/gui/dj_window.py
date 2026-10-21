@@ -19,7 +19,7 @@ import uuid
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -381,6 +381,7 @@ class JogPlatter(QWidget):
         self.setFixedSize(size, size)
         self.angle = 0.0
         self.held = False
+        self.art: QPixmap | None = None      # album art: the record label
         self._last = None
         self.setCursor(Qt.OpenHandCursor)
         self.setToolTip("Grab and drag around to scratch")
@@ -436,9 +437,24 @@ class JogPlatter(QWidget):
         a = np.radians(self.angle - 90)
         p.setPen(QPen(QColor(240, 240, 245), 5, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(c, c + QPointF(np.cos(a) * rad, np.sin(a) * rad).toPoint())
-        p.setBrush(self.color)
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(c, 14, 14)
+        if self.art is not None and not self.art.isNull():
+            # the record label: album art turning with the platter
+            lr = r.width() * 0.22
+            p.save()
+            p.translate(QPointF(c))
+            p.rotate(self.angle)
+            clip = QPainterPath()
+            clip.addEllipse(QPointF(0, 0), lr, lr)
+            p.setClipPath(clip)
+            p.drawPixmap(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.art, QRectF(self.art.rect()))
+            p.restore()
+            p.setBrush(QColor(20, 20, 24))
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(QPointF(c), 3, 3)
+        else:
+            p.setBrush(self.color)
+            p.setPen(Qt.NoPen)
+            p.drawEllipse(c, 14, 14)
 
 
 class _Scratcher:
@@ -492,8 +508,11 @@ class DeckPanel(QFrame):
     """Controller-style deck: header, scrolling waveform (drag to scratch),
     overview, jog platter, performance pads and transport."""
 
+    _art_ready = Signal(str, object)      # path, image bytes (from a worker thread)
+
     def __init__(self, name: str, dj: DJPanel, mirrored: bool = False):
         super().__init__()
+        self._art_ready.connect(self._set_art)
         self.name = name
         self.dj = dj
         self.eng = dj.engine
@@ -516,6 +535,11 @@ class DeckPanel(QFrame):
         badge.setStyleSheet(f"background: {col.name()}; color: #111; font-weight: 800; font-size: 16px;"
                             "border-radius: 6px;")
         head.addWidget(badge)
+        self.art = QLabel()
+        self.art.setFixedSize(46, 46)
+        self.art.setScaledContents(True)
+        self.art.setStyleSheet("background: #24262c; border-radius: 6px;")
+        head.addWidget(self.art)
         titles = QVBoxLayout()
         titles.setSpacing(0)
         self.title = QLabel("—")
@@ -747,6 +771,31 @@ class DeckPanel(QFrame):
         self.eng.grid_downbeat_here(self.name)
         self.dj.grid_changed(self.name)
 
+    def _load_art(self, path: str):
+        self.art.clear()
+        self.platter.art = None
+        if not path:
+            return
+
+        def job():
+            try:
+                from ..art import get_art
+
+                data = get_art(path)
+            except Exception:  # noqa: BLE001
+                data = None
+            self._art_ready.emit(path, data)
+        threading.Thread(target=job, daemon=True, name="deck-art").start()
+
+    def _set_art(self, path: str, data):
+        if path != self._loaded_path or not data:
+            return
+        pm = QPixmap()
+        if pm.loadFromData(data):
+            self.art.setPixmap(pm)
+            self.platter.art = pm
+            self.platter.update()
+
     def refresh(self):
         d = self.eng.decks[self.name]
         if d.info.path != self._loaded_path:
@@ -760,6 +809,7 @@ class DeckPanel(QFrame):
             if played:
                 sub += "  ·  ✓ played before"
             self.artist.setText(sub if d.loaded else "Drop a track here")
+            self._load_art(d.info.path if d.loaded else "")
             bands = getattr(d, "bands", None)
             for wv in (self.zoom, self.over):
                 wv.set_track(d.peaks, bands, d.length / SR, d.grid)
@@ -1213,6 +1263,106 @@ class HistoryDialog(QDialog):
 # the DJ panel
 # --------------------------------------------------------------------------
 
+class QRCode(QWidget):
+    def __init__(self, text: str, size: int = 220):
+        super().__init__()
+        self.setFixedSize(size, size)
+        self.matrix = None
+        try:
+            import qrcode
+
+            q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+            q.add_data(text)
+            q.make(fit=True)
+            self.matrix = q.get_matrix()
+        except Exception:  # noqa: BLE001
+            log.exception("QR code failed")
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(255, 255, 255))
+        if not self.matrix:
+            p.setPen(QColor(0, 0, 0))
+            p.drawText(self.rect(), Qt.AlignCenter, "(no QR code)")
+            return
+        n = len(self.matrix)
+        cell = self.width() / n
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(0, 0, 0))
+        for y, row in enumerate(self.matrix):
+            for x, on in enumerate(row):
+                if on:
+                    p.drawRect(QRectF(x * cell, y * cell, cell + 0.5, cell + 0.5))
+
+
+class RemoteInfoDialog(QDialog):
+    """How to connect the phone: QR code, address, PIN."""
+
+    def __init__(self, dj: DJPanel):
+        super().__init__(dj)
+        self.dj = dj
+        self.setWindowTitle("Phone remote")
+        self.lay = QVBoxLayout(self)
+        self._build()
+
+    def _build(self):
+        while self.lay.count():
+            it = self.lay.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        srv = self.dj.stream
+        if srv is None:
+            self.close()
+            return
+        head = QLabel("<b>Scan with your phone's camera</b> (same Wi-Fi as this computer)")
+        self.lay.addWidget(head)
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(QRCode(srv.pair_url()))
+        row.addStretch()
+        w = QWidget()
+        w.setLayout(row)
+        self.lay.addWidget(w)
+        urls = "<br>".join(f"<b>{u}</b>" for u in srv.urls)
+        pin = (f"PIN: <b style='font-size:20px'>{srv.pin}</b>" if srv.pin
+               else "<i>No PIN (anyone on this network can control the mix)</i>")
+        info = QLabel(f"or open {urls}<br>{pin}<br><br>"
+                      "From the phone you can skip, go back, pause, pick a seed song, edit the queue and move the "
+                      "fade markers - and tap <b>Listen</b> to hear the mix (a few seconds behind).")
+        info.setWordWrap(True)
+        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lay.addWidget(info)
+        bb = QHBoxLayout()
+        req = QCheckBox("Require PIN")
+        req.setChecked(srv.pin is not None)
+        req.toggled.connect(self._require)
+        b_new = QPushButton("New PIN")
+        b_new.setToolTip("Phones that used the old PIN will have to enter the new one")
+        b_new.clicked.connect(self._new_pin)
+        b_new.setEnabled(srv.pin is not None)
+        ok = QPushButton("Close")
+        ok.clicked.connect(self.accept)
+        bb.addWidget(req)
+        bb.addWidget(b_new)
+        bb.addStretch()
+        bb.addWidget(ok)
+        w = QWidget()
+        w.setLayout(bb)
+        self.lay.addWidget(w)
+
+    def _require(self, on):
+        self.dj.settings.setValue("remote_require_pin", "true" if on else "false")
+        self.dj.stream.pin = self.dj.remote_pin()
+        self._build()
+
+    def _new_pin(self):
+        from .remote import new_pin
+
+        self.dj.settings.setValue("remote_pin", new_pin())
+        self.dj.stream.pin = self.dj.remote_pin()
+        self._build()
+
+
 class DJPanel(QWidget):
     # worker/MIDI threads must reach the GUI through queued signals
     _error = Signal(str)
@@ -1257,13 +1407,14 @@ class DJPanel(QWidget):
         self.show_cd.toggled.connect(self._toggle_cd)
         b_hist = QPushButton("History…")
         b_hist.clicked.connect(lambda: HistoryDialog(self).exec())
-        self.b_stream = QPushButton("📡 Stream to phone")
+        self.b_stream = QPushButton("📱 Phone remote")
         self.b_stream.setCheckable(True)
-        self.b_stream.setToolTip("Serve the live mix on your network: open the shown address on your phone")
+        self.b_stream.setToolTip("Mix server: control the mix and listen to it from your phone (same Wi-Fi)")
         self.b_stream.toggled.connect(self.toggle_stream)
         self.stream_lbl = QLabel("")
         self.stream_lbl.setTextFormat(Qt.RichText)
-        self.stream_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.stream_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.stream_lbl.linkActivated.connect(lambda _l: self.show_remote_info())
         self.stream = None
         for w in (self.audio_lbl, b_audio, QLabel("  MIDI:"), self.midi_combo, b_midi, b_learn):
             bar.addWidget(w)
@@ -1316,6 +1467,9 @@ class DJPanel(QWidget):
         b_q = _btn("Queue = setlist")
         b_q.clicked.connect(self.queue_from_setlist)
         col.addWidget(b_q)
+        self.b_pause = _btn("⏸ Pause mix", True, tip="Fade the whole mix out and hold it (also from the phone)")
+        self.b_pause.clicked.connect(lambda on: self.engine.set_paused(on))
+        col.addWidget(self.b_pause)
         lay.addLayout(col)
         form = QFormLayout()
         self.mix_bars = QSpinBox()
@@ -1392,8 +1546,12 @@ class DJPanel(QWidget):
             self.audio_lbl.setText(f"Audio: {self.engine.out_channels} ch, {self.engine.latency_ms:.0f} ms, {phones}")
         except Exception as e:  # noqa: BLE001
             log.exception("audio start failed")
-            self.audio_lbl.setText("Audio: failed - click Audio…")
-            self._error.emit(f"Could not open the audio device:\n{e}")
+            # keep the mix running for the phone stream / recording
+            self.engine.start_virtual()
+            self.audio_lbl.setText("Audio: no output device (phone stream only) - click Audio…")
+            if self.main.isVisible():
+                self._error.emit(f"Could not open the audio device:\n{e}\n\n"
+                                 "The mix still runs for the phone remote and recordings.")
 
     def audio_settings(self):
         if AudioSettings(self.settings, self).exec():
@@ -1428,8 +1586,21 @@ class DJPanel(QWidget):
                               "bpm": round(d.bpm, 1), "key": f"{camelot_str(ek)} {key_name(ek)}".strip()})
         return {"decks": decks, "automix": self.automix.status}
 
-    def toggle_stream(self, on: bool):
+    def remote_pin(self) -> str | None:
+        if self.settings.value("remote_require_pin", "true") != "true":
+            return None
+        pin = str(self.settings.value("remote_pin", "") or "")
+        if not pin:
+            from .remote import new_pin
+
+            pin = new_pin()
+            self.settings.setValue("remote_pin", pin)
+        return pin
+
+    def toggle_stream(self, on: bool, show_info: bool = True):
+        """Start/stop the mix server (live stream + phone remote)."""
         from ..dj.stream import StreamServer
+        from .remote import RemoteBackend
 
         if not on:
             if self.stream is not None:
@@ -1437,23 +1608,29 @@ class DJPanel(QWidget):
                 self.stream = None
             self.stream_lbl.setText("")
             return
+        if self.stream is not None:
+            return
         port = int(self.settings.value("stream_port", 8000))
         try:
-            self.stream = StreamServer(self.engine, port=port, status_fn=self._stream_status)
+            self.stream = StreamServer(self.engine, port=port, status_fn=self._stream_status,
+                                       backend=RemoteBackend(self), pin=self.remote_pin())
             self.stream.start()
         except OSError as e:
             self.stream = None
-            self.b_stream.blockSignals(True)
-            self.b_stream.setChecked(False)
-            self.b_stream.blockSignals(False)
-            self._error.emit(f"Could not start the stream on port {port}:\n{e}\n\n"
-                             "Another program may be using it - change the port under Audio….")
+            _sync_check(self.b_stream, False)
+            self._error.emit(f"Could not start the phone remote on port {port}:\n{e}\n\n"
+                             "Another program (or another copy of CTA) may be using it - change the port under Audio….")
             return
-        urls = self.stream.urls
-        self.stream_lbl.setText("Phone: <b>" + "</b> or <b>".join(urls) + "</b>")
-        self.stream_lbl.setToolTip("Open this address in the phone's browser (same Wi-Fi). "
-                                   "Away from home use a VPN such as Tailscale, or forward the port on your router.\n"
-                                   "Windows may ask to allow CTA through the firewall - allow it on private networks.")
+        _sync_check(self.b_stream, True)
+        self.stream_lbl.setText(f"Phone: <a href='#' style='color:#6fb3ff'>{self.stream.urls[0]}</a>")
+        self.stream_lbl.setToolTip("Click for the QR code and PIN. Windows may ask to allow CTA through the "
+                                   "firewall - allow it on private networks.")
+        if show_info:
+            self.show_remote_info()
+
+    def show_remote_info(self):
+        if self.stream is not None:
+            RemoteInfoDialog(self).exec()
 
     # ---- MIDI ------------------------------------------------------------------
     def _refresh_midi_ports(self):
@@ -1535,18 +1712,37 @@ class DJPanel(QWidget):
             mo = t
         elif kind == "clear":
             mi = mo = None
-        if mi is not None and mo is not None and mo <= mi:
-            self._error.emit("The mix-out (outro) marker must come after the mix-in (intro) marker.")
+        try:
+            self.set_markers(deck, mi, mo)
+        except ValueError as e:
+            self._error.emit(str(e))
             return
+        what = {"in": "Mix-in (intro)", "out": "Mix-out (outro)", "clear": "Markers"}[kind]
+        self.main.status_label.setText(f"{what} {'cleared' if kind == 'clear' else 'set'} for {d.info.title} "
+                                       "(saved with the track)")
+
+    def _snap_bar(self, deck: str, t: float | None) -> float | None:
+        g = self.engine.decks[deck].grid
+        if t is None or g is None:
+            return t
+        return max(float(g.time_of_beat(np.floor(g.beat_at(t) / 4.0 + 1e-6) * 4.0)), 0.0)
+
+    def set_markers(self, deck: str, mi: float | None, mo: float | None) -> str:
+        """Set both mix markers (seconds, snapped to the start of their bar),
+        re-plan auto-mix with them and save them with the track."""
+        d = self.engine.decks[deck]
+        if not d.loaded:
+            raise ValueError("That deck is empty.")
+        mi, mo = self._snap_bar(deck, mi), self._snap_bar(deck, mo)
+        if mi is not None and mo is not None and mo <= mi:
+            raise ValueError("The mix-out (outro) marker must come after the mix-in (intro) marker.")
         self.engine.set_markers(deck, mi, mo)
         self.automix.refresh_markers(deck)
         try:
             self.main.db.set_markers(d.info.path, mi, mo)
         except Exception:  # noqa: BLE001
             log.exception("saving markers failed")
-        what = {"in": "Mix-in (intro)", "out": "Mix-out (outro)", "clear": "Markers"}[kind]
-        self.main.status_label.setText(f"{what} {'cleared' if kind == 'clear' else 'set'} for {d.info.title} "
-                                       "(saved with the track)")
+        return f"Markers saved for {d.info.title}"
 
     def grid_changed(self, deck: str):
         def save():
@@ -1719,7 +1915,8 @@ class DJPanel(QWidget):
         for f in self.fx:
             f.refresh()
         am = self.automix
-        self.am_status.setText(am.status)
+        self.am_status.setText(("⏸ PAUSED · " if self.engine.paused else "") + am.status)
+        _sync_check(self.b_pause, self.engine.paused)
         _sync_check(self.b_auto, am.active)
         self.b_auto.setText("■ Stop auto-mix" if am.active else "▶ Auto-mix")
         if am.active:

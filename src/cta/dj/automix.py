@@ -104,8 +104,13 @@ class AutoMix:
         self.history: list[str] = []
         self._loading: set[str] = set()
         self.used_items: list = []           # every queue item ever loaded (never auto-pick these again)
+        self.aired: list = []                # library indices in the order they went on air
+        self.pending_skip: str | None = None # "mix" | "cut": requested by the remote / skip button
+        self.skip_bars = 4
+        self._load_gen: dict[str, int] = {}
         self.learner = None                  # MixLearner: the DJ's own transition habits
         self._sync_loads = synchronous_loads
+        self._loading_item: dict = {}
         self.on_change = None        # optional callback for the UI (called from audio/loader thread)
         self._lock = threading.Lock()
 
@@ -114,21 +119,32 @@ class AutoMix:
         with self._lock:
             self.queue = deque(items)
 
-    def start(self):
-        if self.active:
+    def start(self, from_queue: bool = False):
+        """from_queue: when nothing is playing, start with the first queued
+        track even if a deck still holds an older one."""
+        if self.active and not from_queue:
             return
         self.active = True
         if self._hook not in self.eng.hooks:
             self.eng.hooks.append(self._hook)
         self.status = "Auto-mix starting…"
-        self.eng.cmd(lambda e: self._start_in_engine())
+        self.eng.cmd(lambda e: self._start_in_engine(from_queue))
 
-    def _start_in_engine(self):
+    def _start_in_engine(self, from_queue: bool = False):
         e = self.eng
         playing = [d for d in self.decks if e.decks[d].playing]
         for d in playing:
             self._register(d)
-        if not playing:
+        if not playing and from_queue and self.queue and not e.paused:
+            # whatever the decks hold is stale: the queue decides what plays
+            for dn in self.decks:
+                self.meta.pop(dn, None)
+                self._load_gen[dn] = self._load_gen.get(dn, 0) + 1
+                self._loading.discard(dn)
+                self._loading_item.pop(dn, None)
+            self.tr = None
+            self._load_next(self.decks[0], autoplay=True)
+        elif not playing:
             first = self.decks[0]
             if e.decks[first].loaded:
                 self._register(first)
@@ -161,6 +177,61 @@ class AutoMix:
             self.active = True
             if self._hook not in self.eng.hooks:
                 self.eng.hooks.append(self._hook)
+
+    def skip(self, mode: str = "mix"):
+        """Go to the next track now: "mix" blends over a few bars from the next
+        bar line, "cut" switches on the next beat. Works whether or not the
+        next track is loaded yet (it is mixed in as soon as it is ready)."""
+        self.pending_skip = "cut" if mode == "cut" else "mix"
+        if not self.active:
+            self.start()
+
+    def play_next(self, item, skip: str | None = None, requeue: bool = True):
+        """Make item the very next track (replacing the prepared one, which
+        goes back to the front of the queue unless requeue is False)."""
+        def f(e):
+            back = None
+            for dn in self.decks:
+                d = e.decks[dn]
+                if d.playing:
+                    continue
+                if self.tr is not None and self.tr.started and dn == self.tr.in_deck:
+                    continue
+                if dn in self._loading:
+                    self._load_gen[dn] = self._load_gen.get(dn, 0) + 1   # discard that load
+                    self._loading.discard(dn)
+                    back = self._loading_item.pop(dn, None)
+                elif dn in self.meta and d.loaded:
+                    back = d.info.lib_index if d.info.lib_index >= 0 else None
+                    self.meta.pop(dn, None)          # free: the new track loads over it
+                else:
+                    continue
+                if self.tr is not None and not self.tr.started and self.tr.in_deck == dn:
+                    self.tr = None
+                break
+            with self._lock:
+                if requeue and back is not None and back != item:
+                    if back in self.used_items:
+                        self.used_items.remove(back)
+                    self.queue.appendleft(back)
+                self.queue.appendleft(item)
+            if skip:
+                self.pending_skip = skip
+            if not self.active:
+                self.start()
+            else:
+                self._fill_free_deck()
+            self._changed()
+        self.eng.cmd(f)
+
+    def previous_item(self):
+        """The track that was on air before the current one (for "back")."""
+        m = self.eng._master()
+        cur = m.info.lib_index if m is not None else None
+        for it in reversed(self.aired):
+            if it != cur:
+                return it
+        return None
 
     # ---- loading -----------------------------------------------------------------
     def _changed(self):
@@ -195,17 +266,24 @@ class AutoMix:
             item = self.queue.popleft()
         self.used_items.append(item)
         self._loading.add(deck)
+        self._loading_item[deck] = item
+        gen = self._load_gen.get(deck, 0)
 
         def job():
             try:
                 lt = self.load_fn(item)
             except Exception as e:  # noqa: BLE001
                 log.warning("auto-mix could not load %s: %s", item, e)
+                if self._load_gen.get(deck, 0) != gen:
+                    return
                 self._loading.discard(deck)
+                self._loading_item.pop(deck, None)
                 self.eng.cmd(lambda e: self._fill_free_deck())
                 return
 
             def install(e):
+                if self._load_gen.get(deck, 0) != gen or e.decks[deck].playing:
+                    return                      # replaced meanwhile ("play next")
                 e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
                         mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
                         bands=getattr(lt, "bands", None))
@@ -215,13 +293,16 @@ class AutoMix:
                 d.keylock = True
                 d.volume = 1.0 if autoplay else 0.0
                 d.eq = np.ones(3)
+                d.phrase_origin = getattr(lt, "phrase_origin", 0)
                 self.meta[deck] = self._analyse_deck(d)
                 self._loading.discard(deck)
+                self._loading_item.pop(deck, None)
                 if autoplay:
                     e._seek(d, max(lt.grid.time_of_beat(self.meta[deck].mix_in_beat), 0) * SR)
                     d.playing = True
                     e.master_deck = deck
                     self.history.append(lt.info.title)
+                    self._aired(d)
                 self._changed()
             self.eng.cmd(install)
 
@@ -323,6 +404,9 @@ class AutoMix:
         if self.glide is not None:
             self._do_glide(e, mb)
 
+        if self.pending_skip is not None and self._do_skip(e, m, mb):
+            return
+
         if self.tr is None:
             # plan the next transition once the other deck is ready
             nxt = [d for d in self.decks if d != m.name and e.decks[d].loaded and not e.decks[d].playing
@@ -345,7 +429,8 @@ class AutoMix:
                 dout.loop = (g.time_of_beat(tr.loop[0]) * SR, g.time_of_beat(tr.loop[1]) * SR)
                 tr.loop_set = True
             bars_left = (tr.start_beat - mb) / 4
-            how = {"blend": "blend", "loop_blend": "loop + blend", "echo_out": "echo out"}[tr.style]
+            how = {"blend": "blend", "loop_blend": "loop + blend", "echo_out": "echo out",
+                   "cut": "cut"}[tr.style]
             self.status = (f"Next: {din.info.title} in {max(0, int(np.ceil(bars_left)))} bars "
                            f"({how}, {int(tr.beats / 4)} bars)")
             if mb < tr.start_beat - 1e-6:
@@ -364,6 +449,13 @@ class AutoMix:
             din.playing = True
             tr.started = True
             self.history.append(din.info.title)
+            self._aired(din)
+            if tr.style == "cut":
+                din.volume = 1.0
+                din.eq = np.ones(3)
+                self._finish(e, tr, mb)
+                self.status = f"Cut to {din.info.title}"
+                return
             self.status = f"Mixing in {din.info.title}"
             self._changed()
             return
@@ -377,6 +469,44 @@ class AutoMix:
             self._blend(tr, din, dout, x)
         if x >= tr.beats + tr.tail_beats or not dout.playing and x >= tr.swap_beat:
             self._finish(e, tr, mb)
+
+    def _aired(self, d):
+        if d.info.lib_index >= 0:
+            self.aired.append(d.info.lib_index)
+            del self.aired[:-200]
+
+    def _do_skip(self, e: Engine, m, mb: float) -> bool:
+        mode = self.pending_skip
+        tr = self.tr
+        if tr is not None and tr.started:
+            self.pending_skip = None
+            if mode == "cut":
+                din = e.decks[tr.in_deck]
+                din.volume = 1.0
+                din.eq = np.ones(3)
+                self._finish(e, tr, mb)
+            return False
+        nxt = [d for d in self.decks if d != m.name and e.decks[d].loaded and not e.decks[d].playing
+               and d in self.meta and d not in self._loading]
+        if not nxt:
+            if not self._loading and self.queue:
+                self._fill_free_deck()
+            self.status = "Skip: preparing the next track…"
+            return False
+        self.pending_skip = None
+        self._register(m.name)
+        if mode == "cut":
+            t = self._make_plan(e, m, nxt[0], mb, force_bars=1, immediate=True)
+            t.start_beat = float(np.ceil(mb + 0.02))          # the next beat
+            t.in_start_beat = self.meta[nxt[0]].mix_in_beat
+            t.beats, t.swap_beat, t.style, t.loop = 1.0, 0.0, "cut", None
+        else:
+            bars = self.skip_bars * (2 if self.meta[nxt[0]].long_form else 1)
+            t = self._make_plan(e, m, nxt[0], mb, force_bars=bars, immediate=True)
+        self.tr = t
+        self.status = f"Skipping to {e.decks[nxt[0]].info.title}"
+        self._changed()
+        return True
 
     @staticmethod
     def _ramp(v: float) -> float:

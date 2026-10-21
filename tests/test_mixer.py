@@ -53,3 +53,13 @@ def test_energy_curves():
     assert energy_target("build", 5, 1.0) == 9
     assert energy_target("cooldown", 5, 1.0) == 1
     assert energy_target("peak", 5, 0.65) == 9
+
+
+def test_setlist_never_repeats_played_tracks(tmp_path):
+    lib = Library(_fake_db(str(tmp_path / "x.db")))
+    seed = 5
+    first = build_setlist(lib, seed, SetlistOptions(length=10))
+    played = set(first[1:6]) | {seed}
+    again = build_setlist(lib, seed, SetlistOptions(length=10), exclude=played)
+    assert again[0] == seed                      # the chosen seed still starts the set
+    assert not (played - {seed}) & set(again)

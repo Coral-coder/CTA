@@ -234,6 +234,10 @@ class Engine:
         self.quantize = True
         self.taps: list = []           # extra consumers of the master (live stream)
         self.recorder = None
+        self.paused = False            # master pause (remote / server): fade out, then stop the decks
+        self._pause_gain = 1.0
+        self._pause_applied = False
+        self._paused_decks: list[str] = []
         self.lock = threading.RLock()  # only for non-realtime state queries
 
     # ---- command API (any thread) -------------------------------------------
@@ -397,6 +401,43 @@ class Engine:
                 else:
                     setattr(d, k, v)
         self.cmd(f)
+
+    def set_paused(self, on: bool):
+        """Pause/resume the whole mix with a short fade (nothing is cut off)."""
+        def f(e):
+            if on and not e.paused:
+                e.paused = True
+                e._pause_applied = False
+            elif not on and e.paused:
+                e.paused = False
+                if e._pause_applied:
+                    for n in e._paused_decks:
+                        if e.decks[n].loaded:
+                            e.decks[n].playing = True
+                e._paused_decks = []
+                e._pause_applied = False
+        self.cmd(f)
+
+    def _apply_pause(self, master: np.ndarray, n: int):
+        if self.paused and self._pause_applied and any(d.playing for d in self.decks.values()):
+            # a deck was started by hand while paused: that ends the pause
+            self.paused = False
+            self._pause_applied = False
+            self._paused_decks = []
+        target = 0.0 if self.paused else 1.0
+        g0 = self._pause_gain
+        if g0 != target:
+            step = n / (0.35 * SR)
+            g1 = max(target, g0 - step) if target < g0 else min(target, g0 + step)
+            master *= np.linspace(g0, g1, n, dtype=np.float32)
+            self._pause_gain = g1
+        elif target == 0.0:
+            master *= 0.0
+        if self.paused and self._pause_gain <= 0.0 and not self._pause_applied:
+            self._paused_decks = [d.name for d in self.decks.values() if d.playing]
+            for d in self.decks.values():
+                d.playing = False
+            self._pause_applied = True
 
     def set_master(self, deck: str | None):
         self.cmd(lambda e: setattr(e, "master_deck", deck))
@@ -820,6 +861,7 @@ class Engine:
             master += y * ramp
             if d.cue_phones:
                 cue += y
+        self._apply_pause(master, n)
         master *= self.master_volume
         # brick-wall peak limiter: instant attack, ~150 ms release; transparent
         # below -1 dBFS and never distorts when two loud tracks overlap
@@ -904,6 +946,22 @@ class Engine:
         self.out_channels = chans
         log.info("audio started on %s via %s (%d ch, block %d)", info["name"], api, chans, block)
 
+    def start_virtual(self, block: int = 1024):
+        """No sound card: render in real time anyway so the mix keeps
+        streaming to phones (and recording)."""
+        self.stop()
+        self.block = block
+        self.out_channels = 2
+        self.master_chans = (0, 1)
+        self.phones_chans = None
+        self._stream = _VirtualOutput(self, block)
+        self._stream.start()
+        log.info("no audio device: virtual output (stream/record only)")
+
+    @property
+    def virtual(self) -> bool:
+        return isinstance(self._stream, _VirtualOutput)
+
     def stop(self):
         if self._stream is not None:
             try:
@@ -925,6 +983,48 @@ class Engine:
             return float(self._stream.latency) * 1000
         except Exception:  # noqa: BLE001
             return 0.0
+
+
+class _VirtualOutput:
+    """Clock-paced render thread standing in for a sound card."""
+
+    latency = 0.0
+
+    def __init__(self, eng: Engine, block: int):
+        self.eng = eng
+        self.block = block
+        self._run = False
+        self._t: threading.Thread | None = None
+
+    def start(self):
+        self._run = True
+        self._t = threading.Thread(target=self._loop, daemon=True, name="virtual-audio")
+        self._t.start()
+
+    def _loop(self):
+        import time
+
+        period = self.block / SR
+        nxt = time.monotonic()
+        while self._run:
+            try:
+                self.eng.render(self.block)
+            except Exception:  # noqa: BLE001
+                log.exception("virtual render failed")
+            nxt += period
+            delay = nxt - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            elif delay < -1.0:
+                nxt = time.monotonic()            # fell far behind: do not race to catch up
+
+    def stop(self):
+        self._run = False
+        if self._t is not None and self._t is not threading.current_thread():
+            self._t.join(2)
+
+    def close(self):
+        pass
 
 
 def list_output_devices():

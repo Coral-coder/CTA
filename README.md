@@ -149,11 +149,30 @@ into their own window.
 - **2 beat-synced FX units:** Delay, Reverb, Flanger, Gater, Crush, each
   with dry/wet, amount and beat timing. The units are inserts that you
   assign per channel.
-- **📡 Stream to phone:** CTA serves the live mix on your network. Open the
-  address it shows (e.g. `http://192.168.1.20:8000`) in your phone's
-  browser to listen and see what is playing. It works on the same Wi-Fi;
-  away from home, use a VPN such as Tailscale or forward the port. Windows
-  will ask once to allow CTA through the firewall.
+- **📱 Phone remote (mix server):** click **📱 Phone remote** and scan the
+  QR code with your phone (same Wi-Fi). The phone shows the album art, the
+  two decks with spinning records and the mixer, and the full queue and the
+  tracks played tonight. From the phone you can:
+  - skip (mixed in over a few bars), **cut now**, go back, and pause/resume
+    the whole mix (it fades);
+  - search the library and pick a **seed song**: CTA builds a new set from
+    it and mixes it in;
+  - play a track next, add, reorder or remove tracks in the queue;
+  - drag the **IN/OUT fade markers** on the waveforms (they snap to the
+    start of the bar and are saved with the track) and set the blend length;
+  - tap **Listen** to hear the mix (a few seconds behind).
+
+  On iPhone, use Share → **Add to Home Screen**: it opens full screen like
+  an app, with its own icon, and connects by itself. A 6-digit PIN (shown
+  with the QR code) keeps others on the network out; wrong guesses are
+  locked out. Away from home, use a VPN such as Tailscale. Windows will ask
+  once to allow CTA through the firewall.
+- **Server mode:** in Settings, tick *Start CTA in the background when I
+  log in*. CTA then starts hidden in the system tray with the phone remote
+  running, so the PC is a mix server or radio station you control from the
+  phone. Closing the window keeps it serving; quit from the tray icon.
+  Without a sound card the mix still runs for the phone stream and
+  recordings.
 - **History:** every track that plays for 30 s or more is logged. You can
   export the list as M3U8, **Traktor NML**, rekordbox XML or CSV.
 - Setlists also export as **Traktor NML** (with BPM and key).

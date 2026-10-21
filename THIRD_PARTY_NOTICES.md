@@ -28,3 +28,4 @@ the source is available in this repository.
 - ONNX Runtime (MIT), DirectML (MIT)
 - NumPy, SciPy (BSD), mutagen (GPL 2+), platformdirs (MIT)
 - PortAudio via sounddevice (MIT), RtMidi via python-rtmidi (MIT)
+- qrcode (BSD) for the phone-remote pairing code

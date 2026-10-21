@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -164,6 +165,18 @@ class SettingsDialog(QDialog):
         self.auto_update.setChecked(settings.value("auto_update_check", "true") == "true")
         form.addRow(self.auto_update)
         lay.addLayout(form)
+
+        lay.addWidget(QLabel("<b>Mix server (phone remote)</b>"))
+        from .. import autostart
+
+        self.server_mode = QCheckBox("Run the mix server whenever CTA is open (keeps running in the tray)")
+        self.server_mode.setChecked(settings.value("server_mode", "false") == "true")
+        self.login = QCheckBox("Start CTA in the background when I log in")
+        self.login.setToolTip("CTA starts hidden in the system tray with the phone remote running")
+        self.login.setChecked(autostart.is_enabled())
+        self.login.toggled.connect(lambda on: on and self.server_mode.setChecked(True))
+        lay.addWidget(self.server_mode)
+        lay.addWidget(self.login)
         lay.addWidget(QLabel(f"<small>Data folder: {paths.data_dir()}</small>"))
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -193,6 +206,14 @@ class SettingsDialog(QDialog):
         self.s.setValue("use_ai", "true" if self.use_ai.isChecked() else "false")
         self.s.setValue("ai_device", self.device.currentText())
         self.s.setValue("auto_update_check", "true" if self.auto_update.isChecked() else "false")
+        self.s.setValue("server_mode", "true" if self.server_mode.isChecked() else "false")
+        from .. import autostart
+
+        if self.login.isChecked() != autostart.is_enabled():
+            try:
+                autostart.set_enabled(self.login.isChecked())
+            except OSError as e:
+                QMessageBox.warning(self, "Settings", f"Could not change the start-up setting:\n{e}")
         super().accept()
 
 
@@ -211,6 +232,9 @@ class MainWindow(QMainWindow):
         self._scan_thread: QThread | None = None
         self._scan_worker: ScanWorker | None = None
         self._load_thread: QThread | None = None
+        self.tray = None                         # system tray (set by the app when available)
+        self._quitting = False
+        self._want_server = False
 
         self.setWindowTitle(f"CTA {__version__} - DJ Library & Setlist Builder")
         self.resize(1500, 900)
@@ -521,9 +545,12 @@ class MainWindow(QMainWindow):
             msg += f" · {len(lib.errors)} could not be read"
         self.status_label.setText(msg)
         if (lib.n == 0 and not self.db.folders() and self._scan_thread is None
-                and not os.environ.get("CTA_SMOKE_EXIT_MS")):
+                and not os.environ.get("CTA_SMOKE_EXIT_MS") and self.isVisible()):
             QTimer.singleShot(300, self._first_run)
         self.apply_filter()
+        if self._want_server:
+            self._want_server = False
+            QTimer.singleShot(0, self.start_server)
 
     def _first_run(self):
         r = QMessageBox.question(
@@ -929,7 +956,8 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self.db, self)
-        dlg.exec()
+        if dlg.exec() and self.settings.value("server_mode", "false") == "true" and not self.server_running():
+            self.start_server()
 
     def scan_settings(self, force=False) -> ScanSettings:
         s = self.settings
@@ -991,7 +1019,45 @@ class MainWindow(QMainWindow):
         if p is not None and p.message:
             QTimer.singleShot(1500, lambda: self.status_label.setText(p.message))
 
+    # ---------------------------------------------------------- mix server --
+    def server_running(self) -> bool:
+        dj = getattr(self, "dj", None)
+        return dj is not None and dj.stream is not None
+
+    def start_server(self):
+        """Run the mix server (phone remote + live stream); waits for the library."""
+        if self.lib is None:
+            self._want_server = True
+            return
+        self.open_dj(show=self.isVisible())
+        dj = getattr(self, "dj", None)
+        if dj is None:
+            return
+        dj.toggle_stream(True, show_info=False)
+        if self.tray is not None:
+            self.tray.refresh()
+
+    def show_from_tray(self):
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if self.lib is not None and self.lib.n == 0 and not self.db.folders():
+            QTimer.singleShot(300, self._first_run)
+
+    def quit_app(self):
+        self._quitting = True
+        self.close()
+
     def closeEvent(self, ev):
+        if self.tray is not None and not self._quitting and self.server_running():
+            # keep serving the phone remote from the tray
+            ev.ignore()
+            self.settings.setValue("geometry", self.saveGeometry())
+            self.hide()
+            self.tray.hidden_notice()
+            return
         self.settings.setValue("geometry", self.saveGeometry())
         if getattr(self, "dj", None) is not None:
             self.dj.shutdown()
@@ -1000,4 +1066,7 @@ class MainWindow(QMainWindow):
         if self._scan_thread is not None:
             self._scan_thread.quit()
             self._scan_thread.wait(5000)
+        if self.tray is not None:
+            self.tray.hide()
+            QTimer.singleShot(0, QApplication.quit)
         super().closeEvent(ev)

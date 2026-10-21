@@ -133,6 +133,22 @@ jobs:
           if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "GUI did not exit" }
           if ($p.ExitCode -ne 0) { throw "GUI smoke test failed: $($p.ExitCode)" }
           Write-Host "GUI smoke test passed"
+          # background mix server: tray, phone page and home-screen icon over HTTP
+          $env:CTA_SMOKE_EXIT_MS = "20000"
+          $p = Start-Process -FilePath dist\CTA\CTA.exe -ArgumentList "--background" -PassThru
+          $served = $false
+          for ($i = 0; $i -lt 18 -and -not $served; $i++) {
+            Start-Sleep -Seconds 1
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 http://127.0.0.1:8000/apple-touch-icon.png
+              $page = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 http://127.0.0.1:8000/
+              $served = ($r.StatusCode -eq 200) -and ($page.Content -match "CTA live remote")
+            } catch { }
+          }
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "background mode did not exit" }
+          if (-not $served) { throw "mix server did not serve the phone remote" }
+          if ($p.ExitCode -ne 0) { throw "background smoke test failed: $($p.ExitCode)" }
+          Write-Host "Background mix server smoke test passed"
 
       - name: Self-test (macOS)
         if: runner.os == 'macOS'
