@@ -63,5 +63,5 @@ def test_dj_window(tmp_data_dir, monkeypatch):
         eng.render(512)
     assert eng.master_deck == "B"
     dj._tick()
-    dj.close()
+    dj.shutdown()
     w.close()

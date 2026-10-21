@@ -72,6 +72,45 @@ def write_rekordbox_xml(lib: Library, playlists: dict[str, list[int]], path: str
         f.write("\n".join(lines) + "\n")
 
 
+def _nml_key(key: int) -> str:
+    """Traktor's MUSICAL_KEY value: 0-11 = C..B major, 12-23 = Cm..Bm."""
+    return str(key) if key is not None and key >= 0 else ""
+
+
+def write_traktor_nml(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
+    """Traktor Pro playlist (.nml): import via Traktor's browser
+    (right-click Playlists > Import Playlist)."""
+    entries, keys = [], []
+    for i in seq:
+        t = lib.track(i)
+        p = os.path.abspath(t.path)
+        drive, rest = os.path.splitdrive(p)
+        folder, fname = os.path.split(rest)
+        dir_nml = "/:" + "/:".join(x for x in folder.replace("\\", "/").split("/") if x) + "/:"
+        volume = drive or ""
+        key = f"{volume}{dir_nml}{fname}"
+        keys.append(key)
+        entries.append(
+            f'<ENTRY TITLE={quoteattr(t.title)} ARTIST={quoteattr(t.artist)}>'
+            f'<LOCATION DIR={quoteattr(dir_nml)} FILE={quoteattr(fname)} VOLUME={quoteattr(volume)} VOLUMEID=""/>'
+            f'<ALBUM TITLE={quoteattr(t.album)}/>'
+            f'<INFO GENRE={quoteattr(t.genre or t.tag_genre)} PLAYTIME="{int(round(t.duration))}" '
+            f'KEY={quoteattr(camelot_str(t.key))}/>'
+            f'<TEMPO BPM="{t.bpm:.6f}" BPM_QUALITY="100.000000"/>'
+            f'<MUSICAL_KEY VALUE="{_nml_key(t.key)}"/>'
+            f'</ENTRY>')
+    pl = "".join(f'<ENTRY><PRIMARYKEY TYPE="TRACK" KEY={quoteattr(k)}/></ENTRY>' for k in keys)
+    xml = ('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n'
+           '<NML VERSION="19"><HEAD COMPANY="www.native-instruments.com" PROGRAM="Traktor"/>'
+           f'<COLLECTION ENTRIES="{len(entries)}">{"".join(entries)}</COLLECTION>'
+           '<PLAYLISTS><NODE TYPE="FOLDER" NAME="$ROOT"><SUBNODES COUNT="1">'
+           f'<NODE TYPE="PLAYLIST" NAME={quoteattr(name)}>'
+           f'<PLAYLIST ENTRIES="{len(keys)}" TYPE="LIST" UUID="">{pl}</PLAYLIST></NODE>'
+           '</SUBNODES></NODE></PLAYLISTS></NML>\n')
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(xml)
+
+
 def export(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
     ext = os.path.splitext(path)[1].lower()
     if ext in (".m3u", ".m3u8"):
@@ -80,5 +119,7 @@ def export(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
         write_csv(lib, seq, path)
     elif ext == ".xml":
         write_rekordbox_xml(lib, {name: seq}, path)
+    elif ext == ".nml":
+        write_traktor_nml(lib, seq, path, name)
     else:
         raise ValueError(f"unsupported export format: {ext}")

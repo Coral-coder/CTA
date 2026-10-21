@@ -43,6 +43,19 @@ CREATE TABLE IF NOT EXISTS tracks (
 CREATE TABLE IF NOT EXISTS folders (
     path TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS cues (
+    path   TEXT NOT NULL,
+    idx    INTEGER NOT NULL,
+    pos    REAL NOT NULL,
+    PRIMARY KEY (path, idx)
+);
+CREATE TABLE IF NOT EXISTS history (
+    id     INTEGER PRIMARY KEY,
+    ts     REAL NOT NULL,
+    path   TEXT NOT NULL,
+    deck   TEXT,
+    session TEXT
+);
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -161,6 +174,32 @@ class Database:
         c = self.conn()
         with c:
             c.execute("UPDATE tracks SET first_beat=?, grid_bpm=? WHERE path=?", (first_beat, bpm, path))
+
+    def get_cues(self, path: str) -> list[float | None]:
+        out: list[float | None] = [None] * 8
+        for r in self.conn().execute("SELECT idx, pos FROM cues WHERE path=?", (path,)):
+            if 0 <= r[0] < 8:
+                out[r[0]] = r[1]
+        return out
+
+    def set_cues(self, path: str, cues: list[float | None]):
+        c = self.conn()
+        with c:
+            c.execute("DELETE FROM cues WHERE path=?", (path,))
+            c.executemany("INSERT INTO cues(path, idx, pos) VALUES (?,?,?)",
+                          [(path, i, float(p)) for i, p in enumerate(cues) if p is not None])
+
+    def add_history(self, ts: float, path: str, deck: str, session: str):
+        c = self.conn()
+        with c:
+            c.execute("INSERT INTO history(ts, path, deck, session) VALUES (?,?,?,?)", (ts, path, deck, session))
+
+    def history(self, session: str | None = None, limit: int = 2000):
+        if session:
+            q = "SELECT ts, path, deck, session FROM history WHERE session=? ORDER BY ts DESC LIMIT ?"
+            return self.conn().execute(q, (session, limit)).fetchall()
+        return self.conn().execute("SELECT ts, path, deck, session FROM history ORDER BY ts DESC LIMIT ?",
+                                   (limit,)).fetchall()
 
     def purge_missing(self) -> int:
         c = self.conn()

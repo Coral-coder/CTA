@@ -240,6 +240,14 @@ def cmd_selftest(args):
         import rtmidi  # noqa: F401
         import sounddevice  # noqa: F401
         print("audio/MIDI libraries: OK")
+        ctx = av.CodecContext.create("libmp3lame", "w")
+        ctx.sample_rate, ctx.layout, ctx.format, ctx.bit_rate = DSR, "stereo", "fltp", 192000
+        ctx.open()
+        fr = av.AudioFrame.from_ndarray(np.zeros((2, ctx.frame_size or 1152), np.float32), format="fltp",
+                                        layout="stereo")
+        fr.sample_rate = DSR
+        list(ctx.encode(fr))
+        print("live stream encoder (MP3): OK")
     except Exception as e:  # noqa: BLE001
         print(f"FAIL: DJ engine: {e}")
         ok = False

@@ -124,6 +124,15 @@ class Deck:
     scratch_rate: float = 0.0
     phase_corr: float = 0.0
     end_reached: bool = False
+    hotcues: list = field(default_factory=lambda: [None] * 8)   # source frames
+    key_shift: float = 0.0                   # semitones (key lock path only)
+    filter: float = 0.0                      # -1 low-pass .. 0 off .. +1 high-pass
+    fx: set = field(default_factory=set)     # assigned FX units (0, 1)
+    flux: bool = False                       # loops/jumps keep the timeline running
+    flux_pos: float = 0.0
+    level: float = 0.0                       # post-fader peak for the channel meter
+    _filter: object = None
+    _pitch: float = 1.0
     _rb: object = None
     _rb_ratio: float = 1.0
     _rb_drop: int = 0
@@ -164,6 +173,16 @@ class Deck:
     def beat(self) -> float:
         return self.grid.beat_at(self.time) if self.grid else 0.0
 
+    @property
+    def effective_key(self) -> int:
+        """Musical key heard now (key shift, or vinyl pitch when key lock is off)."""
+        k = self.info.key
+        if k is None or k < 0:
+            return -1
+        semis = self.key_shift if self.keylock else 12 * np.log2(max(self.base_rate, 1e-3))
+        s = int(round(semis)) % 12
+        return (k % 12 + s) % 12 + (12 if k >= 12 else 0)
+
 
 # --------------------------------------------------------------------------
 # engine
@@ -202,6 +221,10 @@ class Engine:
         self._stream = None
         self._error_logged = False
         self.hooks: list = []          # callables(engine, n) run before each block (automix)
+        from .fx import FXUnit
+        self.fx_units = [FXUnit("Delay"), FXUnit("Reverb")]
+        self.quantize = True
+        self.taps: list = []           # extra consumers of the master (live stream)
         self.recorder = None
         self.lock = threading.RLock()  # only for non-realtime state queries
 
@@ -230,6 +253,8 @@ class Engine:
         d.audio, d.grid, d.info, d.peaks = audio, grid, info, peaks
         d.playing = False
         d.loop = None
+        d.hotcues = [None] * 8
+        d.key_shift = 0.0
         d.end_reached = False
         d.cue_point = max(grid.first_beat, 0.0) * SR if grid else 0.0
         eng._seek(d, d.cue_point)
@@ -375,6 +400,142 @@ class Engine:
             d.loop = (s, s + beats * d.grid.beat_len * SR)
         self.cmd(f)
 
+    # ---- hot cues / loops / jumps -------------------------------------------------
+    def _quant(self, d: Deck, frame: float) -> float:
+        if self.quantize and d.grid:
+            b = round(d.grid.beat_at(frame / SR))
+            return max(0.0, d.grid.time_of_beat(b) * SR)
+        return frame
+
+    def _jump(self, d: Deck, target: float):
+        """Jump keeping the beat phase when playing and quantize is on."""
+        if d.playing and self.quantize and d.grid:
+            cur = d.grid.beat_at(d.time)
+            tb = d.grid.beat_at(target / SR)
+            target = d.grid.time_of_beat(np.round(tb) + (cur - np.floor(cur))) * SR
+        if d._mode == "stretch" and d.playing:
+            # keep the stretcher running (no glitch): just move the feed head
+            off = target - d.play_pos
+            d.play_pos = float(np.clip(target, 0, d.length - 1))
+            d.feed_pos = float(np.clip(d.feed_pos + off, 0, d.length - 1))
+        else:
+            self._seek(d, target)
+
+    def hotcue(self, deck: str, i: int):
+        """Press: set the hot cue if empty, otherwise jump to it."""
+        def f(e):
+            d = e.decks[deck]
+            if not d.loaded:
+                return
+            if d.hotcues[i] is None:
+                d.hotcues[i] = e._quant(d, d.play_pos)
+            else:
+                e._jump(d, d.hotcues[i])
+                if not d.playing:
+                    d.cue_point = d.hotcues[i]
+        self.cmd(f)
+
+    def hotcue_delete(self, deck: str, i: int):
+        self.cmd(lambda e: e.decks[deck].hotcues.__setitem__(i, None))
+
+    def set_hotcues(self, deck: str, frames: list):
+        def f(e):
+            d = e.decks[deck]
+            d.hotcues = (list(frames) + [None] * 8)[:8]
+        self.cmd(f)
+
+    def loop_in(self, deck: str):
+        def f(e):
+            d = e.decks[deck]
+            p = e._quant(d, d.play_pos)
+            d._loop_in = p
+            if d.loop is not None:
+                d.loop = None
+        self.cmd(f)
+
+    def loop_out(self, deck: str):
+        def f(e):
+            d = e.decks[deck]
+            start = getattr(d, "_loop_in", None)
+            if start is None:
+                return
+            end = e._quant(d, d.play_pos)
+            if end - start > SR * 0.01:
+                d.loop = (start, end)
+                if d.flux:
+                    d.flux_pos = d.play_pos
+        self.cmd(f)
+
+    def loop_resize(self, deck: str, factor: float):
+        def f(e):
+            d = e.decks[deck]
+            if d.loop is None:
+                return
+            s, t = d.loop
+            new_len = max((t - s) * factor, SR * 0.01)
+            d.loop = (s, s + new_len)
+            if d.play_pos >= s + new_len:
+                e._jump(d, s + (d.play_pos - s) % new_len)
+        self.cmd(f)
+
+    def beatjump(self, deck: str, beats: float):
+        def f(e):
+            d = e.decks[deck]
+            if not (d.loaded and d.grid):
+                return
+            off = beats * d.grid.beat_len * SR
+            if d.loop is not None:
+                d.loop = (d.loop[0] + off, d.loop[1] + off)
+            e._jump(d, d.play_pos + off)
+        self.cmd(f)
+
+    def key_sync(self, deck: str):
+        """Shift this deck's key (key lock) by the smallest interval that makes
+        it harmonically compatible with the master deck."""
+        from ..keys import compatibility
+
+        def f(e):
+            d = e.decks[deck]
+            m = e._master(exclude=deck)
+            if m is None or d.info.key < 0 or m.info.key < 0:
+                return
+            mk = m.effective_key
+
+            def shifted(s):
+                return (d.info.key % 12 + s) % 12 + (12 if d.info.key >= 12 else 0)
+
+            # smallest transposition that mixes well; otherwise the best available
+            shifts = sorted(range(-6, 7), key=abs)
+            good = [s for s in shifts if compatibility(shifted(s), mk) >= 0.85]
+            best = good[0] if good else max(shifts, key=lambda s: compatibility(shifted(s), mk))
+            d.key_shift = float(best)
+            d.keylock = True
+        self.cmd(f)
+
+    def set_grid(self, deck: str, first_beat: float | None = None, bpm: float | None = None):
+        def f(e):
+            d = e.decks[deck]
+            if d.grid is None:
+                return
+            if bpm:
+                d.grid.bpm = float(bpm)
+            if first_beat is not None:
+                d.grid.first_beat = float(first_beat)
+        self.cmd(f)
+
+    def grid_downbeat_here(self, deck: str):
+        """Declare the current position (snapped to the nearest beat) as beat 1."""
+        def f(e):
+            d = e.decks[deck]
+            if d.grid is None:
+                return
+            b = round(d.grid.beat_at(d.time))
+            t = d.grid.time_of_beat(b)
+            while t - 4 * d.grid.beat_len >= 0:
+                t -= 4 * d.grid.beat_len
+            d.grid.first_beat = t
+        self.cmd(f)
+
     # ---- sync helpers ---------------------------------------------------------
     def _master(self, exclude: str | None = None) -> Deck | None:
         m = self.master_deck
@@ -490,11 +651,16 @@ class Engine:
         if d._rb is None:
             d._rb, d._rb_drop = _rb_new(rate)
             d._rb_ratio = rate
+            d._pitch = 1.0
             d.feed_pos = d.play_pos
         rb = d._rb
         if abs(rate - d._rb_ratio) > 1e-6:
             rb.time_ratio = 1.0 / rate
             d._rb_ratio = rate
+        pitch = 2.0 ** (d.key_shift / 12.0)
+        if abs(pitch - d._pitch) > 1e-6:
+            rb.pitch_scale = pitch
+            d._pitch = pitch
         out = np.zeros((2, n), np.float32)
         have = 0
         guard = 0
@@ -528,7 +694,7 @@ class Engine:
         rate = d.rate
         # with key lock on, always stay in the stretcher (even at 1.0x) so the
         # phase lock's tiny rate corrections never toggle modes and click
-        use_stretch = d.keylock and not d.scratching and rate > 0.25
+        use_stretch = (d.keylock or abs(d.key_shift) > 1e-6) and not d.scratching and rate > 0.25
         if use_stretch:
             d._mode = "stretch"
             y = self._render_stretched(d, n, rate)
@@ -546,9 +712,30 @@ class Engine:
             d.nudge *= 0.85            # nudges decay quickly once the jog stops
             if abs(d.nudge) < 1e-4:
                 d.nudge = 0.0
+        if d.flux:
+            if d.loop is None and getattr(d, "_flux_armed", False):
+                # loop released in flux mode: continue where the track would be
+                d._flux_armed = False
+                self._jump(d, d.flux_pos)
+            elif d.loop is not None:
+                d._flux_armed = True
+            d.flux_pos += rate * n if d.loop is not None else 0.0
+            if d.loop is None:
+                d.flux_pos = d.play_pos
         if d._eq is None:
             d._eq = ThreeBandEQ()
-        return d._eq.process(y, d.eq) * (d.gain * d.trim)
+        y = d._eq.process(y, d.eq) * (d.gain * d.trim)
+        if d._filter is None:
+            from .fx import DeckFilter
+            d._filter = DeckFilter()
+        y = d._filter.process(y, d.filter)
+        if d.fx and d.grid is not None:
+            beat_s = d.grid.beat_len / max(d.base_rate, 1e-3)
+            bpos = d.grid.beat_at(d.time)
+            binc = rate / SR / d.grid.beat_len
+            for u in sorted(d.fx):
+                y = self.fx_units[u].process(d.name, y, beat_s, bpos, binc)
+        return y
 
     def _xf_gain(self, side: int) -> float:
         """Club-style curve: full level up to the centre, then a smooth
@@ -573,10 +760,13 @@ class Engine:
         for d in self.decks.values():
             y = self._render_deck(d, n)
             if y is None:
+                d.level *= 0.85
                 continue
             g = d.volume ** 2 * self._xf_gain(d.xf_side)   # squared: audio-taper fader
             ramp = np.linspace(d._last_gain, g, n, dtype=np.float32)
             d._last_gain = g
+            pre = float(np.abs(y).max()) if n else 0.0
+            d.level = max(pre * d.volume ** 2, d.level * 0.85)   # channel meter (post-fader)
             master += y * ramp
             if d.cue_phones:
                 cue += y
@@ -589,6 +779,8 @@ class Engine:
         phones = (cue * (1 - self.cue_mix) + master * self.cue_mix) * self.phones_volume
         if self.recorder is not None:
             self.recorder.write(master)
+        for tap in self.taps:
+            tap.write(master)
         self.frames_rendered += n
         return master, np.tanh(phones)
 

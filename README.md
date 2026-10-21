@@ -59,7 +59,45 @@ Your corrections are kept across re-scans.
 
 ## DJ Mode (Ctrl+D)
 
-DJ Mode is a full 4-deck DJ engine built into CTA.
+The decks dock above the library, Traktor-style. You can pull them out
+into their own window.
+
+- **Loading tracks:**
+  - Right-click any track (library, Next Track suggestions or setlist) and
+    choose **Load to Deck A/B/C/D**. A playing deck is greyed out, so a
+    track that is on air is never replaced.
+  - Drag a track onto a deck.
+  - Keyboard: **Ctrl+←/→** loads the selected track to deck A/B;
+    **Ctrl+Shift+←/→** loads it to deck C/D.
+- **Centre mixer:** each channel has gain, EQ high/mid/low (kill when fully
+  left), a **filter** knob (left = low-pass, right = high-pass), FX 1/2
+  assign, headphone cue, a level meter and the channel fader. Below them:
+  crossfader, master volume and meter, headphone cue mix and volume, and
+  **REC** (records the mix to a 24-bit WAV file).
+- **Decks:**
+  - Waveforms coloured by frequency (red = bass, green = mids, blue =
+    highs), with a beat grid and a scrolling zoom (mouse wheel).
+  - 8 **hot cues**, saved per track.
+  - Loop IN/OUT, ½ and ×2, auto loops from 1 to 16 beats, **beat jump**.
+  - **Flux** mode: after a loop or jump, the track carries on where it
+    would have been.
+  - **Key shift** of ±12 semitones, plus **KEY SYNC**: the smallest
+    transposition that makes the deck harmonic with the master.
+  - Beat-grid nudge and "set beat 1 here", saved per track.
+- **2 beat-synced FX units:** Delay, Reverb, Flanger, Gater, Crush, each
+  with dry/wet, amount and beat timing. The units are inserts that you
+  assign per channel.
+- **📡 Stream to phone:** CTA serves the live mix on your network. Open the
+  address it shows (e.g. `http://192.168.1.20:8000`) in your phone's
+  browser to listen and see what is playing. It works on the same Wi-Fi;
+  away from home, use a VPN such as Tailscale or forward the port. Windows
+  will ask once to allow CTA through the firewall.
+- **History:** every track that plays for 30 s or more is logged. You can
+  export the list as M3U8, **Traktor NML**, rekordbox XML or CSV.
+- Setlists also export as **Traktor NML** (with BPM and key).
+
+
+Under the hood:
 
 - **Key lock**: change the tempo without changing the key. It uses Rubber
   Band R3 real-time time-stretching, the same library Mixxx uses, at about

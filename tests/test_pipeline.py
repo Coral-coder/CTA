@@ -100,3 +100,20 @@ def test_ai_model(tmp_data_dir):
     assert len(out) == 2
     assert out[0][0].shape == (400,) and out[0][1].shape == (1280,)
     assert len(model.labels()) == 400
+
+
+def test_traktor_nml_export(tmp_data_dir):
+    import xml.dom.minidom
+
+    music = str(tmp_data_dir / "music")
+    _make_library(music, SPECS[:2])
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([music])
+    lib = Library(db)
+    out = str(tmp_data_dir / "set.nml")
+    export(lib, [0, 1], out, "My set")
+    doc = xml.dom.minidom.parse(out)
+    entries = doc.getElementsByTagName("COLLECTION")[0].getElementsByTagName("ENTRY")
+    assert len(entries) == 2
+    assert doc.getElementsByTagName("PLAYLIST")[0].getAttribute("ENTRIES") == "2"
+    assert float(entries[0].getElementsByTagName("TEMPO")[0].getAttribute("BPM")) > 100

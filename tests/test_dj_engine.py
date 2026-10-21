@@ -149,3 +149,143 @@ def test_automix_plays_queue_beatmatched():
     # continuous music: no silent second until the last track ends
     first_silence = next((k for k, r in enumerate(rms) if r < 1e-3), len(rms))
     assert first_silence > 150 * SR / block / 43 * 0.9 or first_silence == len(rms)
+
+
+def _tone_deck(eng, freq=440.0, seconds=30, bpm=120.0):
+    t = np.arange(SR * seconds) / SR
+    y = (0.4 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+    eng.load("A", np.stack([y, y]), BeatGrid(bpm, 0.0, float(seconds)), TrackInfo(loudness=-10, key=21))
+
+
+def _peak_hz(y):
+    return np.fft.rfftfreq(y.size, 1 / SR)[np.argmax(np.abs(np.fft.rfft(y * np.hanning(y.size))))]
+
+
+def test_key_shift_changes_pitch_not_tempo():
+    eng = Engine()
+    _tone_deck(eng)
+    eng.set("A", keylock=True, key_shift=2.0)
+    eng.set_playing("A", True)
+    y = _run(eng, 3)[0, SR:]
+    assert abs(_peak_hz(y) - 440 * 2 ** (2 / 12)) < 3
+    assert abs(eng.decks["A"].time - 3.0) < 0.05
+    assert eng.decks["A"].effective_key == 23        # Am + 2 semitones = Bm
+
+
+def test_key_sync_picks_compatible_key():
+    from cta.keys import compatibility
+
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 128.0)
+    eng.decks["A"].info.key = 21        # Am (8A)
+    eng.decks["B"].info.key = 15        # Ebm (2A) - clashes
+    eng.set_playing("A", True)
+    eng.key_sync("B")
+    d = eng.decks["B"]
+    assert compatibility(d.effective_key, 21) >= 0.85
+    assert abs(d.key_shift) <= 6
+
+
+def test_hotcues_loops_beatjump():
+    eng = Engine()
+    _tone_deck(eng)
+    d = eng.decks["A"]
+    eng.set("A", keylock=False)
+    eng.set_playing("A", True)
+    _run(eng, 1.1)
+    eng.hotcue("A", 0)                    # set, quantised to the beat at 1.0 s
+    assert abs(d.hotcues[0] - SR * 1.0) < 2
+    _run(eng, 2)
+    eng.hotcue("A", 0)                    # jump back, keeping beat phase
+    assert abs(d.time - 1.0) < 0.6
+    eng.beatjump("A", 4)                  # 4 beats @120 = +2 s
+    t = d.time
+    assert t > 2.4
+    eng.loop_in("A")
+    _run(eng, 1.0)
+    eng.loop_out("A")
+    assert d.loop is not None
+    L = d.loop[1] - d.loop[0]
+    eng.loop_resize("A", 0.5)
+    assert abs((d.loop[1] - d.loop[0]) - L / 2) < 1
+
+
+def test_flux_mode_resumes_timeline():
+    eng = Engine()
+    _tone_deck(eng)
+    d = eng.decks["A"]
+    eng.set("A", keylock=False, flux=True)
+    eng.set_playing("A", True)
+    _run(eng, 1.0)
+    eng.loop_beats("A", 1)                # 0.5 s loop
+    _run(eng, 3.0)
+    eng.loop_beats("A", None)
+    _run(eng, 0.2)
+    assert abs(d.time - 4.2) < 0.15       # continued as if the loop never happened
+
+
+def test_filter_and_fx_are_sane():
+    eng = Engine()
+    t = np.arange(SR * 8) / SR
+    sig = (0.3 * np.sin(2 * np.pi * 100 * t) + 0.3 * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+    eng.load("A", np.stack([sig, sig]), BeatGrid(120.0, 0.0, 8.0), TrackInfo(loudness=-10))
+    eng.set("A", keylock=False, filter=-0.7)          # low-pass well below 6 kHz
+    eng.set_playing("A", True)
+    y = _run(eng, 1.5)[0, SR // 2:]
+    spec = np.abs(np.fft.rfft(y))
+    f = np.fft.rfftfreq(y.size, 1 / SR)
+    assert spec[(f > 5900) & (f < 6100)].max() < spec[(f > 90) & (f < 110)].max() * 0.05
+    eng.set("A", filter=0.0)
+    for kind in ("Delay", "Reverb", "Flanger", "Gater", "Crush"):
+        u = eng.fx_units[0]
+        u.kind, u.on, u.wet, u.amount = kind, True, 0.8, 0.6
+        eng.set("A", fx={0})
+        y = _run(eng, 0.5)
+        assert np.all(np.isfinite(y)) and np.abs(y).max() < 1.5, kind
+    u.on = False
+    _run(eng, 0.3)
+    assert eng.decks["A"].level > 0
+
+
+def test_live_stream_serves_mp3_and_status():
+    import socket
+    import threading
+    import time as _t
+    import urllib.request
+
+    from cta.dj.stream import StreamServer
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    eng.set_playing("A", True)
+    srv = StreamServer(eng, port=port, status_fn=lambda: {"decks": [], "automix": "off"})
+    srv.start()
+    try:
+        assert b"CTA live" in urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read()
+        got = bytearray()
+        done = threading.Event()
+
+        def listen():
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/live.mp3", timeout=10) as r:
+                while len(got) < 20000:
+                    got.extend(r.read(4096))
+            done.set()
+
+        threading.Thread(target=listen, daemon=True).start()
+        t0 = _t.time()
+        while not done.is_set() and _t.time() - t0 < 20:
+            eng.render(1024)
+            _t.sleep(0.002)
+        assert done.is_set()
+        # MP3 frame sync word
+        assert any(got[i] == 0xFF and (got[i + 1] & 0xE0) == 0xE0 for i in range(min(len(got) - 1, 4000)))
+        import json
+        st = json.loads(urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=5).read())
+        assert st["automix"] == "off"
+    finally:
+        srv.stop()

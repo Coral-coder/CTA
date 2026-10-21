@@ -7,11 +7,38 @@ Sorting and filtering happen in numpy (not QSortFilterProxyModel) so a
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt
 from PySide6.QtGui import QColor
 
 from ..keys import camelot_str, key_name
 from ..library import Library
+
+TRACK_MIME = "application/x-cta-track"
+
+
+def _track_mime(lib_index: int) -> QMimeData:
+    m = QMimeData()
+    m.setData(TRACK_MIME, str(int(lib_index)).encode())
+    return m
+
+
+class _DragMixin:
+    """Rows can be dragged onto a DJ deck."""
+
+    def flags(self, index):
+        f = super().flags(index)
+        return f | Qt.ItemIsDragEnabled if index.isValid() else f
+
+    def mimeTypes(self):
+        return [TRACK_MIME]
+
+    def mimeData(self, indexes):
+        if not indexes:
+            return None
+        return _track_mime(self._lib_index_for_row(indexes[0].row()))
+
+    def supportedDragActions(self):
+        return Qt.CopyAction
 
 
 def fmt_duration(sec: float) -> str:
@@ -28,7 +55,7 @@ def key_color(key: int) -> QColor | None:
     return c
 
 
-class LibraryModel(QAbstractTableModel):
+class LibraryModel(_DragMixin, QAbstractTableModel):
     COLUMNS = ["Artist", "Title", "BPM", "Key", "Energy", "AI Genre", "Tag Genre", "Time", "Album"]
 
     def __init__(self, parent=None):
@@ -122,6 +149,9 @@ class LibraryModel(QAbstractTableModel):
     def lib_index(self, row: int) -> int:
         return int(self.rows[row])
 
+    def _lib_index_for_row(self, row: int) -> int:
+        return self.lib_index(row)
+
     def row_of(self, lib_idx: int) -> int:
         hits = np.nonzero(self.rows == lib_idx)[0]
         return int(hits[0]) if hits.size else -1
@@ -171,7 +201,7 @@ class LibraryModel(QAbstractTableModel):
         return None
 
 
-class TrackListModel(QAbstractTableModel):
+class TrackListModel(_DragMixin, QAbstractTableModel):
     """Generic list of library indices with optional per-row extra columns
     (used for suggestions and the setlist)."""
 
@@ -190,6 +220,9 @@ class TrackListModel(QAbstractTableModel):
         self.items = list(items)
         self.extras = extras or [[""] * len(self.extra_columns) for _ in items]
         self.endResetModel()
+
+    def _lib_index_for_row(self, row: int) -> int:
+        return int(self.items[row])
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.items)

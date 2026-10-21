@@ -241,7 +241,14 @@ class MainWindow(QMainWindow):
         self.act_settings.triggered.connect(self.open_settings)
         self.act_dj = QAction("🎧 DJ Mode", self)
         self.act_dj.setShortcut(QKeySequence("Ctrl+D"))
-        self.act_dj.triggered.connect(self.open_dj)
+        self.act_dj.triggered.connect(self.toggle_dj)
+        for keyseq, deck in (("Ctrl+Left", "A"), ("Ctrl+Right", "B"), ("Ctrl+Shift+Left", "C"),
+                             ("Ctrl+Shift+Right", "D")):
+            a = QAction(self)
+            a.setShortcut(QKeySequence(keyseq))
+            a.triggered.connect(lambda _=False, deck=deck: self.current is not None
+                                and self.load_to_deck(deck, self.current))
+            self.addAction(a)
         self.act_update = QAction("Check for Updates", self)
         self.act_update.triggered.connect(lambda: self.updates.check(manual=True))
         for a in (self.act_add, self.act_scan, self.act_stop, self.act_dj):
@@ -293,6 +300,8 @@ class MainWindow(QMainWindow):
         self.lib_view.doubleClicked.connect(lambda ix: self.play(self.lib_model.lib_index(ix.row())))
         self.lib_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lib_view.customContextMenuRequested.connect(self._lib_menu)
+        self.lib_view.setDragEnabled(True)
+        self.lib_view.setDragDropMode(QAbstractItemView.DragOnly)
         h = self.lib_view.horizontalHeader()
         for col, w in enumerate([170, 260, 70, 80, 60, 140, 110, 55, 160]):
             h.resizeSection(col, w)
@@ -378,6 +387,8 @@ class MainWindow(QMainWindow):
         self.next_view = _table(self.next_model)
         self.next_view.doubleClicked.connect(self._next_activated)
         self.next_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.next_view.setDragEnabled(True)
+        self.next_view.setDragDropMode(QAbstractItemView.DragOnly)
         self.next_view.customContextMenuRequested.connect(self._next_menu)
         h = self.next_view.horizontalHeader()
         for col, wd in enumerate([55, 60, 60, 75, 50, 110, 140, 200, 50]):
@@ -441,6 +452,8 @@ class MainWindow(QMainWindow):
         self.sl_view = _table(self.sl_model)
         self.sl_view.doubleClicked.connect(lambda ix: self.play(self.setlist[ix.row()]))
         self.sl_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.sl_view.setDragEnabled(True)
+        self.sl_view.setDragDropMode(QAbstractItemView.DragOnly)
         self.sl_view.customContextMenuRequested.connect(self._setlist_menu)
         h = self.sl_view.horizontalHeader()
         for col, wd in enumerate([45, 60, 60, 75, 50, 110, 140, 200, 50]):
@@ -701,11 +714,11 @@ class MainWindow(QMainWindow):
         safe = "".join(c for c in name if c not in '<>:"/\\|?*')
         path, flt = QFileDialog.getSaveFileName(
             self, "Export setlist", os.path.join(last, safe + ".m3u8"),
-            "M3U8 playlist (*.m3u8);;rekordbox XML (*.xml);;CSV spreadsheet (*.csv)")
+            "M3U8 playlist (*.m3u8);;Traktor NML (*.nml);;rekordbox XML (*.xml);;CSV spreadsheet (*.csv)")
         if not path:
             return
         if not os.path.splitext(path)[1]:
-            path += {"M3U8": ".m3u8", "rekor": ".xml", "CSV s": ".csv"}.get(flt[:5], ".m3u8")
+            path += {"M3U8": ".m3u8", "Trakt": ".nml", "rekor": ".xml", "CSV s": ".csv"}.get(flt[:5], ".m3u8")
         try:
             export(self.lib, self.setlist, path, name)
         except Exception as e:  # noqa: BLE001
@@ -715,6 +728,17 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f"Exported {len(self.setlist)} tracks to {path}")
 
     # ------------------------------------------------------ context menus --
+    def _add_deck_actions(self, m: QMenu, i: int):
+        """'Load to Deck X' entries; a playing deck is shown but disabled."""
+        dj = getattr(self, "dj", None)
+        decks = "ABCD" if dj is not None and dj.show_cd.isChecked() else "AB"
+        keys = {"A": "Ctrl+Left", "B": "Ctrl+Right", "C": "Ctrl+Shift+Left", "D": "Ctrl+Shift+Right"}
+        for deck in decks:
+            playing = dj is not None and dj.deck_playing(deck)
+            act = m.addAction(f"Load to Deck {deck}" + ("   (playing)" if playing else f"\t{keys[deck]}"),
+                              lambda deck=deck: self.load_to_deck(deck, i))
+            act.setEnabled(not playing)
+
     def _lib_menu(self, pos):
         ix = self.lib_view.indexAt(pos)
         if not ix.isValid() or self.lib is None:
@@ -724,10 +748,9 @@ class MainWindow(QMainWindow):
         m.addAction("Build setlist from this track", lambda: (self.focus_track(i), self.generate_setlist()))
         m.addAction("Add to end of setlist", lambda: self._append(i))
         m.addSeparator()
-        for deck in "AB":
-            m.addAction(f"Load to Deck {deck}", lambda deck=deck: self.load_to_deck(deck, i))
+        self._add_deck_actions(m, i)
         m.addSeparator()
-        m.addAction("Play", lambda: self.play(i))
+        m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show in folder", lambda: self.reveal(i))
         m.addSeparator()
         b = self.lib.bpm[i]
@@ -745,9 +768,11 @@ class MainWindow(QMainWindow):
             return
         i = self.next_model.items[ix.row()]
         m = QMenu(self)
+        self._add_deck_actions(m, i)
+        m.addSeparator()
         m.addAction("Follow (show what mixes after this)", lambda: self.focus_track(i))
         m.addAction("Add to setlist", self._add_suggestion_to_setlist)
-        m.addAction("Play", lambda: self.play(i))
+        m.addAction("Preview in default player", lambda: self.play(i))
         m.exec(self.next_view.viewport().mapToGlobal(pos))
 
     def _setlist_menu(self, pos):
@@ -757,7 +782,9 @@ class MainWindow(QMainWindow):
         r = ix.row()
         i = self.setlist[r]
         m = QMenu(self)
-        m.addAction("Play", lambda: self.play(i))
+        self._add_deck_actions(m, i)
+        m.addSeparator()
+        m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show next-track options for this", lambda: (self.focus_track(i), self.tabs.setCurrentIndex(0)))
         m.addAction("Regenerate everything after this", lambda: self._regen_after(r))
         m.addAction("Remove", self._remove_from_setlist)
@@ -815,20 +842,35 @@ class MainWindow(QMainWindow):
 
     # -------------------------------------------------------------- files --
     # ---------------------------------------------------------------- DJ --
-    def open_dj(self):
+    def open_dj(self, show: bool = True):
+        """Show the DJ decks docked above the library (Traktor layout)."""
         if self.lib is None:
             return
-        try:
-            from .dj_window import DJWindow
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
-            return
         if getattr(self, "dj", None) is None:
-            self.dj = DJWindow(self)
-            self.dj.destroyed.connect(lambda: setattr(self, "dj", None))
-        self.dj.show()
-        self.dj.raise_()
-        self.dj.activateWindow()
+            try:
+                from .dj_window import DJPanel
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
+                return
+            from PySide6.QtWidgets import QDockWidget
+
+            self.dj = DJPanel(self)
+            self.dj_dock = QDockWidget("DJ Decks", self)
+            self.dj_dock.setObjectName("dj_dock")
+            self.dj_dock.setWidget(self.dj)
+            self.dj_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
+                                     | QDockWidget.DockWidgetClosable)
+            self.addDockWidget(Qt.TopDockWidgetArea, self.dj_dock)
+            self.resize(max(self.width(), 1600), max(self.height(), 1000))
+        if show:
+            self.dj_dock.show()
+            self.dj_dock.raise_()
+
+    def toggle_dj(self):
+        if getattr(self, "dj", None) is not None and self.dj_dock.isVisible():
+            self.dj_dock.hide()
+        else:
+            self.open_dj()
 
     def load_to_deck(self, deck: str, i: int):
         self.open_dj()
@@ -936,7 +978,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, ev):
         self.settings.setValue("geometry", self.saveGeometry())
         if getattr(self, "dj", None) is not None:
-            self.dj.close()
+            self.dj.shutdown()
         if self._scan_worker is not None:
             self._scan_worker.scanner.stop()
         if self._scan_thread is not None:

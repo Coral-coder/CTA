@@ -40,7 +40,20 @@ DECK_ACTIONS = {
     "phones_cue": ("button", "headphone CUE button"),
     "load": ("button", "LOAD button"),
     "loop": ("button", "AUTO LOOP (press)"),
+    "filter": ("fader", "FILTER knob"),
+    "fx1_assign": ("button", "FX 1 assign button"),
+    "fx2_assign": ("button", "FX 2 assign button"),
+    "loop_in": ("button", "LOOP IN button"),
+    "loop_out": ("button", "LOOP OUT button"),
+    "loop_halve": ("button", "loop size ½ (or turn the loop knob left)"),
+    "loop_double": ("button", "loop size ×2 (or turn the loop knob right)"),
+    "beatjump_back": ("button", "BEAT JUMP back / BWD"),
+    "beatjump_fwd": ("button", "BEAT JUMP forward / FWD"),
+    "key_sync": ("button", "a button for KEY SYNC"),
+    **{f"hotcue{i}": ("button", f"HOT CUE {i}") for i in range(1, 9)},
 }
+ADVANCED = {"filter", "fx1_assign", "fx2_assign", "loop_in", "loop_out", "loop_halve", "loop_double",
+            "beatjump_back", "beatjump_fwd", "key_sync"} | {f"hotcue{i}" for i in range(1, 9)}
 GLOBAL_ACTIONS = {
     "crossfader": ("fader", "CROSSFADER"),
     "master_volume": ("fader", "MASTER volume"),
@@ -49,7 +62,15 @@ GLOBAL_ACTIONS = {
     "browse": ("relative", "BROWSE rotary selector (turn)"),
     "automix": ("button", "a button to toggle AUTO-MIX (e.g. FAVORITES)"),
     "transition": ("button", "a button for AUTO TRANSITION (e.g. browse press)"),
+    "fx1_on": ("button", "FX 1 on/off"),
+    "fx1_wet": ("fader", "FX 1 DRY/WET knob"),
+    "fx1_amount": ("fader", "FX 1 parameter knob"),
+    "fx2_on": ("button", "FX 2 on/off"),
+    "fx2_wet": ("fader", "FX 2 DRY/WET knob"),
+    "fx2_amount": ("fader", "FX 2 parameter knob"),
+    "rec": ("button", "a button to start/stop RECORDING"),
 }
+ADVANCED |= {"fx1_on", "fx1_wet", "fx1_amount", "fx2_on", "fx2_wet", "fx2_amount", "rec"}
 JOG_COUNTS_PER_REV = {"DDJ-T1": 2430.0}
 REV_SECONDS = 1.8          # one platter revolution = 1.8 s of audio (33 1/3 rpm)
 
@@ -198,6 +219,7 @@ class Controller:
         self._eq: dict[str, list[float]] = {d: [1.0, 1.0, 1.0] for d in "ABCD"}
         self._led_state: dict[tuple[int, int], int] = {}
         self._lock = threading.Lock()
+        self.jump_beats = 4
 
     def _index(self):
         self._map = {(b.type, b.ch, b.num): b for b in self.bindings}
@@ -344,6 +366,40 @@ class Controller:
         elif a == "browse" and self.ui is not None:
             d = rel14(ev.value) if ev.type == "cc14" else rel7(ev.value)
             self.ui.browse(d)
+        elif a == "filter":
+            e.set(deck, filter=float(x * 2.0 - 1.0))
+        elif a in ("fx1_assign", "fx2_assign") and pressed:
+            u = 0 if a == "fx1_assign" else 1
+            cur = set(e.decks[deck].fx)
+            cur.symmetric_difference_update({u})
+            e.set(deck, fx=cur)
+        elif a == "loop_in" and pressed:
+            e.loop_in(deck)
+        elif a == "loop_out" and pressed:
+            e.loop_out(deck)
+        elif a == "loop_halve" and pressed:
+            e.loop_resize(deck, 0.5)
+        elif a == "loop_double" and pressed:
+            e.loop_resize(deck, 2.0)
+        elif a == "beatjump_back" and pressed:
+            e.beatjump(deck, -self.jump_beats)
+        elif a == "beatjump_fwd" and pressed:
+            e.beatjump(deck, self.jump_beats)
+        elif a == "key_sync" and pressed:
+            e.key_sync(deck)
+        elif a.startswith("hotcue") and pressed:
+            e.hotcue(deck, int(a[6:]) - 1)
+            if self.ui is not None and hasattr(self.ui, "cues_changed"):
+                self.ui.cues_changed(deck)
+        elif a in ("fx1_on", "fx2_on") and pressed:
+            u = e.fx_units[0 if a == "fx1_on" else 1]
+            u.on = not u.on
+        elif a in ("fx1_wet", "fx2_wet"):
+            e.fx_units[0 if a == "fx1_wet" else 1].wet = float(x)
+        elif a in ("fx1_amount", "fx2_amount"):
+            e.fx_units[0 if a == "fx1_amount" else 1].amount = float(x)
+        elif a == "rec" and pressed and self.ui is not None and hasattr(self.ui, "toggle_record"):
+            self.ui.toggle_record()
         elif a == "automix" and pressed and am is not None:
             am.stop() if am.active else am.start()
         elif a == "transition" and pressed and am is not None:
@@ -379,7 +435,10 @@ class Controller:
             if d is None:
                 continue
             on = {"play": d.playing, "sync": d.sync, "keylock": d.keylock, "phones_cue": d.cue_phones,
-                  "cue": d.loaded and not d.playing, "loop": d.loop is not None}.get(b.action)
+                  "cue": d.loaded and not d.playing, "loop": d.loop is not None,
+                  "fx1_assign": 0 in d.fx, "fx2_assign": 1 in d.fx}.get(b.action)
+            if b.action.startswith("hotcue"):
+                on = d.hotcues[int(b.action[6:]) - 1] is not None
             if on is None:
                 continue
             v = 127 if on else 0
@@ -396,13 +455,15 @@ class Controller:
 # learn wizard logic (UI independent)
 # --------------------------------------------------------------------------
 
-def learn_steps(decks=("A", "B")) -> list[tuple[str, str | None, str]]:
+def learn_steps(decks=("A", "B"), advanced: bool = True) -> list[tuple[str, str | None, str]]:
     steps = []
     for deck in decks:
         for a, (_kind, desc) in DECK_ACTIONS.items():
-            steps.append((a, deck, f"Deck {deck}: {desc}"))
+            if advanced or a not in ADVANCED:
+                steps.append((a, deck, f"Deck {deck}: {desc}"))
     for a, (_kind, desc) in GLOBAL_ACTIONS.items():
-        steps.append((a, None, desc))
+        if advanced or a not in ADVANCED:
+            steps.append((a, None, desc))
     return steps
 
 
