@@ -118,8 +118,10 @@ def _get_json(url: str, timeout: float = 15) -> dict:
         return json.loads(r.read().decode("utf-8"))
 
 
-def release_from_json(d: dict, target: str | None = None) -> Release:
-    target = target if target is not None else platform_target()
+def release_from_json(d: dict, target: str | None = "auto") -> Release:
+    """``target`` is a platform name, None (no build wanted) or "auto"."""
+    if target == "auto":
+        target = platform_target()
     tag = d.get("tag_name") or ""
     asset_name = asset_url = sums_url = None
     size = 0
