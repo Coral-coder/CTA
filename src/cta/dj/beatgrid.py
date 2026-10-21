@@ -117,3 +117,28 @@ def energy_profile(y: np.ndarray, sr: int, grid: BeatGrid) -> np.ndarray:
         seg = y[max(0, s):max(0, e)]
         out[i] = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if seg.size else 0.0
     return out
+
+
+def beat_activity(bands: np.ndarray | None, grid: BeatGrid, hop: int = 256, sr: int = 44100):
+    """Per-beat 'is there a beat here' profile from the waveform bands.
+
+    Returns (energy per beat, index of the first real beat, index of the last
+    real beat). A beat counts when its kick-band (or, for tracks without a
+    kick, full-band) energy reaches 25 % of the track's typical beat level.
+    """
+    if bands is None or grid is None or grid.bpm <= 0:
+        return np.zeros(0), 0, 0
+    n_beats = max(1, int((grid.duration - grid.first_beat) / grid.beat_len))
+    fps = sr / hop
+    t = grid.first_beat + np.arange(n_beats) * grid.beat_len
+    idx = np.clip(np.round(t * fps).astype(np.int64), 0, bands.shape[0] - 1)
+    w = max(1, int(0.04 * fps))                 # +-40 ms around each beat
+    low = np.array([bands[max(0, i - w):i + w + 1, 0].max() for i in idx])
+    full = np.array([bands[max(0, i - w):i + w + 1].max() for i in idx])
+    prof = low if np.median(low) > 0.1 * np.median(full) else full
+    active = prof[prof > 0.02]
+    ref = float(np.median(active)) if active.size else 0.0
+    on = np.nonzero(prof >= 0.25 * ref)[0] if ref > 0 else np.array([0])
+    first = int(on[0]) if on.size else 0
+    last = int(on[-1]) if on.size else n_beats - 1
+    return prof, first, last

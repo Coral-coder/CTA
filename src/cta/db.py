@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS meta (
 MIGRATIONS = [
     ("first_beat", "REAL"),       # beat grid: seconds of the first downbeat
     ("grid_bpm", "REAL"),         # tempo the grid was fitted for
+    ("mix_in", "REAL"),           # DJ-set intro marker (seconds): where the track is mixed in
+    ("mix_out", "REAL"),          # DJ-set outro marker (seconds): where mixing out starts
 ]
 
 TRACK_FIELDS = [
@@ -174,6 +176,15 @@ class Database:
         c = self.conn()
         with c:
             c.execute("UPDATE tracks SET first_beat=?, grid_bpm=? WHERE path=?", (first_beat, bpm, path))
+
+    def get_markers(self, path: str) -> tuple[float | None, float | None]:
+        r = self.conn().execute("SELECT mix_in, mix_out FROM tracks WHERE path=?", (path,)).fetchone()
+        return (r[0], r[1]) if r else (None, None)
+
+    def set_markers(self, path: str, mix_in: float | None, mix_out: float | None):
+        c = self.conn()
+        with c:
+            c.execute("UPDATE tracks SET mix_in=?, mix_out=? WHERE path=?", (mix_in, mix_out, path))
 
     def get_cues(self, path: str) -> list[float | None]:
         out: list[float | None] = [None] * 8

@@ -147,6 +147,7 @@ def _render(heights: np.ndarray, colors: np.ndarray, h: int, past: int | None = 
 
 class Waveform(QWidget):
     seek = Signal(float)          # seconds
+    marker = Signal(str, float)   # kind ("in", "out", "cue", "clear"), seconds
 
     def __init__(self, deck: str, zoom: bool, parent=None):
         super().__init__(parent)
@@ -164,15 +165,47 @@ class Waveform(QWidget):
         self.loop = None
         self.hotcues = [None] * 8
         self.span = 8.0
+        self.mix_in = None         # seconds
+        self.mix_out = None
+        self.mix_beats = 64.0      # blend length shown after the outro marker
         self._over = None          # cached (width, heights, colours)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
 
     def set_track(self, peaks, bands, duration, grid):
         self.peaks, self.bands, self.duration, self.grid = peaks, bands, max(duration, 1e-3), grid
         self._over = None
         self.update()
 
-    def mousePressEvent(self, ev):
+    def _time_at(self, x: float) -> float:
+        f = x / max(self.width(), 1)
+        return self.pos + (f - 0.5) * self.span if self.zoom else f * self.duration
+
+    def _bar_snap(self, t: float) -> float:
+        """Start (downbeat) of the bar that contains t."""
+        if self.grid is None:
+            return t
+        b = self.grid.beat_at(t)
+        return max(0.0, self.grid.time_of_beat(np.floor(b / 4.0 + 1e-6) * 4.0))
+
+    def _menu(self, pos):
         if self.peaks is None:
+            return
+        from PySide6.QtWidgets import QMenu
+
+        t = self._bar_snap(self._time_at(pos.x()))
+        m = QMenu(self)
+        stamp = f"{int(t // 60)}:{t % 60:04.1f}"
+        m.addAction(f"Set mix-in (intro) here  [{stamp}]", lambda: self.marker.emit("in", t))
+        m.addAction(f"Set mix-out (outro) here  [{stamp}]", lambda: self.marker.emit("out", t))
+        m.addAction(f"Set cue point here  [{stamp}]", lambda: self.marker.emit("cue", t))
+        if self.mix_in is not None or self.mix_out is not None:
+            m.addSeparator()
+            m.addAction("Clear mix-in / mix-out markers", lambda: self.marker.emit("clear", 0.0))
+        m.exec(self.mapToGlobal(pos))
+
+    def mousePressEvent(self, ev):
+        if self.peaks is None or ev.button() != Qt.LeftButton:
             return
         x = ev.position().x() / max(self.width(), 1)
         self.seek.emit(self.pos + (x - 0.5) * self.span if self.zoom else x * self.duration)
@@ -230,6 +263,21 @@ class Waveform(QWidget):
                 p.fillRect(QRectF(x, 0, 12, 12), CUE_COLORS[i])
                 p.setPen(QColor(0, 0, 0))
                 p.drawText(QRectF(x, 0, 12, 12), Qt.AlignCenter, str(i + 1))
+        # mix markers: green IN flag, red OUT flag + the blend region after it
+        if self.mix_out is not None and self.grid is not None:
+            x0 = self._x(self.mix_out, w)
+            x1 = self._x(self.mix_out + self.mix_beats * self.grid.beat_len, w)
+            p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(229, 57, 53, 45))
+        for t, label, colr in ((self.mix_in, "IN", QColor(67, 160, 71)), (self.mix_out, "OUT", QColor(229, 57, 53))):
+            if t is None:
+                continue
+            x = self._x(t, w)
+            if -30 <= x <= w + 5:
+                p.setPen(QPen(colr, 2))
+                p.drawLine(int(x), 0, int(x), h)
+                p.fillRect(QRectF(x, h - 14, 28, 14), colr)
+                p.setPen(QColor(255, 255, 255))
+                p.drawText(QRectF(x, h - 14, 28, 14), Qt.AlignCenter, label)
         cx = self._x(self.cue, w)
         p.setPen(QPen(QColor(255, 190, 0), 1, Qt.DashLine))
         p.drawLine(int(cx), 0, int(cx), h)
@@ -326,6 +374,7 @@ class DeckPanel(QGroupBox):
         self.over = Waveform(name, False)
         for wv in (self.zoom, self.over):
             wv.seek.connect(lambda t, n=name: self.eng.seek(n, t))
+            wv.marker.connect(lambda kind, t, n=name: self.dj.set_marker(n, kind, t))
         main.addWidget(self.zoom, 1)
         main.addWidget(self.over)
         self.phase = PhaseMeter()
@@ -508,6 +557,9 @@ class DeckPanel(QGroupBox):
             wv.loop = d.loop
             wv.hotcues = d.hotcues
             wv.grid = d.grid
+            wv.mix_in = d.mix_in / SR if d.mix_in is not None else None
+            wv.mix_out = d.mix_out / SR if d.mix_out is not None else None
+            wv.mix_beats = 4.0 * self.dj.automix.s.mix_bars
             wv.update()
         self.phase.err = self.eng.phase_error(self.name) if d.playing else None
         self.phase.update()
@@ -1023,10 +1075,18 @@ class DJPanel(QWidget):
         lay.addLayout(col)
         form = QFormLayout()
         self.mix_bars = QSpinBox()
-        self.mix_bars.setRange(2, 64)
+        self.mix_bars.setRange(1, 64)
+        self.mix_bars.setToolTip("How many bars the auto-mix blend lasts (both tracks playing together)")
         self.mix_bars.setValue(int(self.settings.value("dj_mix_bars", 16)))
         self.mix_bars.valueChanged.connect(self._update_am_settings)
-        form.addRow("Blend (bars)", self.mix_bars)
+        brow = QHBoxLayout()
+        brow.setSpacing(2)
+        brow.addWidget(self.mix_bars)
+        for n in (4, 8, 16, 32):
+            b = _btn(str(n), w=30, h=22, tip=f"Blend over {n} bars")
+            b.clicked.connect(lambda _=False, n=n: self.mix_bars.setValue(n))
+            brow.addWidget(b)
+        form.addRow("Blend (bars)", brow)
         self.glide = QCheckBox("Glide tempo to each track's BPM")
         self.glide.setChecked(self.settings.value("dj_glide", "true") == "true")
         self.glide.toggled.connect(self._update_am_settings)
@@ -1202,6 +1262,35 @@ class DJPanel(QWidget):
             except Exception:  # noqa: BLE001
                 log.exception("saving cues failed")
 
+    def set_marker(self, deck: str, kind: str, t: float):
+        """Intro/outro/cue from the waveform's right-click menu (bar-snapped)."""
+        d = self.engine.decks[deck]
+        if not d.loaded:
+            return
+        if kind == "cue":
+            self.engine.set_cue(deck, t)
+            return
+        mi = d.mix_in / SR if d.mix_in is not None else None
+        mo = d.mix_out / SR if d.mix_out is not None else None
+        if kind == "in":
+            mi = t
+        elif kind == "out":
+            mo = t
+        elif kind == "clear":
+            mi = mo = None
+        if mi is not None and mo is not None and mo <= mi:
+            self._error.emit("The mix-out (outro) marker must come after the mix-in (intro) marker.")
+            return
+        self.engine.set_markers(deck, mi, mo)
+        self.automix.refresh_markers(deck)
+        try:
+            self.main.db.set_markers(d.info.path, mi, mo)
+        except Exception:  # noqa: BLE001
+            log.exception("saving markers failed")
+        what = {"in": "Mix-in (intro)", "out": "Mix-out (outro)", "clear": "Markers"}[kind]
+        self.main.status_label.setText(f"{what} {'cleared' if kind == 'clear' else 'set'} for {d.info.title} "
+                                       "(saved with the track)")
+
     def grid_changed(self, deck: str):
         def save():
             d = self.engine.decks[deck]
@@ -1237,16 +1326,8 @@ class DJPanel(QWidget):
         def job():
             try:
                 lt = load_track(path, bpm, info, self.main.db)
-
-                def install(e):
-                    if e.decks[deck].playing:
-                        return                 # started meanwhile: never replace a playing track
-                    e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks)
-                    d = e.decks[deck]
-                    d.bands = lt.bands
-                    if lt.cues:
-                        d.hotcues = (list(lt.cues) + [None] * 8)[:8]
-                self.engine.cmd(install)
+                # never replaces a deck that started playing meanwhile
+                self.engine.load_track(deck, lt, only_if_stopped=True)
             except Exception as e:  # noqa: BLE001
                 log.exception("load failed")
                 self._error.emit(f"Could not load {path}:\n{e}")

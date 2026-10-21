@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .beatgrid import energy_profile
+from .beatgrid import beat_activity
 from .engine import SR, Engine
 
 log = logging.getLogger(__name__)
@@ -44,10 +44,20 @@ class AutoMixSettings:
 
 @dataclass
 class _Meta:
-    bar_energy: np.ndarray
-    mix_out_beat: float
-    mix_in_beat: float
+    mix_in_beat: float               # where the incoming track starts (bar line)
+    end_beat: float                  # bar line after the last real beat
+    out_marker: float | None         # user outro marker (beat) - mixing starts exactly here
     title: str
+
+    def mix_out_beat(self, mix_bars: int, phrase_bars: int) -> float:
+        if self.out_marker is not None:
+            return self.out_marker
+        # finish the blend on the last bar that still has beats (no dead air),
+        # starting on a phrase boundary
+        start = self.end_beat - 4.0 * mix_bars
+        phrase = 4.0 * phrase_bars
+        start = np.floor((start - self.mix_in_beat) / phrase) * phrase + self.mix_in_beat
+        return float(max(start, self.mix_in_beat + phrase))
 
 
 @dataclass
@@ -57,6 +67,7 @@ class _Transition:
     start_beat: float        # master beat at which the incoming track starts
     beats: float
     started: bool = False
+    fixed_length: bool = False       # set by "transition now" with an explicit length
 
 
 class AutoMix:
@@ -175,12 +186,16 @@ class AutoMix:
                 return
 
             def install(e):
-                e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks)
+                e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
+                        mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
+                        bands=getattr(lt, "bands", None))
                 d = e.decks[deck]
+                if getattr(lt, "cues", None):
+                    d.hotcues = (list(lt.cues) + [None] * 8)[:8]
                 d.keylock = True
                 d.volume = 1.0 if autoplay else 0.0
                 d.eq = np.ones(3)
-                self.meta[deck] = self._analyse(lt)
+                self.meta[deck] = self._analyse_deck(d)
                 self._loading.discard(deck)
                 if autoplay:
                     e._seek(d, max(lt.grid.time_of_beat(self.meta[deck].mix_in_beat), 0) * SR)
@@ -199,27 +214,36 @@ class AutoMix:
         """Analyse a deck that was loaded by the user."""
         d = self.eng.decks[deck]
         if d.loaded and deck not in self.meta and d.grid is not None:
-            class _LT:
-                pass
-            lt = _LT()
-            lt.audio, lt.grid, lt.info = d.audio, d.grid, d.info
-            self.meta[deck] = self._analyse(lt)
+            self.meta[deck] = self._analyse_deck(d)
 
-    def _analyse(self, lt) -> _Meta:
-        mono = lt.audio.mean(axis=0)
-        bars = energy_profile(mono, SR, lt.grid)
-        med = float(np.median(bars)) if bars.size else 0.0
-        # mix-in: first bar with real energy, floored to a 4-bar boundary
-        loud_in = np.nonzero(bars > 0.25 * med)[0] if med > 0 else np.array([0])
-        in_bar = int(loud_in[0]) // 4 * 4 if loud_in.size else 0
-        # mix-out: where the music ends (ignore fade-out tails), phrase aligned
-        loud = np.nonzero(bars > 0.5 * med)[0] if med > 0 else np.array([bars.size - 1])
-        end_bar = int(loud[-1]) + 1 if loud.size else bars.size
-        out_bar = end_bar - self.s.mix_bars
-        out_bar = max(out_bar // self.s.phrase_bars * self.s.phrase_bars, in_bar + self.s.phrase_bars)
-        out_bar = min(out_bar, max(bars.size - self.s.mix_bars, 0))
-        return _Meta(bar_energy=bars, mix_out_beat=out_bar * 4.0, mix_in_beat=in_bar * 4.0,
-                     title=lt.info.title)
+    def refresh_markers(self, deck: str):
+        """Markers changed in the UI: re-plan with them (from any thread)."""
+        def f(e):
+            d = e.decks[deck]
+            if deck in self.meta and d.loaded:
+                self.meta[deck] = self._analyse_deck(d)
+                if self.tr is not None and not self.tr.started and deck in (self.tr.in_deck, self.tr.out_deck):
+                    self.tr = None          # plan again with the new markers
+        self.eng.cmd(f)
+
+    def _analyse_deck(self, d) -> _Meta:
+        g = d.grid
+        bands = getattr(d, "bands", None)
+        if bands is None:
+            from .loader import waveform_bands
+            bands = waveform_bands(d.audio, hop=256)
+            d.bands = bands
+        _prof, first, last = beat_activity(bands, g)
+        # bar lines are every 4 beats from the grid's downbeat
+        in_beat = np.floor(first / 4.0) * 4.0
+        if d.mix_in is not None:
+            in_beat = np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6) * 4.0
+        end_beat = np.ceil((last + 1) / 4.0) * 4.0
+        out_marker = None
+        if d.mix_out is not None:
+            out_marker = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6) * 4.0)
+        return _Meta(mix_in_beat=float(in_beat), end_beat=float(end_beat), out_marker=out_marker,
+                     title=d.info.title)
 
     # ---- audio-thread logic ------------------------------------------------------
     def _plan_now(self, bars: int | None):
@@ -235,7 +259,7 @@ class AutoMix:
         mb = m.grid.beat_at(m.time)
         start = np.ceil((mb + 1.0) / 4.0) * 4.0          # next bar line
         beats = 4.0 * (bars or self.s.mix_bars)
-        self.tr = _Transition(m.name, others[0], start, beats)
+        self.tr = _Transition(m.name, others[0], start, beats, fixed_length=bars is not None)
         self.status = f"Transition to {e.decks[others[0]].info.title} at next bar"
 
     def _hook(self, e: Engine, n: int):
@@ -256,7 +280,7 @@ class AutoMix:
             nxt = [d for d in self.decks if d != m.name and e.decks[d].loaded and not e.decks[d].playing
                    and d in self.meta and d not in self._loading]
             if nxt and m.name in self.meta:
-                out_beat = self.meta[m.name].mix_out_beat
+                out_beat = self.meta[m.name].mix_out_beat(self.s.mix_bars, self.s.phrase_bars)
                 if out_beat <= mb + 1:
                     out_beat = np.ceil((mb + 1) / 4) * 4      # late: mix at the next bar
                 self.tr = _Transition(m.name, nxt[0], out_beat, 4.0 * self.s.mix_bars)
@@ -286,6 +310,8 @@ class AutoMix:
             din.eq = np.array([0.0 if self.s.bass_swap else 1.0, 1.0, 1.0])
             din.playing = True
             tr.started = True
+            if not tr.fixed_length:
+                tr.beats = 4.0 * self.s.mix_bars      # the blend length set right now
             self.history.append(din.info.title)
             self.status = f"Mixing in {din.info.title}"
             self._changed()

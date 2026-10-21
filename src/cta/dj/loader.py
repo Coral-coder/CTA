@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import av
 import numpy as np
 
-from .beatgrid import BeatGrid, fit_grid
+from .beatgrid import BeatGrid, beat_activity, fit_grid
 from .engine import SR, TrackInfo
 
 
@@ -20,6 +20,9 @@ class LoadedTrack:
     info: TrackInfo
     bands: np.ndarray | None = None   # (frames, 3) per 256 samples for the zoomed view
     cues: list | None = None     # saved hot cues (source frames)
+    mix_in: float | None = None  # user intro marker (seconds)
+    mix_out: float | None = None # user outro marker (seconds)
+    first_beat_t: float = 0.0    # first audible beat (seconds) -> default cue point
 
 
 def decode_stereo(path: str) -> np.ndarray:
@@ -92,7 +95,15 @@ def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
             cues = [None if c is None else c * SR for c in db.get_cues(path)]
         except Exception:  # noqa: BLE001
             cues = None
+    mix_in = mix_out = None
+    if db is not None:
+        try:
+            mix_in, mix_out = db.get_markers(path)
+        except Exception:  # noqa: BLE001
+            pass
     fine = waveform_bands(audio, hop=256)
     edges = np.linspace(0, fine.shape[0], min(2000, fine.shape[0]) + 1).astype(np.int64)
     over = np.maximum.reduceat(fine, edges[:-1], axis=0).astype(np.float32)
-    return LoadedTrack(audio=audio, grid=grid, peaks=over, info=info, bands=fine, cues=cues)
+    _prof, first, _last = beat_activity(fine, grid)
+    return LoadedTrack(audio=audio, grid=grid, peaks=over, info=info, bands=fine, cues=cues,
+                       mix_in=mix_in, mix_out=mix_out, first_beat_t=max(0.0, grid.time_of_beat(first)))

@@ -131,6 +131,9 @@ class Deck:
     flux: bool = False                       # loops/jumps keep the timeline running
     flux_pos: float = 0.0
     level: float = 0.0                       # post-fader peak for the channel meter
+    mix_in: float | None = None              # intro marker (source frames)
+    mix_out: float | None = None             # outro marker (source frames)
+    bands: object = None                     # waveform bands (frames, 3) for analysis/drawing
     _filter: object = None
     _pitch: float = 1.0
     _rb: object = None
@@ -248,23 +251,64 @@ class Engine:
 
     # ---- deck operations (called inside the audio thread via cmd) -------------
     @staticmethod
-    def _load(eng, deck: str, audio, grid, info, peaks):
+    def _load(eng, deck: str, audio, grid, info, peaks, cue: float | None = None,
+              mix_in: float | None = None, mix_out: float | None = None, bands=None):
+        """cue / mix_in / mix_out in seconds. The cue point defaults to the
+        intro marker, else the first audible beat, else the first grid beat."""
         d = eng.decks[deck]
         d.audio, d.grid, d.info, d.peaks = audio, grid, info, peaks
+        d.bands = bands
         d.playing = False
         d.loop = None
         d.hotcues = [None] * 8
         d.key_shift = 0.0
         d.end_reached = False
-        d.cue_point = max(grid.first_beat, 0.0) * SR if grid else 0.0
+        d.mix_in = mix_in * SR if mix_in is not None else None
+        d.mix_out = mix_out * SR if mix_out is not None else None
+        if d.mix_in is not None:
+            d.cue_point = d.mix_in
+        elif cue is not None:
+            d.cue_point = max(cue, 0.0) * SR
+        else:
+            d.cue_point = max(grid.first_beat, 0.0) * SR if grid else 0.0
         eng._seek(d, d.cue_point)
         target_lufs = -10.0
         d.gain = float(np.clip(10 ** ((target_lufs - info.loudness) / 20), 0.25, 4.0))
         if eng.master_deck == deck:
             eng.master_deck = None
 
-    def load(self, deck: str, audio, grid, info, peaks=None):
-        self.cmd(Engine._load, deck, audio, grid, info, peaks)
+    def load(self, deck: str, audio, grid, info, peaks=None, **kw):
+        self.cmd(Engine._load, deck, audio, grid, info, peaks, **kw)
+
+    def load_track(self, deck: str, lt, only_if_stopped: bool = True):
+        """Install a LoadedTrack (from dj.loader) on a deck."""
+        def f(e):
+            if only_if_stopped and e.decks[deck].playing:
+                return
+            e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
+                    mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
+                    bands=getattr(lt, "bands", None))
+            if getattr(lt, "cues", None):
+                e.decks[deck].hotcues = (list(lt.cues) + [None] * 8)[:8]
+        self.cmd(f)
+
+    def set_markers(self, deck: str, mix_in: float | None, mix_out: float | None):
+        """Intro/outro markers in seconds (None clears)."""
+        def f(e):
+            d = e.decks[deck]
+            d.mix_in = mix_in * SR if mix_in is not None else None
+            d.mix_out = mix_out * SR if mix_out is not None else None
+            if d.mix_in is not None and not d.playing:
+                d.cue_point = d.mix_in
+        self.cmd(f)
+
+    def set_cue(self, deck: str, seconds: float):
+        def f(e):
+            d = e.decks[deck]
+            d.cue_point = max(0.0, seconds) * SR
+            if not d.playing:
+                e._seek(d, d.cue_point)
+        self.cmd(f)
 
     def _seek(self, d: Deck, frame: float):
         frame = float(np.clip(frame, 0, max(d.length - 1, 0)))

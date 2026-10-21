@@ -84,6 +84,22 @@ into their own window.
   - **Key shift** of ±12 semitones, plus **KEY SYNC**: the smallest
     transposition that makes the deck harmonic with the master.
   - Beat-grid nudge and "set beat 1 here", saved per track.
+- **Cue point and mix markers:**
+  - When a track loads, its cue point is set to the **first real beat** (the
+    first kick), skipping silence and beatless intros.
+  - Right-click the waveform to choose **Set mix-in (intro) here**, **Set
+    mix-out (outro) here** or **Set cue point here**. Each snaps to the
+    start of the bar you clicked and is saved with the track.
+  - The IN and OUT flags appear on the waveform, and the shaded area after
+    OUT shows the blend.
+- **Auto-mix timing:**
+  - Choose the blend length with the 4 / 8 / 16 / 32-bar buttons, or type
+    any value from 1 to 64.
+  - Auto-mix starts the blend at the outgoing track's outro marker and
+    brings the next track in at its intro marker.
+  - Without markers, it ends the blend on the last bar that still has
+    beats and starts the next track on its first beat, so there is no dead
+    air.
 - **2 beat-synced FX units:** Delay, Reverb, Flanger, Gater, Crush, each
   with dry/wet, amount and beat timing. The units are inserts that you
   assign per channel.

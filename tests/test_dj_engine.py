@@ -289,3 +289,46 @@ def test_live_stream_serves_mp3_and_status():
         assert st["automix"] == "off"
     finally:
         srv.stop()
+
+
+def test_cue_on_first_beat_and_markers_drive_automix():
+    from types import SimpleNamespace
+
+    from cta.dj.automix import AutoMix, AutoMixSettings
+    from cta.dj.beatgrid import beat_activity
+    from cta.dj.loader import waveform_bands
+
+    # 6 s of near-silence before the beats start
+    a = _stereo(126.0, 60, offset=6.0)
+    g = fit_grid(a[0], SR, 126.0)
+    bands = waveform_bands(a)
+    _p, first, last = beat_activity(bands, g)
+    assert abs(g.time_of_beat(first) - 6.0) < 0.1          # first audible beat found
+
+    eng = Engine()
+    eng.load("A", a, g, TrackInfo(loudness=-10), cue=g.time_of_beat(first), bands=bands)
+    assert abs(eng.decks["A"].cue_point / SR - 6.0) < 0.1  # cue on the first beat, not 0:00
+
+    # markers: outro marker decides exactly where the blend starts
+    tracks = {n: SimpleNamespace(audio=_stereo(126.0, 60), grid=None, peaks=None,
+                                 info=TrackInfo(title=n, bpm=126.0, loudness=-10)) for n in ("x", "y")}
+    for t in tracks.values():
+        t.grid = fit_grid(t.audio[0], SR, 126.0)
+        t.bands = waveform_bands(t.audio)
+        t.first_beat_t = t.grid.first_beat
+    beat = 60 / 126
+    tracks["x"].mix_out = tracks["x"].grid.time_of_beat(32)          # bar 8
+    tracks["y"].mix_in = tracks["y"].grid.time_of_beat(16)           # bar 4
+    eng = Engine()
+    am = AutoMix(eng, lambda i: tracks[i], AutoMixSettings(mix_bars=4), synchronous_loads=True)
+    am.set_queue(["x", "y"])
+    am.start()
+    started_at = None
+    for _ in range(int(40 * SR / 1024)):
+        eng.render(1024)
+        if am.tr is not None and am.tr.started and started_at is None:
+            started_at = eng.decks[am.tr.out_deck].time
+            in_pos = eng.decks[am.tr.in_deck].time
+    assert started_at is not None
+    assert abs(started_at - tracks["x"].grid.time_of_beat(32)) < beat * 0.6
+    assert abs(in_pos - tracks["y"].grid.time_of_beat(16)) < beat * 0.6
