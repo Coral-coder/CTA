@@ -314,6 +314,7 @@ def _sh_quote(s: str) -> str:
 def windows_script(pid: int, target: str, new: str, stage: str, log_file: str, relaunch: bool) -> str:
     gui = os.path.join(target, "CTA.exe")
     return f"""$ErrorActionPreference = 'Stop'
+try {{ Start-Transcript -LiteralPath {_ps_quote(log_file + ".transcript")} -Append | Out-Null }} catch {{ }}
 $log = {_ps_quote(log_file)}
 function L($m) {{ Add-Content -LiteralPath $log -Value ("{{0}} {{1}}" -f (Get-Date -Format s), $m) }}
 $target = {_ps_quote(target)}
@@ -391,11 +392,16 @@ def launch_swap(new_root: str, relaunch: bool = True, pid: int | None = None) ->
         script = os.path.join(tmp, "update.ps1")
         with open(script, "w", encoding="utf-8-sig") as f:
             f.write(windows_script(pid, target, new_root, stage, log_file, relaunch))
-        flags = (getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                 | getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                          "-WindowStyle", "Hidden", "-File", script],
-                         cwd=tmp, creationflags=flags, close_fds=True)
+        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script]
+        base = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        breakaway = 0x01000000   # CREATE_BREAKAWAY_FROM_JOB: survive the parent's job object closing
+        try:
+            subprocess.Popen(args, cwd=tmp, creationflags=base | breakaway, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            # the job does not allow breakaway; a plain hidden child still works
+            subprocess.Popen(args, cwd=tmp, creationflags=base, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         script = os.path.join(tmp, "update.sh")
         with open(script, "w", encoding="utf-8") as f:

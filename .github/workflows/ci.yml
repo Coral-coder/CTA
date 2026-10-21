@@ -160,6 +160,7 @@ jobs:
             Start-Sleep -Milliseconds 500
           }
           Get-Content $log
+          if (Test-Path "$log.transcript") { Get-Content "$log.transcript" }
           if (-not (Select-String -Path $log -Pattern 'UPDATE OK' -Quiet)) { throw "swap failed" }
           if ((Get-Content "$t\install\CTA\marker.txt") -ne 'NEWBUILD') { throw "install not replaced" }
           & "$t\install\CTA\cta-cli.exe" --version
