@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  PYTHON_VERSION: "3.12"
+  MODEL_KEY: model-discogs-effnet-bsdynamic-1-a280825b
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache AI model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: build_models
+          key: ${{ env.MODEL_KEY }}
+
+      - name: Fetch AI model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: python packaging/fetch_model.py build_models
+
+      - name: Qt runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests packaging/fetch_model.py
+
+      - name: Unit + integration tests
+        env:
+          CTA_MODEL_PATH: ${{ github.workspace }}/build_models/discogs-effnet-bsdynamic-1.onnx
+          QT_QPA_PLATFORM: offscreen
+        run: pytest -q
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+          - os: macos-latest
+            target: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache AI model
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: build_models
+          key: ${{ env.MODEL_KEY }}
+
+      - name: Fetch AI model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: python packaging/fetch_model.py build_models
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install . "pyinstaller>=6.10"
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: echo "version=$(python -c 'import cta; print(cta.__version__)')" >> "$GITHUB_OUTPUT"
+
+      - name: Build executable
+        run: pyinstaller --noconfirm --clean packaging/cta.spec
+
+      # ---- verify the frozen build actually works before shipping it ----
+      - name: Self-test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CTA_DATA_DIR: ${{ runner.temp }}\cta-data
+        run: |
+          & dist\CTA\cta-cli.exe selftest
+          if ($LASTEXITCODE -ne 0) { throw "selftest failed" }
+          $env:CTA_SMOKE_EXIT_MS = "4000"
+          $p = Start-Process -FilePath dist\CTA\CTA.exe -PassThru
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); throw "GUI did not exit" }
+          if ($p.ExitCode -ne 0) { throw "GUI smoke test failed: $($p.ExitCode)" }
+          Write-Host "GUI smoke test passed"
+
+      - name: Self-test (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CTA_DATA_DIR: ${{ runner.temp }}/cta-data
+        run: |
+          dist/CTA.app/Contents/MacOS/CTA selftest
+          CTA_SMOKE_EXIT_MS=4000 perl -e 'alarm 180; exec @ARGV' dist/CTA.app/Contents/MacOS/CTA
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item README.md, THIRD_PARTY_NOTICES.md dist\CTA\
+          Compress-Archive -Path dist\CTA -DestinationPath "CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - dist/CTA.app
+          ditto -c -k --sequesterRsrc --keepParent dist/CTA.app "CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CTA-${{ matrix.target }}
+          path: CTA-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums
+        run: cd artifacts && sha256sum *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.zip
+            artifacts/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            ## Download
+            - **Windows 10/11 (x64)**: `CTA-*-windows-x64.zip` → unzip anywhere → run `CTA.exe`
+            - **macOS (Apple Silicon)**: `CTA-*-macos-arm64.zip` → unzip → right-click `CTA.app` → Open (first launch only; the app is not notarised)
+
+            The AI model is bundled; AI inference uses the GPU through DirectML (Windows) or CoreML (macOS) and falls back to the CPU automatically.
