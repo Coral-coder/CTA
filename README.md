@@ -79,6 +79,29 @@ Later re-scans take seconds.
 The model input was checked against Essentia's reference implementation (it
 matches to within 1e-3). There is a unit test for this.
 
+## Updates
+
+CTA keeps itself up to date. At start-up (at most every 12 hours) it checks
+GitHub Releases. When a new version is out, you can **Update now**, **Later**
+or **Skip this version**. You can also click **Check for Updates** in the
+toolbar at any time, or turn automatic checks off in Settings.
+
+An update goes through these steps:
+
+1. The zip for your platform is downloaded and checked against the
+   release's SHA-256 checksums.
+2. It is unpacked next to the install and test-run once.
+3. Only then does CTA close. A small helper swaps the folders, keeps the old
+   version until the swap has worked (and rolls back if it fails), and
+   restarts CTA.
+
+Your library, settings and analysis data live in the user data folder and
+are never touched. CTA must sit in a folder you can write to, such as
+Desktop, Documents or `C:\Tools`. In Program Files it offers the download
+page instead.
+
+From the command line: `cta update --check` or `cta update`.
+
 ## Command line
 
 The Windows build includes `cta-cli.exe`. On macOS, run

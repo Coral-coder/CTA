@@ -47,6 +47,7 @@ from ..library import Library
 from ..mixer import ENERGY_CURVES, MixSettings, SetlistOptions, build_setlist, suggest_next, transition_report
 from ..scanner import Scanner, ScanSettings, default_workers
 from .models import LibraryModel, TrackListModel
+from .update_ui import UpdateController
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +159,9 @@ class SettingsDialog(QDialog):
         self.device.addItems(["auto", "cpu"])
         self.device.setCurrentText(settings.value("ai_device", "auto"))
         form.addRow("AI device", self.device)
+        self.auto_update = QCheckBox("Check for updates automatically")
+        self.auto_update.setChecked(settings.value("auto_update_check", "true") == "true")
+        form.addRow(self.auto_update)
         lay.addLayout(form)
         lay.addWidget(QLabel(f"<small>Data folder: {paths.data_dir()}</small>"))
 
@@ -187,6 +191,7 @@ class SettingsDialog(QDialog):
         self.s.setValue("max_bpm", self.max_bpm.value())
         self.s.setValue("use_ai", "true" if self.use_ai.isChecked() else "false")
         self.s.setValue("ai_device", self.device.currentText())
+        self.s.setValue("auto_update_check", "true" if self.auto_update.isChecked() else "false")
         super().accept()
 
 
@@ -208,11 +213,16 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"CTA {__version__} - DJ Library & Setlist Builder")
         self.resize(1500, 900)
+        self.updates = UpdateController(self, self.settings)
         self._build_ui()
         geo = self.settings.value("geometry")
         if geo is not None:
             self.restoreGeometry(geo)
         self.reload_library()
+        QTimer.singleShot(0, self.updates.startup)
+
+    def is_scanning(self) -> bool:
+        return self._scan_thread is not None
 
     # ---------------------------------------------------------------- UI --
     def _build_ui(self):
@@ -229,6 +239,8 @@ class MainWindow(QMainWindow):
         self.act_stop.triggered.connect(self.stop_scan)
         self.act_settings = QAction("Settings…", self)
         self.act_settings.triggered.connect(self.open_settings)
+        self.act_update = QAction("Check for Updates", self)
+        self.act_update.triggered.connect(lambda: self.updates.check(manual=True))
         for a in (self.act_add, self.act_scan, self.act_stop):
             tb.addAction(a)
         tb.addSeparator()
@@ -267,6 +279,7 @@ class MainWindow(QMainWindow):
         tb.addWidget(self.f_compat)
         tb.addSeparator()
         tb.addAction(self.act_settings)
+        tb.addAction(self.act_update)
 
         # library table
         self.lib_model = LibraryModel(self)

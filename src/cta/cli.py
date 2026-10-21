@@ -225,6 +225,41 @@ def cmd_selftest(args):
     return 0 if ok else 1
 
 
+def cmd_update(args):
+    from . import updater
+
+    if args.from_zip:
+        # stage a local build (manual install / CI test of the update path)
+        new_root = updater.prepare_from_zip(args.from_zip, args.expect_version)
+        updater.launch_swap(new_root, relaunch=not args.no_relaunch)
+        print(f"update staged from {args.from_zip}; it is applied as soon as this process exits")
+        return 0
+    print(f"CTA {__version__} - checking {updater.REPO} for updates…")
+    rel = updater.check_latest()
+    if not updater.is_newer(rel.version) and not args.force:
+        print(f"You are up to date (latest release {rel.version}).")
+        return 0
+    print(f"New version available: {rel.version}  ({rel.url})")
+    if args.check:
+        return 0
+    ok, why = updater.can_self_update()
+    if not ok:
+        print(f"Cannot update automatically: {why}")
+        return 1
+    if not rel.installable:
+        print("This release has no build for your platform.")
+        return 1
+
+    def prog(done, total):
+        if total:
+            print(f"\rdownloading {done * 100 // total}%", end="", flush=True)
+
+    new_root = updater.prepare_update(rel, prog)
+    print("\nverified; installing - CTA will restart" if not args.no_relaunch else "\nverified; installing")
+    updater.launch_swap(new_root, relaunch=not args.no_relaunch)
+    return 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="cta", description="CTA - DJ library analyser and setlist builder")
     p.add_argument("--version", action="version", version=f"CTA {__version__}")
@@ -272,6 +307,14 @@ def build_parser():
     s.add_argument("--no-ai", action="store_true")
     mix_args(s)
     s.set_defaults(fn=cmd_selftest)
+
+    s = sub.add_parser("update", help="check for and install a new version")
+    s.add_argument("--check", action="store_true", help="only check, do not install")
+    s.add_argument("--force", action="store_true", help="reinstall even if up to date")
+    s.add_argument("--no-relaunch", action="store_true", help="do not restart CTA afterwards")
+    s.add_argument("--from-zip", help=argparse.SUPPRESS)
+    s.add_argument("--expect-version", help=argparse.SUPPRESS)
+    s.set_defaults(fn=cmd_update)
 
     s = sub.add_parser("gui", help="start the desktop app (default)")
     s.set_defaults(fn=None)

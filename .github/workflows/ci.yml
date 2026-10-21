@@ -139,6 +139,52 @@ jobs:
           dist/CTA.app/Contents/MacOS/CTA selftest
           CTA_SMOKE_EXIT_MS=4000 perl -e 'alarm 180; exec @ARGV' dist/CTA.app/Contents/MacOS/CTA
 
+      # ---- prove the self-updater can replace an installed copy ----
+      - name: Update swap test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CTA_DATA_DIR: ${{ runner.temp }}\upd-data
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP 'updtest'
+          New-Item -ItemType Directory -Force "$t\install", "$t\new" | Out-Null
+          Copy-Item -Recurse dist\CTA "$t\install\CTA"
+          Copy-Item -Recurse dist\CTA "$t\new\CTA"
+          Set-Content "$t\new\CTA\marker.txt" 'NEWBUILD'
+          Compress-Archive -Path "$t\new\CTA" -DestinationPath "$t\update.zip"
+          & "$t\install\CTA\cta-cli.exe" update --from-zip "$t\update.zip" --no-relaunch
+          if ($LASTEXITCODE -ne 0) { throw "staging failed" }
+          $log = Join-Path $env:CTA_DATA_DIR 'update.log'
+          for ($i = 0; $i -lt 120; $i++) {
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern 'UPDATE (OK|FAILED)' -Quiet)) { break }
+            Start-Sleep -Milliseconds 500
+          }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern 'UPDATE OK' -Quiet)) { throw "swap failed" }
+          if ((Get-Content "$t\install\CTA\marker.txt") -ne 'NEWBUILD') { throw "install not replaced" }
+          & "$t\install\CTA\cta-cli.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "updated build does not start" }
+
+      - name: Update swap test (macOS)
+        if: runner.os == 'macOS'
+        env:
+          CTA_DATA_DIR: ${{ runner.temp }}/upd-data
+        run: |
+          set -e
+          t="$RUNNER_TEMP/updtest"; mkdir -p "$t/install" "$t/new"
+          ditto dist/CTA.app "$t/install/CTA.app"
+          ditto dist/CTA.app "$t/new/CTA.app"
+          echo NEWBUILD > "$t/new/CTA.app/Contents/Resources/marker.txt"
+          codesign --force --deep --sign - "$t/new/CTA.app"
+          ditto -c -k --keepParent "$t/new/CTA.app" "$t/update.zip"
+          "$t/install/CTA.app/Contents/MacOS/CTA" update --from-zip "$t/update.zip" --no-relaunch
+          log="$CTA_DATA_DIR/update.log"
+          for i in $(seq 1 120); do grep -qE 'UPDATE (OK|FAILED)' "$log" 2>/dev/null && break; sleep 0.5; done
+          cat "$log"
+          grep -q 'UPDATE OK' "$log"
+          grep -q NEWBUILD "$t/install/CTA.app/Contents/Resources/marker.txt"
+          "$t/install/CTA.app/Contents/MacOS/CTA" --version
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
