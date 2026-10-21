@@ -2,12 +2,16 @@
 
 import hashlib
 import os
+import re
 import sys
 import time
 import urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-from cta.model import MODEL_FILE, MODEL_SHA256, MODEL_URL  # noqa: E402
+# read the constants without importing cta (dependencies may not be installed yet)
+_src = open(os.path.join(os.path.dirname(__file__), "..", "src", "cta", "model.py"), encoding="utf-8").read()
+MODEL_FILE = re.search(r'^MODEL_FILE = "([^"]+)"', _src, re.M).group(1)
+MODEL_SHA256 = re.search(r'^MODEL_SHA256 = "([0-9a-f]{64})"', _src, re.M).group(1)
+MODEL_URL = re.search(r'^MODEL_URL = "([^"]+)" \+ MODEL_FILE', _src, re.M).group(1) + MODEL_FILE
 
 
 def sha256(path):
