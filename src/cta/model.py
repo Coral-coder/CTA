@@ -133,6 +133,10 @@ class StyleModel:
                 act, emb = sess.run(None, {"melspectrogram": probe})
                 if not (np.all(np.isfinite(act)) and np.all(np.isfinite(emb))):
                     raise RuntimeError("non-finite output")
+                actual = sess.get_providers()[0]
+                if actual != prov:
+                    # ORT silently fell back (e.g. no compatible GPU present)
+                    raise RuntimeError(f"{prov} unavailable, session uses {actual}")
                 self.session = sess
                 self.provider = prov
                 break
