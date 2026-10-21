@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.5", "pyinstaller>=6.6"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "pyinstaller>=6.6"]
 
 [project.scripts]
 cta = "cta.cli:main"
@@ -39,6 +39,7 @@ cta = ["discogs400_labels.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 300
 
 [tool.ruff]
 line-length = 120

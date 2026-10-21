@@ -96,3 +96,23 @@ def write_audio(path: str, y: np.ndarray, sr: int = SR, codec: str = "flac"):
 def tmp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CTA_DATA_DIR", str(tmp_path / "data"))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def no_modal_dialogs(monkeypatch):
+    """A modal dialog would block a headless test run forever: fail fast and
+    show its text instead."""
+    try:
+        from PySide6.QtWidgets import QMessageBox
+    except Exception:  # noqa: BLE001
+        yield
+        return
+
+    def boom(*args, **kwargs):
+        texts = [a for a in args if isinstance(a, str)]
+        raise AssertionError(f"unexpected dialog: {texts}")
+
+    for name in ("warning", "question", "information", "critical"):
+        monkeypatch.setattr(QMessageBox, name, staticmethod(boom))
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: boom(self.text()))
+    yield

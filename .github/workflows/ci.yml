@@ -27,6 +27,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -69,12 +70,13 @@ jobs:
         env:
           CTA_MODEL_PATH: ${{ github.workspace }}/build_models/discogs-effnet-bsdynamic-1.onnx
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+        run: pytest -v --durations=15
 
   build:
     name: Build (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
