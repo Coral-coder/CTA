@@ -16,7 +16,7 @@ MODEL = os.path.join(ROOT, "build_models", "discogs-effnet-bsdynamic-1.onnx")
 sys.path.insert(0, SRC)
 from cta import __version__  # noqa: E402
 
-datas = [(os.path.join(SRC, "cta", "discogs400_labels.txt"), "cta")]
+datas = [(os.path.join(SRC, "cta", "discogs400_labels.txt"), "cta"), (os.path.join(SRC, "cta", "icon.png"), "cta")]
 if os.path.exists(MODEL):
     datas.append((MODEL, "models"))
     datas.append((os.path.join(ROOT, "THIRD_PARTY_NOTICES.md"), "."))

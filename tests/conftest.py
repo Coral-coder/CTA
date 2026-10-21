@@ -116,3 +116,41 @@ def no_modal_dialogs(monkeypatch):
         monkeypatch.setattr(QMessageBox, name, staticmethod(boom))
     monkeypatch.setattr(QMessageBox, "exec", lambda self: boom(self.text()))
     yield
+
+
+def structured_track(bpm=126.0, layout=(("intro", 16), ("drop", 32), ("breakdown", 16), ("drop", 32), ("outro", 16)),
+                     sr=44100, chord=(57, 60, 64), seed=0):
+    """Synthetic dance track with real sections:
+    intro/outro = kick + hats, drop = kick + bass + chords + hats,
+    breakdown = chords only, build = kick + hats + rising noise."""
+    rng = np.random.default_rng(seed)
+    beat = 60.0 / bpm
+    total_bars = sum(b for _, b in layout)
+    n = int(total_bars * 4 * beat * sr) + sr
+    x = np.zeros(n)
+    k = _kick(sr)
+    hat = rng.standard_normal(int(0.03 * sr)) * np.exp(-np.arange(int(0.03 * sr)) / sr * 60) * 0.25
+    t_all = np.arange(n) / sr
+    bar = 0
+    for kind, bars in layout:
+        s0 = int(bar * 4 * beat * sr)
+        s1 = int((bar + bars) * 4 * beat * sr)
+        seg_t = t_all[s0:s1]
+        for b in range(bars * 4):
+            pos = s0 + int(b * beat * sr)
+            if kind in ("intro", "outro", "drop", "build"):
+                e = min(n, pos + k.size)
+                x[pos:e] += k[: e - pos]
+                hp = pos + int(beat * sr / 2)
+                e = min(n, hp + hat.size)
+                if hp < n:
+                    x[hp:e] += hat[: e - hp]
+        if kind in ("drop", "breakdown"):
+            for m in chord:
+                f = 440 * 2 ** ((m - 69) / 12)
+                x[s0:s1] += (0.08 if kind == "drop" else 0.12) * np.sin(2 * np.pi * f * seg_t)
+        if kind == "drop":
+            f = 440 * 2 ** ((chord[0] - 12 - 69) / 12)
+            x[s0:s1] += 0.25 * np.sign(np.sin(2 * np.pi * f * seg_t)) * 0.6
+        bar += bars
+    return (x / np.abs(x).max() * 0.9).astype(np.float32)

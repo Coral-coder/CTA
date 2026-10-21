@@ -48,6 +48,16 @@ def run_gui(db_path: str | None = None) -> int:
     app.setOrganizationName("CTA")
     app.setStyle("Fusion")
     _dark_palette(app)
+    try:
+        from importlib import resources
+
+        from PySide6.QtGui import QIcon, QPixmap
+
+        pm = QPixmap()
+        pm.loadFromData(resources.files("cta").joinpath("icon.png").read_bytes())
+        app.setWindowIcon(QIcon(pm))
+    except Exception:  # noqa: BLE001 - cosmetic only
+        pass
 
     def excepthook(etype, value, tb):
         msg = "".join(traceback.format_exception(etype, value, tb))

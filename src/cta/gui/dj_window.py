@@ -1312,7 +1312,8 @@ class DJPanel(QWidget):
         except Exception:  # noqa: BLE001
             pass
         return t.path, float(lib.bpm[idx]), TrackInfo(path=t.path, title=t.title, artist=t.artist, key=t.key,
-                                                      bpm=float(lib.bpm[idx]), loudness=loud, lib_index=idx)
+                                                      bpm=float(lib.bpm[idx]), loudness=loud, lib_index=idx,
+                                                      genre=lib.parent_genres[idx] or lib.tag_genres[idx])
 
     def load_index(self, deck: str, idx: int):
         if self.engine.decks[deck].playing:

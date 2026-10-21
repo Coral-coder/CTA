@@ -92,6 +92,29 @@ into their own window.
     start of the bar you clicked and is saved with the track.
   - The IN and OUT flags appear on the waveform, and the shaded area after
     OUT shows the blend.
+- **How auto-mix DJs:**
+  - **It reads each track's structure.** Every 8-bar phrase is labelled
+    intro, groove, build, drop, breakdown or outro, from the kick, bass,
+    mid and high energy on each bar.
+  - **It mixes out in the outro**, right after the last drop has fully
+    played. It never cuts a drop or a breakdown mid-phrase.
+  - **It mixes in from the next track's intro**, timed so that track's
+    **drop lands exactly when the blend ends**. The **bass swap happens on
+    that downbeat**: the incoming bass stays cut until its drop, then the
+    two basses swap on the "one".
+  - **It loops to keep the beat.** If the outgoing track has no outro, or
+    one that's too short, CTA loops its last solid 4–8 bars of groove
+    until the swap.
+  - **It echoes out on a clash.** When the keys don't mix or the tempo gap
+    is too wide, the outgoing track gets a beat-synced echo tail and the
+    next track drops in clean on the downbeat.
+  - **It mixes with EQ, not just volume.** The incoming track comes in highs
+    first with mids reduced; the outgoing track's highs and mids tail off
+    after the swap.
+  - **Blend length depends on genre:** long blends for house and techno,
+    short ones for hip-hop and pop. Your bars setting is the maximum.
+  - **A peak limiter guards the master**, so two loud tracks overlapping
+    never distort.
 - **Auto-mix timing:**
   - Choose the blend length with the 4 / 8 / 16 / 32-bar buttons, or type
     any value from 1 to 64.

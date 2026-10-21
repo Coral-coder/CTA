@@ -93,6 +93,7 @@ class TrackInfo:
     bpm: float = 0.0
     loudness: float = -12.0
     lib_index: int = -1
+    genre: str = ""
 
 
 @dataclass
@@ -225,7 +226,9 @@ class Engine:
         self._error_logged = False
         self.hooks: list = []          # callables(engine, n) run before each block (automix)
         from .fx import FXUnit
-        self.fx_units = [FXUnit("Delay"), FXUnit("Reverb")]
+        # two user FX units + one reserved for auto-mix (echo out)
+        self.fx_units = [FXUnit("Delay"), FXUnit("Reverb"), FXUnit("Delay")]
+        self._lim_gain = 1.0
         self.quantize = True
         self.taps: list = []           # extra consumers of the master (live stream)
         self.recorder = None
@@ -815,11 +818,20 @@ class Engine:
             if d.cue_phones:
                 cue += y
         master *= self.master_volume
-        # soft limiter: transparent below -1 dBFS
+        # brick-wall peak limiter: instant attack, ~150 ms release; transparent
+        # below -1 dBFS and never distorts when two loud tracks overlap
         peak = float(np.abs(master).max()) if n else 0.0
-        self.peak_level = max(peak, self.peak_level * 0.9)
-        if peak > 0.89:
-            master = np.tanh(master)
+        ceiling = 0.89
+        target = min(1.0, ceiling / peak) if peak > 1e-9 else 1.0
+        if target < self._lim_gain:
+            g1 = target                                # attack: at once
+        else:
+            g1 = self._lim_gain + (target - self._lim_gain) * (1 - np.exp(-n / (0.15 * SR)))
+        if self._lim_gain != 1.0 or g1 != 1.0:
+            master *= np.linspace(min(self._lim_gain, g1), g1, n, dtype=np.float32)
+        self._lim_gain = g1
+        self.peak_level = max(min(peak * g1, 1.0), self.peak_level * 0.9)
+        np.clip(master, -0.99, 0.99, out=master)
         phones = (cue * (1 - self.cue_mix) + master * self.cue_mix) * self.phones_volume
         if self.recorder is not None:
             self.recorder.write(master)

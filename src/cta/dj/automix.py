@@ -27,8 +27,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .beatgrid import beat_activity
 from .engine import SR, Engine
+from .structure import Structure, analyse, plan_transition
 
 log = logging.getLogger(__name__)
 
@@ -44,20 +44,18 @@ class AutoMixSettings:
 
 @dataclass
 class _Meta:
-    mix_in_beat: float               # where the incoming track starts (bar line)
-    end_beat: float                  # bar line after the last real beat
-    out_marker: float | None         # user outro marker (beat) - mixing starts exactly here
+    structure: Structure
+    in_marker_bar: float | None      # user intro marker (bar)
+    out_marker_bar: float | None     # user outro marker (bar)
     title: str
+    genre: str = ""
 
-    def mix_out_beat(self, mix_bars: int, phrase_bars: int) -> float:
-        if self.out_marker is not None:
-            return self.out_marker
-        # finish the blend on the last bar that still has beats (no dead air),
-        # starting on a phrase boundary
-        start = self.end_beat - 4.0 * mix_bars
-        phrase = 4.0 * phrase_bars
-        start = np.floor((start - self.mix_in_beat) / phrase) * phrase + self.mix_in_beat
-        return float(max(start, self.mix_in_beat + phrase))
+    @property
+    def mix_in_beat(self) -> float:
+        if self.in_marker_bar is not None:
+            return 4.0 * self.in_marker_bar
+        fb = self.structure.first_beat_bar
+        return 4.0 * (fb - fb % 4)
 
 
 @dataclass
@@ -65,9 +63,27 @@ class _Transition:
     out_deck: str
     in_deck: str
     start_beat: float        # master beat at which the incoming track starts
-    beats: float
+    beats: float             # blend length
+    in_start_beat: float = 0.0
+    swap_beat: float = 0.0   # beats into the blend where the basses swap (downbeat)
+    style: str = "blend"     # blend | loop_blend | echo_out
+    loop: tuple[float, float] | None = None   # outgoing loop (beats) to hold the groove
+    reason: str = ""
     started: bool = False
     fixed_length: bool = False       # set by "transition now" with an explicit length
+    loop_set: bool = False
+    echo_on: bool = False
+
+    @property
+    def tail_beats(self) -> float:
+        """Extra time after the swap for the outgoing track to leave."""
+        if self.style == "echo_out":
+            return 8.0
+        return 4.0 if self.swap_beat >= self.beats - 1e-6 else 0.0
+
+
+SHORT_BLEND_GENRES = {"Hip Hop", "Pop", "Rock", "Funk / Soul", "Latin", "Reggae", "Folk, World, & Country",
+                      "Blues", "Jazz", "Brass & Military", "Children's", "Stage & Screen"}
 
 
 class AutoMix:
@@ -233,19 +249,42 @@ class AutoMix:
             from .loader import waveform_bands
             bands = waveform_bands(d.audio, hop=256)
             d.bands = bands
-        _prof, first, last = beat_activity(bands, g)
-        # bar lines are every 4 beats from the grid's downbeat
-        in_beat = np.floor(first / 4.0) * 4.0
+        st = analyse(bands, g)
+        in_m = out_m = None
         if d.mix_in is not None:
-            in_beat = np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6) * 4.0
-        end_beat = np.ceil((last + 1) / 4.0) * 4.0
-        out_marker = None
+            in_m = float(np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6))
         if d.mix_out is not None:
-            out_marker = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6) * 4.0)
-        return _Meta(mix_in_beat=float(in_beat), end_beat=float(end_beat), out_marker=out_marker,
-                     title=d.info.title)
+            out_m = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6))
+        return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, title=d.info.title,
+                     genre=getattr(d.info, "genre", "") or "")
 
     # ---- audio-thread logic ------------------------------------------------------
+    def _make_plan(self, e: Engine, m, din_name: str, now_beat: float, force_bars: int | None = None,
+                   immediate: bool = False) -> _Transition:
+        from ..keys import compatibility
+
+        mo, mi = self.meta[m.name], self.meta[din_name]
+        din = e.decks[din_name]
+        ratio = e.sync_ratio(m.bpm, din.grid.bpm)
+        gap = abs(ratio - 1.0) * 100
+        harmonic = compatibility(m.effective_key, din.info.key) if din.info.key >= 0 else 1.0
+        short = any(g in SHORT_BLEND_GENRES for g in (mo.genre, mi.genre))
+        plan = plan_transition(mo.structure, mi.structure, max_bars=force_bars or self.s.mix_bars,
+                               harmonic=harmonic, tempo_gap_pct=gap,
+                               out_marker_bar=mo.out_marker_bar, in_marker_bar=mi.in_marker_bar,
+                               genre_short=short and force_bars is None)
+        start = plan.out_start_bar * 4.0
+        if immediate or start <= now_beat + 1.0:
+            # too late for the planned spot (or "transition now"): next bar line
+            start = float(np.ceil((now_beat + 1.0) / 4.0) * 4.0)
+            loop = None
+        else:
+            loop = (plan.loop[0] * 4.0, plan.loop[1] * 4.0) if plan.loop else None
+        style = plan.style if (loop or plan.style != "loop_blend") else "blend"
+        return _Transition(m.name, din_name, start, plan.bars * 4.0, in_start_beat=plan.in_start_bar * 4.0,
+                           swap_beat=plan.swap_bar * 4.0, style=style, loop=loop, reason=plan.reason,
+                           fixed_length=force_bars is not None)
+
     def _plan_now(self, bars: int | None):
         e = self.eng
         m = e._master()
@@ -257,10 +296,8 @@ class AutoMix:
         self._register(m.name)
         self._register(others[0])
         mb = m.grid.beat_at(m.time)
-        start = np.ceil((mb + 1.0) / 4.0) * 4.0          # next bar line
-        beats = 4.0 * (bars or self.s.mix_bars)
-        self.tr = _Transition(m.name, others[0], start, beats, fixed_length=bars is not None)
-        self.status = f"Transition to {e.decks[others[0]].info.title} at next bar"
+        self.tr = self._make_plan(e, m, others[0], mb, force_bars=bars, immediate=True)
+        self.status = f"Transition to {e.decks[others[0]].info.title} at the next bar"
 
     def _hook(self, e: Engine, n: int):
         if not self.active:
@@ -280,61 +317,105 @@ class AutoMix:
             nxt = [d for d in self.decks if d != m.name and e.decks[d].loaded and not e.decks[d].playing
                    and d in self.meta and d not in self._loading]
             if nxt and m.name in self.meta:
-                out_beat = self.meta[m.name].mix_out_beat(self.s.mix_bars, self.s.phrase_bars)
-                if out_beat <= mb + 1:
-                    out_beat = np.ceil((mb + 1) / 4) * 4      # late: mix at the next bar
-                self.tr = _Transition(m.name, nxt[0], out_beat, 4.0 * self.s.mix_bars)
+                self.tr = self._make_plan(e, m, nxt[0], mb)
+                log.info("auto-mix plan: %s (%s)", self.tr.style, self.tr.reason)
             elif not nxt and not self._loading and self.queue:
                 self._fill_free_deck()
-            bars_left = (self.tr.start_beat - mb) / 4 if self.tr else None
-            if bars_left is not None:
-                self.status = f"Next: {e.decks[self.tr.in_deck].info.title} in {int(bars_left)} bars"
-            elif not self.queue and not self._loading:
+            if self.tr is None and not self.queue and not self._loading:
                 self.status = "Auto-mix: last track playing"
             return
 
         tr = self.tr
         din, dout = e.decks[tr.in_deck], e.decks[tr.out_deck]
         if not tr.started:
+            # hold the groove: engage the outgoing loop when we reach it
+            if tr.loop and not tr.loop_set and mb >= tr.loop[0] - 0.05:
+                g = dout.grid
+                dout.loop = (g.time_of_beat(tr.loop[0]) * SR, g.time_of_beat(tr.loop[1]) * SR)
+                tr.loop_set = True
+            bars_left = (tr.start_beat - mb) / 4
+            how = {"blend": "blend", "loop_blend": "loop + blend", "echo_out": "echo out"}[tr.style]
+            self.status = (f"Next: {din.info.title} in {max(0, int(np.ceil(bars_left)))} bars "
+                           f"({how}, {int(tr.beats / 4)} bars)")
             if mb < tr.start_beat - 1e-6:
                 return
-            meta_in = self.meta.get(tr.in_deck)
-            in_beat0 = meta_in.mix_in_beat if meta_in else 0.0
-            # exact bar/phase alignment: incoming beat = in_beat0 + beats since start
-            target_beat = in_beat0 + (mb - tr.start_beat)
+            if not tr.fixed_length and tr.style != "echo_out":
+                tr.beats = min(tr.beats, 4.0 * self.s.mix_bars)      # honour a later change
+                tr.swap_beat = min(tr.swap_beat, tr.beats)
+            # exact bar/phase alignment: incoming beat = its start + beats since start
+            target_beat = tr.in_start_beat + (mb - tr.start_beat)
             din.keylock = True
             din.sync = True
             din.rate_override = e.sync_ratio(m.bpm, din.grid.bpm)
             e._seek(din, din.grid.time_of_beat(target_beat) * SR)
             din.volume = 0.0
-            din.eq = np.array([0.0 if self.s.bass_swap else 1.0, 1.0, 1.0])
+            din.eq = np.array([0.0, 0.5, 1.0]) if self.s.bass_swap else np.ones(3)
             din.playing = True
             tr.started = True
-            if not tr.fixed_length:
-                tr.beats = 4.0 * self.s.mix_bars      # the blend length set right now
             self.history.append(din.info.title)
             self.status = f"Mixing in {din.info.title}"
             self._changed()
             return
 
-        p = (mb - tr.start_beat) / tr.beats
-        p = float(np.clip(p, 0.0, 1.0))
-        din.volume = float(np.sin(min(p * 2.0, 1.0) * np.pi / 2))
-        dout.volume = float(np.cos(max(0.0, (p - 0.5) * 2.0) * np.pi / 2))
-        if self.s.bass_swap:
-            # swap the low end over two beats around the middle of the mix
-            w = 2.0 / tr.beats
-            q = float(np.clip((p - 0.5) / w + 0.5, 0.0, 1.0))
-            din.eq = np.array([q, 1.0, 1.0])
-            dout.eq = np.array([1.0 - q, 1.0, 1.0])
-        if p >= 1.0 or not dout.playing:
+        # beats into the transition, counted on the incoming track: the outgoing
+        # may be looping, so its position is not a clock
+        x = din.grid.beat_at(din.time) - tr.in_start_beat
+        if tr.style == "echo_out":
+            self._echo_out(e, tr, din, dout, x)
+        else:
+            self._blend(tr, din, dout, x)
+        if x >= tr.beats + tr.tail_beats or not dout.playing and x >= tr.swap_beat:
             self._finish(e, tr, mb)
+
+    @staticmethod
+    def _ramp(v: float) -> float:
+        return float(np.clip(v, 0.0, 1.0))
+
+    def _blend(self, tr: _Transition, din, dout, x: float):
+        """EQ mixing like a DJ: incoming highs first, mids under, bass cut;
+        basses swap on the downbeat; then the outgoing leaves."""
+        beats = max(tr.beats, 1.0)
+        sw = tr.swap_beat
+        fade_in = max(4.0, beats * 0.25)              # at least one bar
+        din.volume = float(np.sin(self._ramp(x / fade_in) * np.pi / 2))
+        swap = self._ramp((x - sw) / 0.25 + 0.5) if self.s.bass_swap else self._ramp(x / beats)
+        mid_in = 0.5 + 0.5 * self._ramp(x / max(sw, 1.0))
+        din.eq = np.array([swap, mid_in, 1.0])
+        # outgoing: full until the swap, then bass out and fade
+        after = max(beats + tr.tail_beats - sw, 1.0)
+        q = self._ramp((x - sw) / after)
+        dout.eq = np.array([1.0 - swap, 1.0 - 0.5 * q, 1.0 - 0.4 * q])
+        dout.volume = float(np.cos(q * np.pi / 2))
+
+    def _echo_out(self, e: Engine, tr: _Transition, din, dout, x: float):
+        """Clash-safe: the outgoing track echoes away on the last bar, the next
+        track drops in on the one."""
+        sw = tr.swap_beat
+        unit = e.fx_units[-1]                          # auto-mix's own delay unit
+        if not tr.echo_on and x >= sw - 4.0:
+            unit.kind, unit.wet, unit.amount, unit.div_index = "Delay", 0.6, 0.55, 2
+            unit.on = True
+            dout.fx = set(dout.fx) | {len(e.fx_units) - 1}
+            tr.echo_on = True
+        if x < sw:
+            din.volume = 0.0
+            dout.volume = 1.0
+            dout.eq = np.array([1.0, 1.0, 1.0]) if x < sw - 4.0 else np.array([self._ramp((sw - x) / 4.0), 1, 1])
+        else:
+            din.volume = 1.0
+            din.eq = np.ones(3)
+            dout.trim = 0.0                            # dry signal off, echoes ring out
+            unit.on = False
+            dout.volume = float(np.cos(self._ramp((x - sw) / tr.tail_beats) * np.pi / 2))
 
     def _finish(self, e: Engine, tr: _Transition, mb: float):
         din, dout = e.decks[tr.in_deck], e.decks[tr.out_deck]
         dout.playing = False
         dout.volume = 1.0
         dout.eq = np.ones(3)
+        dout.loop = None
+        dout.trim = 1.0
+        dout.fx = set(dout.fx) - {len(e.fx_units) - 1}
         dout.sync = False
         dout.rate_override = None
         din.volume = 1.0

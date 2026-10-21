@@ -35,7 +35,7 @@ version = { attr = "cta.__version__" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-cta = ["discogs400_labels.txt"]
+cta = ["discogs400_labels.txt", "icon.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
