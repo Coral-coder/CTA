@@ -611,23 +611,47 @@ class Engine:
                 self._error_logged = True
 
     def start(self, device=None, block: int | None = None, master_chans=(0, 1), phones_chans=None):
+        """Open the output; falls back to safer settings rather than failing."""
         import sounddevice as sd
 
         self.stop()
         if block:
             self.block = block
+        attempts = [(device, self.block), (device, max(self.block, 1024))]
+        if device is not None:
+            attempts.append((None, max(self.block, 1024)))      # system default as last resort
+        last = None
+        for dev, blk in attempts:
+            try:
+                self._open(sd, dev, blk, master_chans, phones_chans)
+                return
+            except Exception as e:  # noqa: BLE001
+                last = e
+                log.warning("audio open failed on %s (block %d): %s", dev, blk, e)
+        raise RuntimeError(f"no usable audio output: {last}")
+
+    def _open(self, sd, device, block, master_chans, phones_chans):
         info = sd.query_devices(device, "output")
+        api = sd.query_hostapis(info["hostapi"])["name"]
         need = max(max(master_chans), max(phones_chans) if phones_chans else 0) + 1
         chans = int(min(info["max_output_channels"], max(2, need)))
+        if max(master_chans) >= chans:
+            master_chans = (0, 1)
         if phones_chans and max(phones_chans) >= chans:
             phones_chans = None
+        extra = None
+        if "WASAPI" in api:
+            # shared mode only accepts the device's own rate unless Windows converts
+            extra = sd.WasapiSettings(auto_convert=True)
+        stream = sd.OutputStream(samplerate=SR, blocksize=block, channels=chans, dtype="float32",
+                                 device=device, latency="low", callback=self._callback, extra_settings=extra)
+        stream.start()
+        self._stream = stream
+        self.block = block
         self.master_chans = master_chans
         self.phones_chans = phones_chans
         self.out_channels = chans
-        self._stream = sd.OutputStream(samplerate=SR, blocksize=self.block, channels=chans, dtype="float32",
-                                       device=device, latency="low", callback=self._callback)
-        self._stream.start()
-        log.info("audio started on %s (%d ch, block %d)", info["name"], chans, self.block)
+        log.info("audio started on %s via %s (%d ch, block %d)", info["name"], api, chans, block)
 
     def stop(self):
         if self._stream is not None:
@@ -653,12 +677,15 @@ class Engine:
 
 
 def list_output_devices():
+    """[(index, label, channels)], best host API first (WASAPI/ASIO/CoreAudio)."""
     import sounddevice as sd
 
+    rank = {"ASIO": 0, "Windows WASAPI": 1, "Core Audio": 1, "Windows DirectSound": 2, "MME": 3}
     out = []
     for i, d in enumerate(sd.query_devices()):
         if d["max_output_channels"] > 0:
             api = sd.query_hostapis(d["hostapi"])["name"]
-            out.append((i, f"{d['name']} ({api}, {d['max_output_channels']} ch)", d["max_output_channels"]))
-    return out
-
+            out.append((rank.get(api, 2), i, f"{d['name']} ({api}, {d['max_output_channels']} ch)",
+                        d["max_output_channels"]))
+    out.sort(key=lambda r: (r[0], r[1]))
+    return [(i, label, ch) for _r, i, label, ch in out]
