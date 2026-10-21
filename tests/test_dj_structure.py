@@ -97,3 +97,48 @@ def test_echo_out_on_key_clash():
     am, events, _peak, _t = _run_mix(tr, ["a", "b"], seconds=300)
     assert events[0][1] == "echo_out"
     assert am.history == ["a", "b"]
+
+
+def test_learns_from_manual_transitions(tmp_path):
+    import time as _t
+
+    from cta.db import Database
+    from cta.dj.learn import MixLearner
+
+    db = Database(str(tmp_path / "x.db"))
+    eng = Engine()
+    am = AutoMix(eng, lambda i: None)
+    learner = MixLearner(db, am)
+    am.learner = learner
+    clock = [1000.0]
+    _t_orig = _t.time
+    try:
+        _t.time = lambda: clock[0]
+        for _ in range(3):
+            for name, layout in (("A", FULL), ("B", SHORT)):
+                t = _track(name, 126.0, layout)
+                eng.load(name, t.audio, t.grid, t.info, bands=t.bands)
+            a, b = eng.decks["A"], eng.decks["B"]
+            eng._seek(a, a.grid.time_of_beat(96 * 4) * SR)       # A at the end of its last drop
+            eng._seek(b, b.grid.time_of_beat(0) * SR)
+            a.playing = b.playing = True
+            a.volume = b.volume = 1.0
+            eng.crossfader = 0.0
+            learner.tick(eng)                                    # overlap starts
+            clock[0] += 8 * 4 * 60 / 126                         # 8 bars later...
+            a.volume = 0.0                                       # ...the DJ pulls the outgoing fader
+            learner.tick(eng)
+            clock[0] += 1.5
+            learner.tick(eng)
+            a.playing = b.playing = False
+    finally:
+        _t.time = _t_orig
+    assert learner.count() == 3
+    prefs = learner.preferences("club")
+    assert prefs["bars"] == 8 and abs(prefs["out_offset"]) < 1 and abs(prefs["in_lead"] - 8) < 1
+    # the planner now mixes like this DJ
+    full, nxt = _struct(FULL), _struct(SHORT)
+    p = plan_transition(full, nxt, max_bars=16, learned=prefs)
+    assert p.bars == 8 and p.out_start_bar == 96 and p.in_start_bar == 0
+    # stored in the database: survives a restart
+    assert MixLearner(db, am).count() == 3

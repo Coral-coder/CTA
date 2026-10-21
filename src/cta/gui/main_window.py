@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 
+import numpy as np
 from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
@@ -303,7 +304,7 @@ class MainWindow(QMainWindow):
         self.lib_view.setDragEnabled(True)
         self.lib_view.setDragDropMode(QAbstractItemView.DragOnly)
         h = self.lib_view.horizontalHeader()
-        for col, w in enumerate([170, 260, 70, 80, 60, 140, 110, 55, 160]):
+        for col, w in enumerate([62, 170, 260, 70, 80, 60, 140, 110, 55, 160]):
             h.resizeSection(col, w)
 
         # right side tabs
@@ -876,6 +877,21 @@ class MainWindow(QMainWindow):
         self.open_dj()
         if getattr(self, "dj", None) is not None:
             self.dj.load_index(deck, i)
+
+    def session_played(self) -> set[int]:
+        if self.lib is None:
+            return set()
+        return set(np.nonzero(self.lib.session_played)[0].tolist())
+
+    def track_played(self, idx: int):
+        """Called by DJ Mode when a track has been on air for 30 s."""
+        lib = self.lib
+        if lib is None or not (0 <= idx < lib.n):
+            return
+        lib.session_played[idx] = True
+        lib.play_count[idx] += 1
+        lib.last_played[idx] = time.time()
+        self.lib_model.layoutChanged.emit()
 
     def browse_library(self, delta: int):
         """Move the library selection (controller browse knob)."""

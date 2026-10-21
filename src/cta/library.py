@@ -127,6 +127,13 @@ class Library:
         self.parent_code = self._codes(self.parent_genres, empty_unique=False)
         self.parent_names = sorted(set(self.parent_genres))
         self._hay: list[str] | None = None
+        try:
+            stats = self.db.play_stats()
+        except Exception:  # noqa: BLE001
+            stats = {}
+        self.play_count = np.array([stats.get(p, (0, 0))[0] for p in self.paths], dtype=np.int64)
+        self.last_played = np.array([stats.get(p, (0, 0.0))[1] or 0.0 for p in self.paths], dtype=np.float64)
+        self.session_played = np.zeros(self.n, bool)
 
     @staticmethod
     def _codes(values: list[str], empty_unique: bool) -> np.ndarray:

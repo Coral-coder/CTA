@@ -68,6 +68,8 @@ MIGRATIONS = [
     ("grid_bpm", "REAL"),         # tempo the grid was fitted for
     ("mix_in", "REAL"),           # DJ-set intro marker (seconds): where the track is mixed in
     ("mix_out", "REAL"),          # DJ-set outro marker (seconds): where mixing out starts
+    ("grid_ver", "INTEGER"),      # 1 = fitted, 2 = downbeat refined, 3 = edited by the DJ
+    ("phrase_origin", "INTEGER"), # bar (mod 8) where phrases start
 ]
 
 TRACK_FIELDS = [
@@ -168,14 +170,17 @@ class Database:
             if key is not None or clear_key:
                 c.execute("UPDATE tracks SET key_override=? WHERE id=?", (key, track_id))
 
-    def get_grid(self, path: str) -> tuple[float, float] | None:
-        r = self.conn().execute("SELECT first_beat, grid_bpm FROM tracks WHERE path=?", (path,)).fetchone()
-        return (r[0], r[1]) if r and r[0] is not None else None
+    def get_grid(self, path: str) -> tuple[float, float, int, int] | None:
+        """(first_beat, bpm, version, phrase_origin) or None."""
+        r = self.conn().execute("SELECT first_beat, grid_bpm, grid_ver, phrase_origin FROM tracks WHERE path=?",
+                                (path,)).fetchone()
+        return (r[0], r[1], r[2] or 1, r[3] or 0) if r and r[0] is not None else None
 
-    def set_grid(self, path: str, first_beat: float, bpm: float):
+    def set_grid(self, path: str, first_beat: float, bpm: float, version: int = 1, phrase_origin: int = 0):
         c = self.conn()
         with c:
-            c.execute("UPDATE tracks SET first_beat=?, grid_bpm=? WHERE path=?", (first_beat, bpm, path))
+            c.execute("UPDATE tracks SET first_beat=?, grid_bpm=?, grid_ver=?, phrase_origin=? WHERE path=?",
+                      (first_beat, bpm, version, phrase_origin, path))
 
     def get_markers(self, path: str) -> tuple[float | None, float | None]:
         r = self.conn().execute("SELECT mix_in, mix_out FROM tracks WHERE path=?", (path,)).fetchone()
@@ -211,6 +216,11 @@ class Database:
             return self.conn().execute(q, (session, limit)).fetchall()
         return self.conn().execute("SELECT ts, path, deck, session FROM history ORDER BY ts DESC LIMIT ?",
                                    (limit,)).fetchall()
+
+    def play_stats(self) -> dict[str, tuple[int, float]]:
+        """path -> (times played, last played timestamp)."""
+        return {r[0]: (r[1], r[2]) for r in self.conn().execute(
+            "SELECT path, COUNT(*), MAX(ts) FROM history GROUP BY path")}
 
     def purge_missing(self) -> int:
         c = self.conn()

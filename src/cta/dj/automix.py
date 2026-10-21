@@ -49,6 +49,7 @@ class _Meta:
     out_marker_bar: float | None     # user outro marker (bar)
     title: str
     genre: str = ""
+    long_form: bool = False          # trance / progressive: 16-bar phrases, long blends
 
     @property
     def mix_in_beat(self) -> float:
@@ -102,6 +103,8 @@ class AutoMix:
         self.status = "Auto-mix off"
         self.history: list[str] = []
         self._loading: set[str] = set()
+        self.used_items: list = []           # every queue item ever loaded (never auto-pick these again)
+        self.learner = None                  # MixLearner: the DJ's own transition habits
         self._sync_loads = synchronous_loads
         self.on_change = None        # optional callback for the UI (called from audio/loader thread)
         self._lock = threading.Lock()
@@ -190,6 +193,7 @@ class AutoMix:
             if not self.queue:
                 return
             item = self.queue.popleft()
+        self.used_items.append(item)
         self._loading.add(deck)
 
         def job():
@@ -249,14 +253,17 @@ class AutoMix:
             from .loader import waveform_bands
             bands = waveform_bands(d.audio, hop=256)
             d.bands = bands
-        st = analyse(bands, g)
+        style = (getattr(d.info, "style", "") or "").lower()
+        long_form = any(w in style for w in ("trance", "progressive", "psy"))
+        st = analyse(bands, g, phrase_origin=getattr(d, "phrase_origin", None),
+                     phrase_bars=16 if long_form else 8)
         in_m = out_m = None
         if d.mix_in is not None:
             in_m = float(np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6))
         if d.mix_out is not None:
             out_m = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6))
         return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, title=d.info.title,
-                     genre=getattr(d.info, "genre", "") or "")
+                     genre=getattr(d.info, "genre", "") or "", long_form=long_form)
 
     # ---- audio-thread logic ------------------------------------------------------
     def _make_plan(self, e: Engine, m, din_name: str, now_beat: float, force_bars: int | None = None,
@@ -269,10 +276,14 @@ class AutoMix:
         gap = abs(ratio - 1.0) * 100
         harmonic = compatibility(m.effective_key, din.info.key) if din.info.key >= 0 else 1.0
         short = any(g in SHORT_BLEND_GENRES for g in (mo.genre, mi.genre))
+        learned = None
+        if self.learner is not None and force_bars is None:
+            from .learn import style_group
+            learned = self.learner.preferences(style_group(m.info.style, m.info.genre))
         plan = plan_transition(mo.structure, mi.structure, max_bars=force_bars or self.s.mix_bars,
                                harmonic=harmonic, tempo_gap_pct=gap,
                                out_marker_bar=mo.out_marker_bar, in_marker_bar=mi.in_marker_bar,
-                               genre_short=short and force_bars is None)
+                               genre_short=short and force_bars is None, learned=learned)
         start = plan.out_start_bar * 4.0
         if immediate or start <= now_beat + 1.0:
             # too late for the planned spot (or "transition now"): next bar line

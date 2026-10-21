@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import av
 import numpy as np
 
-from .beatgrid import BeatGrid, beat_activity, fit_grid
+from .beatgrid import BeatGrid, beat_activity, fit_grid, refine_downbeat
 from .engine import SR, TrackInfo
 
 
@@ -23,6 +23,7 @@ class LoadedTrack:
     mix_in: float | None = None  # user intro marker (seconds)
     mix_out: float | None = None # user outro marker (seconds)
     first_beat_t: float = 0.0    # first audible beat (seconds) -> default cue point
+    phrase_origin: int = 0       # bar (mod 8) where the track's phrases start
 
 
 def decode_stereo(path: str) -> np.ndarray:
@@ -74,10 +75,12 @@ def waveform_peaks(audio: np.ndarray, width: int = 2000) -> np.ndarray:
 def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
     audio = decode_stereo(path)
     grid = None
+    grid_ver, phrase_origin = 1, 0
     if db is not None and bpm > 0:
         cached = db.get_grid(path)
         if cached and cached[1] and abs(cached[1] - bpm) < 1e-3:
             grid = BeatGrid(bpm=bpm, first_beat=cached[0], duration=audio.shape[1] / SR)
+            grid_ver, phrase_origin = cached[2], cached[3]
     if grid is None:
         # analyse at most 4 minutes from the start for the grid: fast and the
         # phase does not drift with a fixed-tempo grid
@@ -102,8 +105,17 @@ def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
         except Exception:  # noqa: BLE001
             pass
     fine = waveform_bands(audio, hop=256)
+    if grid_ver < 2 and bpm > 0:
+        # correct "beat 1" from the track's section changes (once, then cached)
+        grid, phrase_origin, conf = refine_downbeat(fine, grid)
+        if db is not None:
+            try:
+                db.set_grid(path, grid.first_beat, bpm, version=2, phrase_origin=phrase_origin)
+            except Exception:  # noqa: BLE001
+                pass
     edges = np.linspace(0, fine.shape[0], min(2000, fine.shape[0]) + 1).astype(np.int64)
     over = np.maximum.reduceat(fine, edges[:-1], axis=0).astype(np.float32)
     _prof, first, _last = beat_activity(fine, grid)
     return LoadedTrack(audio=audio, grid=grid, peaks=over, info=info, bands=fine, cues=cues,
-                       mix_in=mix_in, mix_out=mix_out, first_beat_t=max(0.0, grid.time_of_beat(first)))
+                       mix_in=mix_in, mix_out=mix_out, first_beat_t=max(0.0, grid.time_of_beat(first)),
+                       phrase_origin=phrase_origin)

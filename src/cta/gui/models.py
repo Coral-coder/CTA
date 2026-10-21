@@ -56,7 +56,7 @@ def key_color(key: int) -> QColor | None:
 
 
 class LibraryModel(_DragMixin, QAbstractTableModel):
-    COLUMNS = ["Artist", "Title", "BPM", "Key", "Energy", "AI Genre", "Tag Genre", "Time", "Album"]
+    COLUMNS = ["Played", "Artist", "Title", "BPM", "Key", "Energy", "AI Genre", "Tag Genre", "Time", "Album"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -112,6 +112,8 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
             keys = lib.energy[rows]
         elif name == "Time":
             keys = lib.duration[rows]
+        elif name == "Played":
+            keys = lib.session_played[rows] * 1e12 + lib.last_played[rows]
         else:
             src = {"Artist": lib.artists, "Title": lib.titles, "AI Genre": lib.genres,
                    "Tag Genre": lib.tag_genres, "Album": lib.albums}[name]
@@ -163,6 +165,12 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
         lib = self.lib
         name = self.COLUMNS[index.column()]
         if role == Qt.DisplayRole:
+            if name == "Played":
+                if lib.session_played[i]:
+                    return "● now" if lib.play_count[i] <= 1 else f"● {lib.play_count[i]}×"
+                if lib.play_count[i]:
+                    return f"✓ {lib.play_count[i]}×"
+                return ""
             if name == "Artist":
                 return lib.artists[i]
             if name == "Title":
@@ -185,6 +193,10 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
                 return lib.albums[i]
         elif role == Qt.ForegroundRole and name == "Key":
             return key_color(int(lib.key[i]))
+        elif role == Qt.ForegroundRole and name == "Played":
+            return QColor(255, 120, 90) if lib.session_played[i] else QColor(120, 200, 130)
+        elif role == Qt.ForegroundRole and lib.session_played[i]:
+            return QColor(120, 122, 130)          # already played this session: dimmed
         elif role == Qt.TextAlignmentRole and name in ("BPM", "Energy", "Time"):
             return int(Qt.AlignRight | Qt.AlignVCenter)
         elif role == Qt.ToolTipRole:
@@ -192,6 +204,11 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
                 return "\n".join(f"{lab.replace('---', ' / ')}: {p:.0%}" for lab, p in lib.styles[i])
             if name in ("Title", "Artist"):
                 return lib.paths[i]
+            if name == "Played" and lib.play_count[i]:
+                import time as _t
+                when = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(lib.last_played[i]))
+                return (f"Played {lib.play_count[i]} time(s), last {when}"
+                        + ("\nAlready played in this session" if lib.session_played[i] else ""))
             if name == "BPM":
                 return f"detected {lib.bpm_detected[i]:.2f} (confidence {lib.bpm_conf[i]:.0%})" + (
                     f", tag {lib.tag_bpm[i]:.2f}" if lib.tag_bpm[i] else "")

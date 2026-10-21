@@ -92,6 +92,29 @@ into their own window.
     start of the bar you clicked and is saved with the track.
   - The IN and OUT flags appear on the waveform, and the shaded area after
     OUT shows the blend.
+- **Beat 1 is found from the music itself.** In dance music, phrase changes
+  (the kick drops out or comes back, a breakdown starts, a drop hits)
+  happen on the downbeat. CTA uses those moments to fix each track's beat
+  grid and phrase start, so tracks are blended bar-for-bar on the right
+  beat. This runs once per track and the result is saved. Grids you have
+  edited by hand are never touched.
+- **Trance and progressive** are recognised from the AI style and get
+  16-bar phrasing and long blends.
+- **Learns from your mixes:** every transition you do by hand is recorded:
+  where in each track's structure you mixed, how long the blend was, and
+  how far before the next track's drop you brought it in. After 3
+  examples for a style, auto-mix mixes that style your way. The auto-mix
+  panel shows how much it has learned and has a **Forget** button.
+- **Never the same song twice:** auto-mix and "auto-load best next track"
+  skip anything played this session, queued, loading or on a deck,
+  including other files of the same song.
+- **Played column** in the library: `● now` means played this session,
+  `✓ 3×` means played before. Hover to see the last time. Tracks already
+  played this session are dimmed.
+- **Scratching:** drag the scrolling waveform, or grab the spinning jog
+  platter. When you let go, the track carries on. On a paused deck,
+  dragging searches through the track. Double-click the waveform to jump
+  to that point.
 - **How auto-mix DJs:**
   - **It reads each track's structure.** Every 8-bar phrase is labelled
     intro, groove, build, drop, breakdown or outro, from the kick, bass,

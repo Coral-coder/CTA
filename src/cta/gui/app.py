@@ -48,6 +48,9 @@ def run_gui(db_path: str | None = None) -> int:
     app.setOrganizationName("CTA")
     app.setStyle("Fusion")
     _dark_palette(app)
+    from .theme import QSS
+
+    app.setStyleSheet(QSS)
     try:
         from importlib import resources
 

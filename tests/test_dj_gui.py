@@ -63,5 +63,17 @@ def test_dj_window(tmp_data_dir, monkeypatch):
         eng.render(512)
     assert eng.master_deck == "B"
     dj._tick()
+    # never the same song twice: decks, queue and loading items are all excluded
+    used = dj.played_indices()
+    assert {0, 1} <= used
+    dj.automix._loading.add("C")
+    dj.automix.queue.clear()
+    dj._keep_queue_filled()                   # must not queue anything while a load is running
+    assert len(dj.automix.queue) == 0
+    dj.automix._loading.clear()
+    # history marks tracks as played (library column)
+    w.track_played(0)
+    assert w.lib.session_played[0] and w.lib.play_count[0] >= 1
+    assert 0 in w.session_played()
     dj.shutdown()
     w.close()

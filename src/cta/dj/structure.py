@@ -78,7 +78,8 @@ def _bar_matrix(bands: np.ndarray, grid: BeatGrid, hop: int, sr: int):
     return feats
 
 
-def analyse(bands: np.ndarray | None, grid: BeatGrid | None, hop: int = 256, sr: int = 44100) -> Structure:
+def analyse(bands: np.ndarray | None, grid: BeatGrid | None, hop: int = 256, sr: int = 44100,
+            phrase_origin: int | None = None, phrase_bars: int = PHRASE_BARS) -> Structure:
     if bands is None or grid is None or grid.bpm <= 0:
         return Structure(0, np.zeros(0), np.zeros(0, bool), np.zeros(0))
     f = _bar_matrix(bands, grid, hop, sr)
@@ -104,8 +105,8 @@ def analyse(bands: np.ndarray | None, grid: BeatGrid | None, hop: int = 256, sr:
     last_beat_bar = int(beats[-1]) if beats.size else n - 1
 
     # phrase blocks aligned to the first beat bar (phrases count from there)
-    origin = first_beat_bar % PHRASE_BARS
-    edges = [0] + ([origin] if origin else []) + list(range(origin + PHRASE_BARS, n, PHRASE_BARS))
+    origin = (phrase_origin if phrase_origin is not None else first_beat_bar) % phrase_bars
+    edges = [0] + ([origin] if origin else []) + list(range(origin + phrase_bars, n, phrase_bars))
     edges = sorted(set(e for e in edges if e < n)) + [n]
 
     hi_e = np.percentile(energy[has_kick], 60) if has_kick.any() else np.percentile(energy, 60)
@@ -189,7 +190,7 @@ class Plan:
 def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_bars: int = 4,
                     harmonic: float = 1.0, tempo_gap_pct: float = 0.0,
                     out_marker_bar: float | None = None, in_marker_bar: float | None = None,
-                    genre_short: bool = False) -> Plan:
+                    genre_short: bool = False, learned: dict | None = None) -> Plan:
     """Decide how and where to go from the outgoing to the incoming track.
 
     harmonic: key compatibility 0..1; tempo_gap_pct: tempo change needed.
@@ -198,6 +199,22 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
     max_bars = max(1, int(max_bars))
     if genre_short:
         max_bars = min(max_bars, 8)
+
+    # ---- learned from the DJ's own transitions (markers still win)
+    if learned and out_marker_bar is None and in_marker_bar is None and harmonic >= 0.5 and tempo_gap_pct <= 8:
+        bars = int(min(max_bars, max(1, learned["bars"])))
+        drop_end = out_s.last_drop_end if out_s.last_drop_end is not None else out_s.last_beat_bar + 1
+        drop_in = in_s.first_drop_bar if in_s.first_drop_bar is not None else in_s.first_beat_bar
+        start = float(max(out_s.first_beat_bar + 4, np.round((drop_end + learned["out_offset"]) / 4) * 4))
+        in_start = float(max(0, np.round((drop_in - learned["in_lead"]) / 4) * 4))
+        loop = None
+        last_beat_end = out_s.last_beat_bar + 1
+        if start + bars > last_beat_end:                # would run out of beats: hold the groove
+            lb = 8 if last_beat_end - start >= 8 else 4
+            loop = (float(last_beat_end - lb), float(last_beat_end))
+        swap = float(min(bars, max(1.0, drop_in - in_start))) if drop_in > in_start else float(max(1, bars // 2))
+        return Plan("loop_blend" if loop else "blend", start, in_start, bars, swap_bar=swap, loop=loop,
+                    reason="your style (learned from your mixes)")
 
     # ---- incoming: where to start, and how long until its first drop
     if in_marker_bar is not None:

@@ -94,6 +94,7 @@ class TrackInfo:
     loudness: float = -12.0
     lib_index: int = -1
     genre: str = ""
+    style: str = ""          # AI style, e.g. "Progressive Trance"
 
 
 @dataclass
@@ -135,6 +136,7 @@ class Deck:
     mix_in: float | None = None              # intro marker (source frames)
     mix_out: float | None = None             # outro marker (source frames)
     bands: object = None                     # waveform bands (frames, 3) for analysis/drawing
+    phrase_origin: int = 0                   # bar (mod 8) where phrases start
     _filter: object = None
     _pitch: float = 1.0
     _rb: object = None
@@ -291,6 +293,7 @@ class Engine:
             e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
                     mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
                     bands=getattr(lt, "bands", None))
+            e.decks[deck].phrase_origin = getattr(lt, "phrase_origin", 0)
             if getattr(lt, "cues", None):
                 e.decks[deck].hotcues = (list(lt.cues) + [None] * 8)[:8]
         self.cmd(f)

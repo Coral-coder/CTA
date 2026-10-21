@@ -142,3 +142,71 @@ def beat_activity(bands: np.ndarray | None, grid: BeatGrid, hop: int = 256, sr: 
     first = int(on[0]) if on.size else 0
     last = int(on[-1]) if on.size else n_beats - 1
     return prof, first, last
+
+
+def refine_downbeat(bands: np.ndarray | None, grid: BeatGrid, hop: int = 256, sr: int = 44100,
+                    min_votes: int = 2) -> tuple[BeatGrid, int, float]:
+    """Fix which beat is "beat 1" using the music's own structure.
+
+    In dance music the kick drops out / comes back, breakdowns start and
+    drops hit on the downbeat of a phrase. Every such change point votes for
+    its beat position modulo 4 (the downbeat) - far more reliable than kick
+    loudness, which is identical on all four beats of a 4/4 groove.
+
+    Returns (grid with corrected first_beat, phrase origin in bars modulo 8,
+    confidence 0..1).
+    """
+    if bands is None or grid is None or grid.bpm <= 0:
+        return grid, 0, 0.0
+    fps = sr / hop
+    n_beats = int((grid.duration - grid.first_beat) / grid.beat_len)
+    if n_beats < 64:
+        return grid, 0, 0.0
+    t = grid.first_beat + np.arange(n_beats) * grid.beat_len
+    idx = np.clip(np.round(t * fps).astype(np.int64), 0, bands.shape[0] - 1)
+    w = max(1, int(0.035 * fps))
+    half = np.clip(np.round((t + grid.beat_len / 2) * fps).astype(np.int64), 0, bands.shape[0] - 1)
+    kick = np.array([bands[max(0, i - w):i + w + 1, 0].max() - bands[max(0, j - w):j + w + 1, 0].mean()
+                     for i, j in zip(idx, half)])
+    energy = np.array([np.sqrt((bands[i:i + max(1, int(grid.beat_len * fps))] ** 2).mean()) for i in idx])
+    bl = max(1, int(grid.beat_len * fps))
+    low_e = np.array([np.sqrt((bands[i:i + bl, 0] ** 2).mean()) for i in idx])
+    votes = np.zeros(4)
+    phrase_votes = np.zeros(8)
+    eps = 1e-4
+    best_steps = []
+    for e in (energy, low_e, np.maximum(kick, 0)):
+        le = np.log(e + eps)
+        step = np.abs(np.diff(le, prepend=le[0]))            # change from beat b-1 to beat b
+        for bb in range(4, n_beats - 4):
+            before = le[bb - 4:bb].mean()
+            after = le[bb:bb + 4].mean()
+            if abs(after - before) < np.log(1.35):
+                continue
+            if step[bb] < step[max(0, bb - 2):bb + 3].max() - 1e-12:
+                continue                                       # not the sharpest beat of this change
+            best_steps.append((bb, float(abs(after - before))))
+    for bb, wgt in best_steps:
+        votes[bb % 4] += wgt
+    total = votes.sum()
+    if total < min_votes * 0.4:
+        return grid, 0, 0.0
+    best = int(np.argmax(votes))
+    conf = float(votes[best] / total)
+    if conf < 0.45 or best == 0:
+        g = grid
+    else:
+        g = BeatGrid(bpm=grid.bpm, first_beat=grid.first_beat + best * grid.beat_len, duration=grid.duration)
+        while g.first_beat - 4 * g.beat_len >= -g.beat_len * 0.25:
+            g.first_beat -= 4 * g.beat_len
+    # phrase origin (bars mod 8) relative to the corrected grid: section
+    # changes also land on the first bar of a phrase
+    shift_bars = 0
+    if best_steps and conf >= 0.45:
+        for bb, wgt in best_steps:
+            if bb % 4 == best:
+                t_change = grid.first_beat + bb * grid.beat_len
+                bar = int(round((t_change - g.first_beat) / (4 * g.beat_len)))
+                phrase_votes[bar % 8] += wgt
+        shift_bars = int(np.argmax(phrase_votes))
+    return g, shift_bars, conf
