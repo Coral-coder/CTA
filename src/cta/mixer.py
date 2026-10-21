@@ -120,11 +120,15 @@ def suggest_next(lib: Library, a: int, s: MixSettings, n: int = 50,
         return []
     sc = score_from(lib, a, s)
     total = np.where(sc.valid, sc.total, -np.inf)
+    banned = np.zeros(lib.n, bool)
+    banned[a] = True
     if exclude:
-        total[list(exclude)] = -np.inf
+        ex = [int(i) for i in exclude if 0 <= int(i) < lib.n]
+        banned[ex] = True
+    total[banned] = -np.inf
     if not np.isfinite(total).any():
         # nothing inside the hard limits: fall back to the best overall matches
-        total = np.where(np.arange(lib.n) == a, -np.inf, sc.total)
+        total = np.where(banned, -np.inf, sc.total)
     k = min(n, lib.n)
     idx = np.argpartition(-total, k - 1)[:k]
     idx = idx[np.argsort(-total[idx])]

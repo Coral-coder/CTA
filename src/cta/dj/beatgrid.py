@@ -1,0 +1,119 @@
+"""Beat grid: tempo + the position of the first beat (and the bar phase).
+
+The library stores the BPM; for beat/phase matching the engine also needs
+*where* the beats fall. The grid is fitted on the decoded audio when a track
+is loaded onto a deck (~0.1 s) and cached in the database.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+from .. import dsp
+
+# window length minus hop of the onset STFT (1024-256 @ 22050 Hz); verified by
+# tests on synthetic click tracks to within ~1 ms
+ONSET_LEAD = (1024 - 256) / 22050
+
+
+@dataclass
+class BeatGrid:
+    bpm: float
+    first_beat: float          # seconds of a beat that starts a bar (downbeat)
+    duration: float
+
+    @property
+    def beat_len(self) -> float:
+        return 60.0 / self.bpm if self.bpm > 0 else 0.5
+
+    def beat_at(self, t: float) -> float:
+        """Fractional beat index at time t (beat 0 = first_beat, a downbeat)."""
+        return (t - self.first_beat) / self.beat_len
+
+    def time_of_beat(self, beat: float) -> float:
+        return self.first_beat + beat * self.beat_len
+
+    def phase(self, t: float) -> float:
+        """Position inside the current beat, 0..1."""
+        return self.beat_at(t) % 1.0
+
+    @property
+    def n_beats(self) -> int:
+        return int(max(0.0, (self.duration - self.first_beat)) / self.beat_len)
+
+
+def fit_grid(y: np.ndarray, sr: int, bpm: float) -> BeatGrid:
+    """Find the beat phase (and the downbeat) for a known tempo.
+
+    y: mono float32 audio at ``sr``.
+    """
+    dur = y.size / sr
+    if bpm <= 0 or y.size < sr * 2:
+        return BeatGrid(bpm=bpm if bpm > 0 else 120.0, first_beat=0.0, duration=dur)
+    if sr != dsp.SR:
+        # cheap decimation is fine for an onset envelope
+        idx = np.arange(0, y.size, sr / dsp.SR).astype(np.int64)
+        y = y[idx[idx < y.size]]
+    full = dsp.onset_envelope(y)
+    low = _low_band_envelope(y)
+    m = min(full.size, low.size)
+    # beats are where the kick (and snare) hit; off-beat hats must not win
+    env = 2.0 * low[:m] + 0.5 * full[:m]
+    fps = dsp.TEMPO_FPS
+    period = 60.0 * fps / bpm
+
+    # 1) beat phase: comb over the whole track, sub-frame resolution
+    phases = np.linspace(0, period, 96, endpoint=False)
+    n = int((env.size - 2) / period) - 1
+    if n < 4:
+        return BeatGrid(bpm=bpm, first_beat=0.0, duration=dur)
+    k = np.arange(n) * period
+    strength = np.empty(phases.size)
+    for i, ph in enumerate(phases):
+        pos = ph + k
+        i0 = np.floor(pos).astype(int)
+        frac = pos - i0
+        strength[i] = np.mean(env[i0] * (1 - frac) + env[i0 + 1] * frac)
+    best = phases[int(np.argmax(strength))]
+    # STFT frames are left-aligned windows: an onset first shows up when it
+    # enters the window, i.e. ONSET_LEAD seconds before it actually sounds
+    beat0 = best / fps + ONSET_LEAD
+
+    # 2) downbeat: which of the 4 beats in a bar carries the most low-end
+    # (kick) energy at bar level -> beat 1
+    bar_scores = np.zeros(4)
+    nb = int((env.size / fps - beat0) / (60.0 / bpm))
+    for b in range(nb):
+        t = beat0 + b * 60.0 / bpm
+        f = int(round(t * fps))
+        if 0 <= f < low.size:
+            bar_scores[b % 4] += low[max(0, f - 1):f + 2].max()
+    down = int(np.argmax(bar_scores)) if bar_scores.max() > 0 else 0
+    first = beat0 + down * 60.0 / bpm
+    beat = 60.0 / bpm
+    while first - 4 * beat >= -beat * 0.25:   # earliest downbeat in the track
+        first -= 4 * beat
+    return BeatGrid(bpm=bpm, first_beat=float(first), duration=dur)
+
+
+def _low_band_envelope(y: np.ndarray) -> np.ndarray:
+    mag = dsp._stft_mag(y, 1024, dsp.TEMPO_HOP)
+    freqs = np.arange(mag.shape[1]) * dsp.SR / 1024
+    low = np.log1p(100 * mag[:, (freqs > 30) & (freqs < 150)].sum(axis=1))
+    d = np.maximum(0.0, np.diff(low, prepend=low[:1]))
+    return d / (d.max() + 1e-9)
+
+
+def energy_profile(y: np.ndarray, sr: int, grid: BeatGrid) -> np.ndarray:
+    """RMS energy per bar (4 beats), used to find intros/outros."""
+    bar = grid.beat_len * 4
+    n = max(1, int((y.size / sr - max(grid.first_beat, 0)) / bar))
+    out = np.zeros(n)
+    for i in range(n):
+        s = int((grid.first_beat + i * bar) * sr)
+        e = int((grid.first_beat + (i + 1) * bar) * sr)
+        seg = y[max(0, s):max(0, e)]
+        out[i] = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if seg.size else 0.0
+    return out

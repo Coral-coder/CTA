@@ -220,6 +220,29 @@ def cmd_selftest(args):
         if len(seq) != 3:
             print("FAIL: setlist length")
             ok = False
+    # DJ engine: key-locked time-stretch, EQ filters, audio + MIDI libraries
+    try:
+        from .dj.beatgrid import BeatGrid
+        from .dj.engine import SR as DSR
+        from .dj.engine import Engine, TrackInfo
+
+        eng = Engine()
+        tone = (0.4 * np.sin(2 * np.pi * 440 * np.arange(DSR * 6) / DSR)).astype(np.float32)
+        eng.load("A", np.stack([tone, tone]), BeatGrid(120.0, 0.0, 6.0), TrackInfo(loudness=-10))
+        eng.set("A", keylock=True, tempo=1.0, tempo_range=0.08, eq=(0.5, 1.0, 1.0))
+        eng.set_playing("A", True)
+        out = np.concatenate([eng.render(512)[0] for _ in range(int(3 * DSR / 512))], axis=1)[0, DSR:]
+        f = np.fft.rfftfreq(out.size, 1 / DSR)[np.argmax(np.abs(np.fft.rfft(out * np.hanning(out.size))))]
+        print(f"dj engine: key lock at +8% -> {f:.1f} Hz (expect 440)")
+        if abs(f - 440) > 3:
+            print("FAIL: key lock")
+            ok = False
+        import rtmidi  # noqa: F401
+        import sounddevice  # noqa: F401
+        print("audio/MIDI libraries: OK")
+    except Exception as e:  # noqa: BLE001
+        print(f"FAIL: DJ engine: {e}")
+        ok = False
     _ = dsp  # imported to verify packaging
     print("SELFTEST " + ("PASSED" if ok else "FAILED"))
     return 0 if ok else 1

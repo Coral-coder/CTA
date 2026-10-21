@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 """
 
+# columns added after the first release (applied on start-up)
+MIGRATIONS = [
+    ("first_beat", "REAL"),       # beat grid: seconds of the first downbeat
+    ("grid_bpm", "REAL"),         # tempo the grid was fitted for
+]
+
 TRACK_FIELDS = [
     "path", "mtime", "size", "title", "artist", "album", "tag_genre", "tag_bpm", "tag_key",
     "duration", "bpm", "bpm_conf", "key", "key_conf", "loudness", "centroid", "onset_rate",
@@ -74,6 +80,10 @@ class Database:
         self._local = threading.local()
         c = self.conn()
         c.executescript(SCHEMA)
+        cols = {r[1] for r in c.execute("PRAGMA table_info(tracks)")}
+        for col, decl in MIGRATIONS:
+            if col not in cols:
+                c.execute(f"ALTER TABLE tracks ADD COLUMN {col} {decl}")
         c.commit()
 
     def conn(self) -> sqlite3.Connection:
@@ -142,6 +152,15 @@ class Database:
                 c.execute("UPDATE tracks SET bpm_override=? WHERE id=?", (bpm, track_id))
             if key is not None or clear_key:
                 c.execute("UPDATE tracks SET key_override=? WHERE id=?", (key, track_id))
+
+    def get_grid(self, path: str) -> tuple[float, float] | None:
+        r = self.conn().execute("SELECT first_beat, grid_bpm FROM tracks WHERE path=?", (path,)).fetchone()
+        return (r[0], r[1]) if r and r[0] is not None else None
+
+    def set_grid(self, path: str, first_beat: float, bpm: float):
+        c = self.conn()
+        with c:
+            c.execute("UPDATE tracks SET first_beat=?, grid_bpm=? WHERE path=?", (first_beat, bpm, path))
 
     def purge_missing(self) -> int:
         c = self.conn()

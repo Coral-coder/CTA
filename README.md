@@ -57,6 +57,55 @@ The AI model is bundled, so nothing needs to be installed.
 Right-click a track to double or halve its BPM, or to set the key by hand.
 Your corrections are kept across re-scans.
 
+## DJ Mode (Ctrl+D)
+
+DJ Mode is a full 4-deck DJ engine built into CTA.
+
+- **Key lock**: change the tempo without changing the key. It uses Rubber
+  Band R3 real-time time-stretching, the same library Mixxx uses, at about
+  3% of one CPU core per deck. Turn key lock off for vinyl-style pitch.
+- **Beatmatching and phase matching**: every track gets a beat grid (the
+  tempo plus where beat 1 falls), fitted when it loads and then cached.
+  **SYNC** matches the tempo, including half/double time, and keeps the
+  beats phase-locked to the master. The phase meter shows how close they
+  are. Pressing play on a synced deck starts it exactly on the beat.
+- **Auto-mix** plays your setlist, or picks the best next track itself, as a
+  continuous mix:
+  - The mix-out point is chosen from each track's energy profile and
+    aligned to an 8-bar phrase.
+  - The next track starts on its first downbeat, tempo-synced and
+    phase-locked.
+  - The blend is an equal-power fade with a bass swap halfway, so two
+    basslines never play at full level together.
+  - Afterwards the tempo glides to the new track's own BPM. Key lock keeps
+    the pitch the same, so a set can move from 122 to 128 BPM without a
+    jump.
+- **Assist mode**, for when you want to DJ yourself:
+  - SYNC and key lock.
+  - Quantised play and cue.
+  - **Auto transition now**: CTA performs the blend into the other deck
+    from the next bar.
+  - The best next track is loaded automatically when a deck is empty.
+  - Touching a fader, EQ or the crossfader during an automatic blend hands
+    control straight back to you.
+- **Pioneer DDJ-T1**:
+  - Plug it in and CTA finds both its MIDI ports and its 4-channel sound
+    card: master on outputs 1-2, headphones on 3-4, with headphone cue and
+    a cue/master mix.
+  - A basic map (play, cue, jog, tempo, load, browse) works straight away.
+    **Controller setup…** then walks you through every control once ("move
+    the deck A tempo fader…"), so the mapping matches your unit exactly. It
+    is saved, and LEDs follow the deck state.
+  - Jog wheel: touch the top to scratch, turn the outer ring to nudge, or
+    search when paused.
+  - Any other MIDI controller can be mapped with the same wizard.
+- Loops (1–32 beats), cue points snapped to beats, 3-band kill EQ with
+  Linkwitz-Riley crossovers, trim, and auto-gain from each track's measured
+  loudness.
+
+Audio dropouts? Open **Audio…** and raise the buffer. 512 samples
+(~12 ms) suits most PCs.
+
 ## Should AI be used? (16 GB GPU)
 
 AI is used where it beats classic signal processing:
@@ -135,6 +184,7 @@ same folder.
 
 ## Licences
 
-CTA's code is yours. The bundled Discogs-EffNet model is licensed
-**CC BY-NC-SA 4.0** (non-commercial use) by MTG/UPF. See
+The bundled Discogs-EffNet model is licensed **CC BY-NC-SA 4.0**
+(non-commercial use) by MTG/UPF. DJ Mode's key lock uses **Rubber Band
+(GPL v2+)**, so the distributed builds are GPL-licensed. See
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

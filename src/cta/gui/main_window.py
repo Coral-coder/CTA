@@ -239,9 +239,12 @@ class MainWindow(QMainWindow):
         self.act_stop.triggered.connect(self.stop_scan)
         self.act_settings = QAction("Settings…", self)
         self.act_settings.triggered.connect(self.open_settings)
+        self.act_dj = QAction("🎧 DJ Mode", self)
+        self.act_dj.setShortcut(QKeySequence("Ctrl+D"))
+        self.act_dj.triggered.connect(self.open_dj)
         self.act_update = QAction("Check for Updates", self)
         self.act_update.triggered.connect(lambda: self.updates.check(manual=True))
-        for a in (self.act_add, self.act_scan, self.act_stop):
+        for a in (self.act_add, self.act_scan, self.act_stop, self.act_dj):
             tb.addAction(a)
         tb.addSeparator()
 
@@ -721,6 +724,9 @@ class MainWindow(QMainWindow):
         m.addAction("Build setlist from this track", lambda: (self.focus_track(i), self.generate_setlist()))
         m.addAction("Add to end of setlist", lambda: self._append(i))
         m.addSeparator()
+        for deck in "AB":
+            m.addAction(f"Load to Deck {deck}", lambda deck=deck: self.load_to_deck(deck, i))
+        m.addSeparator()
         m.addAction("Play", lambda: self.play(i))
         m.addAction("Show in folder", lambda: self.reveal(i))
         m.addSeparator()
@@ -808,6 +814,37 @@ class MainWindow(QMainWindow):
         self._refresh_setlist()
 
     # -------------------------------------------------------------- files --
+    # ---------------------------------------------------------------- DJ --
+    def open_dj(self):
+        if self.lib is None:
+            return
+        try:
+            from .dj_window import DJWindow
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
+            return
+        if getattr(self, "dj", None) is None:
+            self.dj = DJWindow(self)
+            self.dj.destroyed.connect(lambda: setattr(self, "dj", None))
+        self.dj.show()
+        self.dj.raise_()
+        self.dj.activateWindow()
+
+    def load_to_deck(self, deck: str, i: int):
+        self.open_dj()
+        if getattr(self, "dj", None) is not None:
+            self.dj.load_index(deck, i)
+
+    def browse_library(self, delta: int):
+        """Move the library selection (controller browse knob)."""
+        n = self.lib_model.rowCount()
+        if n == 0:
+            return
+        r = self.lib_view.currentIndex().row()
+        r = max(0, min(n - 1, (r if r >= 0 else 0) + int(delta)))
+        self.lib_view.selectRow(r)
+        self.lib_view.scrollTo(self.lib_model.index(r, 0))
+
     def play(self, i):
         if self.lib is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.lib.paths[i]))
@@ -898,6 +935,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, ev):
         self.settings.setValue("geometry", self.saveGeometry())
+        if getattr(self, "dj", None) is not None:
+            self.dj.close()
         if self._scan_worker is not None:
             self._scan_worker.scanner.stop()
         if self._scan_thread is not None:
