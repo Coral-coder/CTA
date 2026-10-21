@@ -11,6 +11,10 @@ on:
         description: "Publish a GitHub release (tag v<version>) from this commit"
         type: boolean
         default: false
+      windows_only:
+        description: "Skip macOS (e.g. when macOS runners are unavailable)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(inputs.windows_only && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest","windows-latest","macos-latest"]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,11 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            target: windows-x64
-          - os: macos-latest
-            target: macos-arm64
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-latest","target":"windows-x64"}]' || '[{"os":"windows-latest","target":"windows-x64"},{"os":"macos-latest","target":"macos-arm64"}]') }}
     steps:
       - uses: actions/checkout@v4
 
