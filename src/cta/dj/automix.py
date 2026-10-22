@@ -156,7 +156,16 @@ class AutoMix:
                 self._load_next(first, autoplay=True)
         self._fill_free_deck()
 
-    def stop(self):
+    def stop(self, settle: bool = False):
+        """settle: a blend in progress is completed at once (the incoming
+        track carries on alone) instead of leaving both tracks playing."""
+        tr = self.tr
+        if settle and tr is not None and tr.started:
+            def f(e):
+                self._finish(e, tr, 0.0)
+                self.glide = None
+                self.status = "Auto-mix off"
+            self.eng.cmd(f)
         self.active = False
         self.tr = None
         self.glide = None

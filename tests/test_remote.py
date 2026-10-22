@@ -201,11 +201,12 @@ def _png(w=600, h=600) -> bytes:
 
 def test_album_art_embedded_and_folder(tmp_data_dir):
     from mutagen.flac import FLAC, Picture
-    from PySide6.QtGui import QGuiApplication, QImage
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
 
     from cta.art import get_art
 
-    QGuiApplication.instance() or QGuiApplication([])
+    QApplication.instance() or QApplication([])      # a full QApplication: later GUI tests need one
     d1 = tmp_data_dir / "album1"
     d1.mkdir()
     f1 = str(d1 / "a.flac")
@@ -246,3 +247,60 @@ def test_start_at_login_linux(tmp_path, monkeypatch):
     assert "--background" in txt and "Exec=" in txt
     autostart.set_enabled(False)
     assert not autostart.is_enabled()
+
+
+def test_one_broken_deck_never_silences_the_mix():
+    eng = Engine()
+    y = synth_track(126.0, 20)
+    a = np.stack([y, y])
+    for n in "AB":
+        eng.load(n, a, fit_grid(y, SR, 126.0), TrackInfo(title=n, bpm=126.0, loudness=-10))
+        eng.set_playing(n, True, quantize=False)
+    real = eng._render_deck
+
+    def broken(d, n):
+        if d.name == "B":
+            raise RuntimeError("decoder blew up")
+        return real(d, n)
+    eng._render_deck = broken
+    for _ in range(10):
+        m, _ = eng.render(1024)
+    assert eng.decks["A"].playing and not eng.decks["B"].playing
+    assert float(np.abs(m).max()) > 0.01                 # A still on air
+    assert eng.deck_errors and "Deck B stopped" in eng.deck_errors[0]
+
+
+def test_automix_off_mid_blend_settles_on_one_track():
+    tracks = _tracks(2)
+    eng = Engine()
+    am = AutoMix(eng, lambda i: tracks[i], AutoMixSettings(mix_bars=16), synchronous_loads=True)
+    am.set_queue([0, 1])
+    am.start()
+    _run(eng, 0.5)
+    am.skip("mix")
+    assert _run(eng, 10, lambda: am.tr is not None and am.tr.started)
+    am.stop(settle=True)
+    _run(eng, 0.2)
+    playing = [d for d in eng.decks.values() if d.playing]
+    assert [d.info.title for d in playing] == ["t1"] and playing[0].volume == 1.0
+    assert not am.active
+
+
+def test_crash_log_detects_an_unclean_exit(tmp_data_dir):
+    import faulthandler
+
+    from cta.gui import app as A
+
+    f, crashed = A._crash_log()
+    assert f is not None and not crashed
+    faulthandler.disable()
+    f.close()                                   # "killed": no clean-exit mark
+    f, crashed = A._crash_log()
+    assert crashed
+    f.write(A.CRASH_MARK + "\n")
+    faulthandler.disable()
+    f.close()
+    f, crashed = A._crash_log()
+    assert not crashed
+    faulthandler.disable()
+    f.close()

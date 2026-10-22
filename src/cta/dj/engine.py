@@ -234,6 +234,9 @@ class Engine:
         self.quantize = True
         self.taps: list = []           # extra consumers of the master (live stream)
         self.recorder = None
+        self.callback_errors = 0       # audio callback failures (watchdog/diagnostics)
+        self.deck_errors: list[str] = []   # decks stopped because they failed to render (for the UI)
+        self._errors_seen: set[str] = set()
         self.paused = False            # master pause (remote / server): fade out, then stop the decks
         self._pause_gain = 1.0
         self._pause_applied = False
@@ -849,7 +852,13 @@ class Engine:
         master = np.zeros((2, n), np.float32)
         cue = np.zeros((2, n), np.float32)
         for d in self.decks.values():
-            y = self._render_deck(d, n)
+            try:
+                y = self._render_deck(d, n)
+            except Exception as ex:  # noqa: BLE001 - one bad deck must never silence the mix
+                log.exception("deck %s failed to render %s - stopping it", d.name, d.info.path)
+                d.playing = False
+                self.deck_errors.append(f"Deck {d.name} stopped: {type(ex).__name__}: {ex}")
+                y = None
             if y is None:
                 d.level *= 0.85
                 continue
@@ -897,11 +906,13 @@ class Engine:
             if self.phones_chans is not None:
                 outdata[:, self.phones_chans[0]] = phones[0]
                 outdata[:, self.phones_chans[1]] = phones[1]
-        except Exception:  # noqa: BLE001
+        except Exception as ex:  # noqa: BLE001
             outdata.fill(0)
-            if not self._error_logged:
-                log.exception("audio callback error")
-                self._error_logged = True
+            self.callback_errors += 1
+            key = f"{type(ex).__name__}: {ex}"
+            if key not in self._errors_seen and len(self._errors_seen) < 50:
+                self._errors_seen.add(key)
+                log.exception("audio callback error (#%d)", self.callback_errors)
 
     def start(self, device=None, block: int | None = None, master_chans=(0, 1), phones_chans=None):
         """Open the output; falls back to safer settings rather than failing."""
@@ -965,7 +976,7 @@ class Engine:
     def stop(self):
         if self._stream is not None:
             try:
-                self._stream.stop()
+                self._stream.abort()          # never waits on a hung device
                 self._stream.close()
             except Exception:  # noqa: BLE001
                 pass

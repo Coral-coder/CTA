@@ -85,6 +85,38 @@ def _listen_for_instances(name: str, on_message):
     return srv
 
 
+CRASH_MARK = "--- clean exit"
+
+
+def _crash_log():
+    """Native crashes (audio driver, Qt) kill the process without a Python
+    traceback: faulthandler writes one to crash.log. Returns (file, the
+    previous session crashed)."""
+    import faulthandler
+
+    from .. import __version__, paths
+
+    fn = os.path.join(paths.data_dir(), "crash.log")
+    crashed = False
+    try:
+        if os.path.exists(fn):
+            with open(fn, "rb") as fh:
+                fh.seek(max(0, os.path.getsize(fn) - 4096))
+                tail = fh.read().decode("utf-8", "replace").strip().splitlines()
+            crashed = bool(tail) and not tail[-1].startswith(CRASH_MARK)
+            if os.path.getsize(fn) > 2_000_000:
+                os.replace(fn, fn + ".old")
+        f = open(fn, "a", encoding="utf-8")  # noqa: SIM115 - kept open for faulthandler
+        import time
+
+        f.write(f"\n--- CTA {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
+        f.flush()
+        faulthandler.enable(file=f, all_threads=True)
+        return f, crashed
+    except OSError:
+        return None, crashed
+
+
 def run_gui(db_path: str | None = None, background: bool = False) -> int:
     from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -122,11 +154,25 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
 
     sys.excepthook = excepthook
 
+    def thread_hook(a):
+        # worker threads (loaders, phone remote): windowed builds have no stderr
+        log.error("unhandled exception in thread %s", getattr(a.thread, "name", "?"),
+                  exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+
+    import threading
+
+    threading.excepthook = thread_hook
+
     name = _instance_name()
     if not os.environ.get("CTA_SMOKE_EXIT_MS") and \
             _signal_running_instance(name, "background" if background else "show"):
         log.info("CTA is already running - asked it to show itself")
         return 0
+
+    crash_file, crashed = _crash_log()
+    if crashed:
+        log.warning("the previous CTA session ended without closing cleanly - details (if any) in %s",
+                    os.path.join(paths.data_dir(), "crash.log"))
 
     db = Database(db_path or paths.db_path())
     w = MainWindow(db)
@@ -156,4 +202,18 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(int(smoke), lambda: (print("GUI SMOKE OK", flush=True), w.quit_app(), app.quit()))
-    return app.exec()
+    if crashed:
+        QTimer.singleShot(1500, lambda: w.status_label.setText(
+            "CTA did not close cleanly last time - crash details were saved to crash.log in the data folder"))
+    rc = app.exec()
+    if crash_file is not None:
+        try:
+            import faulthandler
+            import time
+
+            faulthandler.disable()
+            crash_file.write(f"{CRASH_MARK} {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            crash_file.close()
+        except OSError:
+            pass
+    return rc

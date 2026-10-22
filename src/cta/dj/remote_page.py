@@ -49,6 +49,7 @@ input{font:inherit;color:var(--fg);background:var(--card2);border:1px solid #333
 #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#2c2f38;padding:10px 16px;border-radius:12px;
 display:none;z-index:10;max-width:90%;box-shadow:0 6px 24px #0008}
 .hint{font-size:12px;color:var(--mut);margin-top:6px}
+#alert{display:none;background:#5a1620;color:#ffd9de;border-radius:12px;padding:10px 12px;margin-bottom:10px;font-weight:600}
 </style></head><body>
 <div id="gate"><div class="card"><div style="font-size:42px">🎧</div><h3>Connect to CTA</h3>
 <p class="mut">Enter the PIN shown in CTA on your computer (DJ decks → 📱 Phone remote).</p>
@@ -57,6 +58,7 @@ display:none;z-index:10;max-width:90%;box-shadow:0 6px 24px #0008}
 <p id="gerr" class="small" style="color:var(--bad)"></p></div></div>
 <div id="toast"></div>
 
+<div id="alert"></div>
 <div id="top"><span class="logo">CTA</span><span class="mut small grow ell" id="conn">connecting…</span>
 <button id="listen" onclick="listen()">🔈 Listen</button></div>
 
@@ -345,14 +347,28 @@ function listen() {
 }
 
 // ---- loop ----------------------------------------------------------------------------------------------
+let frames = null, framesT = 0;
+function alertMsg(m) { const a = $('alert'); a.style.display = m ? 'block' : 'none'; a.textContent = m || ''; }
 async function poll() {
-  try { S = await api('/api/state'); lastT = performance.now(); gate(false); render(); }
-  catch (e) { if (e.message !== 'auth') $('conn').textContent = 'reconnecting…'; }
+  try {
+    S = await api('/api/state'); lastT = performance.now(); gate(false);
+    // the PC answers but its audio is not moving: say so instead of pretending
+    if (S.frames !== frames) { frames = S.frames; framesT = lastT; }
+    const playing = !S.paused && S.decks.some(d => d.playing);
+    alertMsg(playing && lastT - framesT > 3500 ? '⚠ The mix has stopped on the PC (audio device not responding). CTA is trying to reconnect it…' : '');
+    render();
+  } catch (e) {
+    if (e.message === 'auth') return;
+    $('conn').textContent = 'reconnecting…';
+    if (performance.now() - lastT > 4000) alertMsg('⚠ Lost connection to CTA - is the PC on, awake and on this Wi-Fi?');
+  }
 }
 let prev = performance.now();
 function frame(now) {
-  const dt = (now - prev) / 1000; prev = now;
+  let dt = (now - prev) / 1000; prev = now;
+  const live = S && now - lastT < 4000 && $('alert').style.display !== 'block';   // never animate stale state
   if (S) {
+    if (!live) dt = 0;
     for (const d of S.decks) if (d.playing && !S.paused) d.time = Math.min(d.duration, d.time + dt * (d.rate || 1));
     spin(S.paused ? 0 : dt); drawGear();
     const m = S.decks.find(d => d.master) || S.decks.find(d => d.playing);

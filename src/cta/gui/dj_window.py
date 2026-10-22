@@ -1521,7 +1521,7 @@ class DJPanel(QWidget):
         self.decks["D"].setVisible(on)
 
     # ---- audio ---------------------------------------------------------------
-    def start_audio(self):
+    def start_audio(self, quiet: bool = False):
         s = self.settings
         name = s.value("dj_device_name", "")
         dev = None
@@ -1549,7 +1549,7 @@ class DJPanel(QWidget):
             # keep the mix running for the phone stream / recording
             self.engine.start_virtual()
             self.audio_lbl.setText("Audio: no output device (phone stream only) - click Audio…")
-            if self.main.isVisible():
+            if self.main.isVisible() and not quiet:
                 self._error.emit(f"Could not open the audio device:\n{e}\n\n"
                                  "The mix still runs for the phone remote and recordings.")
 
@@ -1906,7 +1906,29 @@ class DJPanel(QWidget):
                 self._logged[n] = (d.info.path, -1.0)
 
     # ---- refresh -------------------------------------------------------------------------
+    def _watchdog(self):
+        """The sound card stopped asking for audio (device lost, driver
+        hiccup, sleep): reopen it. The decks keep their place."""
+        eng = self.engine
+        now = time.monotonic()
+        while eng.deck_errors:
+            msg = eng.deck_errors.pop(0)
+            self.main.status_label.setText(msg + " - see the log")
+        if not eng.running or eng.virtual:
+            self._wd = (eng.frames_rendered, now)
+            return
+        fr, t = getattr(self, "_wd", (-1, now))
+        if eng.frames_rendered != fr:
+            self._wd = (eng.frames_rendered, now)
+        elif now - t > 3.0:
+            log.warning("audio output stalled for %.1f s (frames %d, underruns %d, callback errors %d) "
+                        "- reopening the audio device", now - t, fr, eng.underruns, eng.callback_errors)
+            self._wd = (fr, now)
+            self.start_audio(quiet=True)
+            self.main.status_label.setText("Audio device stopped responding - reconnected")
+
     def _tick(self):
+        self._watchdog()
         show_cd = self.show_cd.isChecked()
         for p in self.decks.values():
             if p.isVisible():

@@ -129,6 +129,7 @@ class RemoteBackend:
         return {
             "automix": {"active": am.active, "status": am.status, "blend_bars": int(am.s.mix_bars)},
             "paused": bool(e.paused),
+            "frames": int(e.frames_rendered),
             "crossfader": float(e.crossfader),
             "decks": decks,
             "transition": trans,
@@ -204,6 +205,10 @@ class RemoteBackend:
     def _anything_playing(self) -> bool:
         return any(d.playing for d in self.eng.decks.values()) or self.eng.paused
 
+    def _starting(self) -> bool:
+        """Auto-mix is loading the first track: do not start it again."""
+        return self.am.active and bool(self.am._loading) and not self._anything_playing()
+
     def _ensure_automix(self):
         if not self.am.active:
             self.am.start()
@@ -229,6 +234,8 @@ class RemoteBackend:
         return {}
 
     def _cmd_skip(self, mode: str = "mix"):
+        if self._starting():
+            return {"message": "Starting - the first track is loading"}
         if self.eng.paused:
             self.eng.set_paused(False)
         if not self._anything_playing():
@@ -254,7 +261,9 @@ class RemoteBackend:
 
     def _cmd_automix(self, on: bool = True):
         if not on:
-            self.am.stop()
+            self.am.stop(settle=True)
+        elif self._starting():
+            pass
         elif self._anything_playing():
             self._ensure_automix()
         elif self.am.queue:
@@ -303,7 +312,13 @@ class RemoteBackend:
 
     def _cmd_play_next(self, idx):
         i = self._idx(idx)
-        if not self._anything_playing():
+        m = self.eng._master()
+        if m is not None and m.info.lib_index == i:
+            raise ValueError("That track is playing right now")
+        if self._starting():
+            with self.am._lock:
+                self.am.queue.appendleft(i)
+        elif not self._anything_playing():
             self.am.set_queue([i] + list(self.am.queue))
             self._start_from_queue()
         else:

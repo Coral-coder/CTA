@@ -94,6 +94,7 @@ class StreamServer:
         self.status_fn = status_fn or (lambda: {})
         self.backend = backend
         self.pin = pin
+        self._urls: list[str] | None = None
         self._fails: dict[str, list[float]] = {}
         self._in: queue.Queue = queue.Queue(maxsize=200)
         self._clients: list[queue.Queue] = []
@@ -117,7 +118,10 @@ class StreamServer:
 
     @property
     def urls(self) -> list[str]:
-        return [f"http://{ip}:{self.port}/" for ip in lan_addresses()] or [f"http://localhost:{self.port}/"]
+        # looked up once: name resolution can block for seconds on some networks
+        if self._urls is None:
+            self._urls = [f"http://{ip}:{self.port}/" for ip in lan_addresses()] or [f"http://localhost:{self.port}/"]
+        return self._urls
 
     def pair_url(self) -> str:
         """Address with the PIN (for the QR code: scanning it connects at once and a

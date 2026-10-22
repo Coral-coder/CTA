@@ -196,6 +196,19 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     assert eng._master() is not None
     call(lambda: cmd(action="blend", bars=8))
     assert dj.mix_bars.value() == 8 and dj.automix.s.mix_bars == 8
+    # audio watchdog: the sound card stops calling back -> reopen it
+    calls = []
+    monkeypatch.setattr(dj, "start_audio", lambda quiet=False: calls.append(quiet))
+    monkeypatch.setattr(type(eng), "running", property(lambda self: True))
+    import time as _time
+
+    dj._wd = (eng.frames_rendered, _time.monotonic() - 5)
+    dj._watchdog()
+    assert calls == [True]
+    dj._wd = (eng.frames_rendered - 1, _time.monotonic() - 5)    # frames moving: all fine
+    dj._watchdog()
+    assert calls == [True]
+    monkeypatch.undo()
     # PC side: QR/PIN dialog and tray
     dlg = DW.RemoteInfoDialog(dj)
     dlg.show()

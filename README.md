@@ -247,6 +247,19 @@ Later re-scans take seconds.
 The model input was checked against Essentia's reference implementation (it
 matches to within 1e-3). There is a unit test for this.
 
+## If something goes wrong
+
+CTA writes two files to its data folder (on Windows
+`%LOCALAPPDATA%\CTA`, on macOS `~/Library/Application Support/CTA`):
+
+- `cta.log`: what CTA was doing, including errors.
+- `crash.log`: written if CTA itself crashes (for example in an audio
+  driver). CTA says so on the next start.
+
+If the sound card stops responding, CTA reopens it by itself within a few
+seconds. The phone remote shows a red banner when the PC's mix has stopped
+or the phone has lost the connection.
+
 ## Updates
 
 CTA keeps itself up to date. At start-up (at most every 12 hours) it checks
