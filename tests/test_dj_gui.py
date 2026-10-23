@@ -178,7 +178,30 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     assert abs(eng.decks[m.name].mix_out / SR - (m.grid.first_beat + 8 * bar)) < 0.01
     assert abs(db.get_markers(m.info.path)[0] - (m.grid.first_beat + bar)) < 0.01
     wv = call(lambda: get("/api/wave?deck=" + m.name))
-    assert len(wv["low"]) == 480 and wv["bpm"] > 0
+    assert len(wv["low"]) == 4000 and wv["bpm"] > 0
+    # bump / outro end / outro length from the phone
+    out0 = eng.decks[m.name].mix_out / SR
+    res = call(lambda: cmd(action="bump", deck=m.name, which="out", beats=4))
+    assert res["ok"]
+    for _ in range(3):
+        eng.render(512)
+    assert abs(eng.decks[m.name].mix_out / SR - (out0 + bar)) < 0.01
+    res = call(lambda: cmd(action="out_length", deck=m.name, bars=64))
+    for _ in range(3):
+        eng.render(512)
+    assert "64 bars" in res["message"]
+    assert abs((eng.decks[m.name].mix_out_end - eng.decks[m.name].mix_out) / SR - 64 * bar) < 0.02
+    assert abs(db.get_out_end(m.info.path) - eng.decks[m.name].mix_out_end / SR) < 0.01
+    res = call(lambda: cmd(action="bump", deck=m.name, which="in", beats=-4))      # moves IN one bar back
+    assert res["ok"]
+    res = call(lambda: cmd(action="markers", deck=m.name, out_end=None))           # clear just the end
+    for _ in range(3):
+        eng.render(512)
+    assert eng.decks[m.name].mix_out_end is None and eng.decks[m.name].mix_out is not None
+    call(lambda: cmd(action="blend", auto=False, bars=128))
+    assert not dj.automix.s.auto_length and dj.automix.s.mix_bars == 128
+    call(lambda: cmd(action="blend", auto=True))
+    assert dj.automix.s.auto_length
     # queue editing and pause
     other = next(i for i in range(lib.n) if i != seed)
     call(lambda: cmd(action="queue_add", idx=other))
@@ -186,6 +209,10 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     q = list(dj.automix.queue)
     call(lambda: cmd(action="queue_remove", pos=q.index(other)))
     assert list(dj.automix.queue).count(other) == q.count(other) - 1
+    call(lambda: cmd(action="queue_add", idx=other))
+    call(lambda: cmd(action="queue_add", idx=seed))
+    call(lambda: cmd(action="queue_clear"))
+    assert len(dj.automix.queue) == 0 and dj.queue_list.count() == 0
     call(lambda: cmd(action="toggle_pause"))
     for _ in range(30):
         eng.render(1024)
@@ -209,7 +236,33 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     dj._watchdog()
     assert calls == [True]
     monkeypatch.undo()
-    # PC side: QR/PIN dialog and tray
+    # PC queue list: ✕ / Delete / drag-out remove, drag to reorder
+    with dj.automix._lock:
+        dj.automix.queue.clear()
+        dj.automix.queue.extend([0, 1, 2])
+    dj._show_queue()
+    assert dj.queue_list.count() == 3
+    dj.queue_list.removeRequested.emit(1)
+    assert list(dj.automix.queue) == [0, 2]
+    dj.queue_list.model().moveRow(dj.queue_list.model().index(1, 0).parent(), 1,
+                                  dj.queue_list.model().index(0, 0).parent(), 0)
+    assert list(dj.automix.queue) == [2, 0]
+    dj.clear_queue()
+    assert not dj.automix.queue
+    # PC marker editor: opens, paints zoomed in, bumps
+    dj.edit_markers(m.name)
+    ed = dj._editors[m.name]
+    app.processEvents()
+    ed.wave.zoom(0.1)
+    ed.grab()
+    o1 = eng.decks[m.name].mix_out / SR
+    dj.bump_marker(m.name, "out", -4)
+    for _ in range(3):
+        eng.render(512)
+    assert abs(eng.decks[m.name].mix_out / SR - (o1 - bar)) < 0.01
+    ed.refresh()
+    ed.close()
+        # PC side: QR/PIN dialog and tray
     dlg = DW.RemoteInfoDialog(dj)
     dlg.show()
     app.processEvents()

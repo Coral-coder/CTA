@@ -210,7 +210,8 @@ class StreamServer:
                         elif path == "/api/search":
                             self._json({"results": be.search((qs.get("q") or [""])[0])})
                         elif path == "/api/wave":
-                            w = be.wave((qs.get("deck") or [""])[0])
+                            bins = int((qs.get("bins") or ["4000"])[0])
+                            w = be.wave((qs.get("deck") or [""])[0], bins=max(100, min(bins, 8000)))
                             self._json(w or {"error": "no track"}, 200 if w else 404)
                         elif path == "/art":
                             data = be.art(int((qs.get("i") or ["-1"])[0]))

@@ -111,6 +111,7 @@ class RemoteBackend:
                 "volume": round(float(d.volume), 3), "level": round(float(d.level), 3),
                 "mix_in": round(d.mix_in / SR, 3) if d.mix_in is not None else None,
                 "mix_out": round(d.mix_out / SR, 3) if d.mix_out is not None else None,
+                "mix_out_end": round(d.mix_out_end / SR, 3) if d.mix_out_end is not None else None,
                 "art": f"/art?i={d.info.lib_index}" if d.loaded and d.info.lib_index >= 0 else None,
             })
         trans = None
@@ -127,7 +128,8 @@ class RemoteBackend:
             if m is None or i != m.info.lib_index:
                 hist.append(self._item(int(i)))
         return {
-            "automix": {"active": am.active, "status": am.status, "blend_bars": int(am.s.mix_bars)},
+            "automix": {"active": am.active, "status": am.status, "blend_bars": int(am.s.mix_bars),
+                        "auto_length": bool(am.s.auto_length)},
             "paused": bool(e.paused),
             "frames": int(e.frames_rendered),
             "crossfader": float(e.crossfader),
@@ -163,7 +165,7 @@ class RemoteBackend:
 
         return get_art(lib.paths[idx])
 
-    def wave(self, deck: str, bins: int = 480) -> dict | None:
+    def wave(self, deck: str, bins: int = 4000) -> dict | None:
         d = self.eng.decks.get(deck)
         if d is None or not d.loaded:
             return None
@@ -175,12 +177,8 @@ class RemoteBackend:
         b = np.asarray(bands, dtype=np.float32)
         if b.ndim == 1:
             b = np.stack([b, b, b], axis=1)
-        edges = np.linspace(0, len(b), bins + 1).astype(int)
-        out = np.zeros((bins, 3), np.float32)
-        for i in range(bins):
-            seg = b[edges[i]:max(edges[i + 1], edges[i] + 1)]
-            if len(seg):
-                out[i] = seg[:, :3].max(axis=0)
+        starts = np.minimum(np.linspace(0, len(b), bins + 1).astype(int)[:-1], len(b) - 1)
+        out = np.maximum.reduceat(b[:, :3], starts, axis=0).astype(np.float32)   # max per bin
         out /= max(float(out.max()), 1e-9)
         q = np.round(np.sqrt(out) * 99).astype(int)
         g = d.grid
@@ -275,12 +273,28 @@ class RemoteBackend:
             raise ValueError("Pick a seed song first")
         return {"message": "Auto-mix on" if on else "Auto-mix off (the current track keeps playing)"}
 
-    def _cmd_blend(self, bars: int = 16):
-        bars = int(bars)
-        if not 1 <= bars <= 64:
-            raise ValueError("blend must be 1-64 bars")
-        self.dj.mix_bars.setValue(bars)
-        return {"message": f"Blends over {bars} bars"}
+    def _cmd_blend(self, bars: int | None = None, auto: bool | None = None):
+        if auto is not None:
+            self.dj.auto_len.setChecked(bool(auto))
+        if bars is not None:
+            bars = int(bars)
+            if not 1 <= bars <= 128:
+                raise ValueError("blend must be 1-128 bars")
+            self.dj.mix_bars.setValue(bars)
+        n = self.dj.mix_bars.value()
+        if self.dj.auto_len.isChecked():
+            return {"message": f"Auto blend length (up to {n} bars, no dead air)"}
+        return {"message": f"Blends over exactly {n} bars"}
+
+    def _cmd_queue_clear(self):
+        self.dj.clear_queue()
+        return {"message": "Queue cleared"}
+
+    def _cmd_bump(self, deck: str, which: str, beats: float = 4):
+        return {"message": self.dj.bump_marker(str(deck), str(which), float(beats))}
+
+    def _cmd_out_length(self, deck: str, bars: int | None = None):
+        return {"message": self.dj.set_out_length(str(deck), int(bars) if bars else None)}
 
     def _cmd_seed(self, idx):
         i = self._idx(idx)
@@ -299,7 +313,14 @@ class RemoteBackend:
         rest = [x for x in sl if x != i]
         main.setlist = list(sl)
         main._refresh_setlist()
-        if self._anything_playing():
+        m = self.eng._master()
+        if m is not None and m.info.lib_index == i:
+            # seeding from the song that is on air: keep it playing, rebuild what follows
+            self.am.set_queue(rest[1:])
+            if rest:
+                self.am.play_next(rest[0], requeue=False)     # replaces the stale "next" track
+            msg = f"New set after {self.lib.titles[i]} (playing now)"
+        elif self._anything_playing():
             self.am.set_queue(rest)
             self.am.play_next(i, skip="mix", requeue=False)
             msg = f"New set from {self.lib.titles[i]}: mixing it in now"
@@ -367,9 +388,11 @@ class RemoteBackend:
         return {}
 
     def _cmd_markers(self, deck: str, **kw):
-        mi, mo = kw.get("in"), kw.get("out")
         d = self.eng.decks.get(str(deck))
         if d is None or not d.loaded:
             raise ValueError("that deck is empty")
-        msg = self.dj.set_markers(str(deck), None if mi is None else float(mi), None if mo is None else float(mo))
+        cur = dict(zip(("in", "out", "out_end"), self.dj.markers_of(str(deck))))
+        # only the markers that were sent change; null clears one
+        vals = {k: (None if kw[k] is None else float(kw[k])) if k in kw else cur[k] for k in cur}
+        msg = self.dj.set_markers(str(deck), vals["in"], vals["out"], vals["out_end"])
         return {"message": msg}

@@ -87,11 +87,16 @@ into their own window.
 - **Cue point and mix markers:**
   - When a track loads, its cue point is set to the **first real beat** (the
     first kick), skipping silence and beatless intros.
-  - Right-click the waveform to choose **Set mix-in (intro) here**, **Set
-    mix-out (outro) here** or **Set cue point here**. Each snaps to the
-    start of the bar you clicked and is saved with the track.
-  - The IN and OUT flags appear on the waveform, and the shaded area after
-    OUT shows the blend.
+  - Three markers, saved with the track and snapped to the start of a bar:
+    **IN** (where the track is mixed in), **OUT** (where it starts to mix
+    out) and **OUT END** (where it is gone, which fixes the blend length).
+  - **✎ MARKERS** on each deck opens a zoomable full waveform with bar
+    numbers. Wheel to zoom, drag to scroll, drag a flag to move it, or nudge
+    it **−4 / +4 beats**. The **outro length** buttons (8, 16, 32, 64 or
+    128 bars) set OUT END for you; past the end of the track, auto-mix loops
+    the groove to last that long.
+  - Right-clicking the deck waveform still sets IN, OUT, OUT END or the cue
+    on that bar.
 - **Beat 1 is found from the music itself.** In dance music, phrase changes
   (the kick drops out or comes back, a breakdown starts, a drop hits)
   happen on the downbeat. CTA uses those moments to fix each track's beat
@@ -128,6 +133,16 @@ into their own window.
   - **It loops to keep the beat.** If the outgoing track has no outro, or
     one that's too short, CTA loops its last solid 4–8 bars of groove
     until the swap.
+  - **Long fills become part of the mix.** When the next track opens with
+    a long beatless fill (pads, vocals, an ambient intro), the fill plays
+    over the outgoing track's groove, looped if its outro is too short.
+    The new beat lands as the old track leaves. When the outgoing track
+    ends in a long beatless fill, the next track's beat comes in underneath
+    it, with its intro looped until the fill is over. Fills are only
+    layered when the keys match; otherwise they are skipped.
+  - **It never hangs on dead air.** Before every blend it checks each bar
+    for music and a beat, and moves or shortens the blend until there are
+    no empty bars.
   - **It echoes out on a clash.** When the keys don't mix or the tempo gap
     is too wide, the outgoing track gets a beat-synced echo tail and the
     next track drops in clean on the downbeat.
@@ -139,8 +154,11 @@ into their own window.
   - **A peak limiter guards the master**, so two loud tracks overlapping
     never distort.
 - **Auto-mix timing:**
-  - Choose the blend length with the 4 / 8 / 16 / 32-bar buttons, or type
-    any value from 1 to 64.
+  - **Auto** (the default) picks the blend length from the music, up to the
+    bars you set. With Auto off, every blend lasts exactly that long (4, 8,
+    16, 32, 64 or 128 bars, or any value from 1 to 128).
+  - **Queue:** drag tracks to reorder them. To remove one, click its ✕,
+    press Delete, or drag it out of the list. **Clear queue** empties it.
   - Auto-mix starts the blend at the outgoing track's outro marker and
     brings the next track in at its intro marker.
   - Without markers, it ends the blend on the last bar that still has
@@ -158,8 +176,11 @@ into their own window.
   - search the library and pick a **seed song**: CTA builds a new set from
     it and mixes it in;
   - play a track next, add, reorder or remove tracks in the queue;
-  - drag the **IN/OUT fade markers** on the waveforms (they snap to the
-    start of the bar and are saved with the track) and set the blend length;
+  - edit the **IN / OUT / OUT END markers**: pinch or tap ＋/− to zoom,
+    swipe to scroll, then tap a bar, drag a flag or nudge it −4/+4 beats.
+    You can also set the outro length (16–128 bars) and the blend length
+    (Auto, 4–128 bars);
+  - swipe a queued track left to remove it, or **Clear queue**;
   - tap **Listen** to hear the mix (a few seconds behind).
 
   On iPhone, use Share → **Add to Home Screen**: it opens full screen like

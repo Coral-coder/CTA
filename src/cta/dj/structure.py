@@ -185,44 +185,143 @@ class Plan:
     swap_bar: float             # bars into the blend where the basses swap (on a downbeat)
     loop: tuple[float, float] | None = None   # outgoing loop (start_bar, end_bar) to hold the groove
     reason: str = ""
+    in_loop: tuple[float, float] | None = None   # incoming loop (bars) to stretch a short intro
+    in_release: float | None = None              # bars into the blend when the incoming loop is let go
+    exact: bool = False                          # length set by the DJ (markers / fixed length)
+
+
+AUDIBLE = 0.08          # bar energy (0..1 of the track's loud parts) that is more than silence
+DEAD = 0.2              # combined level below which a blend bar sounds empty
+PHRASES = (4, 8, 16, 32, 64, 128)
+
+
+def _phrase_floor(x: float, lo: int = 4) -> int:
+    """Largest phrase length (4, 8, 16, ...) not longer than x (at least lo)."""
+    best = lo
+    for p in PHRASES:
+        if p <= x:
+            best = p
+    return best
+
+
+def _energy(st: Structure, bar: float) -> float:
+    b = int(np.floor(bar))
+    return float(st.bar_energy[b]) if 0 <= b < len(st.bar_energy) else 0.0
+
+
+def _kick(st: Structure, bar: float) -> bool:
+    b = int(np.floor(bar))
+    return bool(st.bar_kick[b]) if 0 <= b < len(st.bar_kick) else False
+
+
+def _audible_span(st: Structure) -> tuple[int, int]:
+    """First audible bar and end (exclusive) of the last audible bar."""
+    a = np.nonzero(st.bar_energy > AUDIBLE)[0]
+    return (int(a[0]), int(a[-1]) + 1) if a.size else (0, st.bars)
+
+
+def blend_profile(out_s: Structure, in_s: Structure, start: float, in_start: float, bars: int,
+                  swap: float, loop: tuple[float, float] | None = None,
+                  in_loop: tuple[float, float] | None = None, in_release: float | None = None):
+    """Per bar of the blend: (combined level, any kick) as the listener hears it."""
+    out = []
+    for k in range(int(bars)):
+        ob = start + k
+        if loop is not None and ob >= loop[1]:
+            ln = loop[1] - loop[0]
+            ob = loop[0] + (ob - loop[0]) % ln
+        ib = in_start + k
+        if in_loop is not None:
+            ln = in_loop[1] - in_loop[0]
+            rel = in_release if in_release is not None else bars
+            if k < rel:
+                ib = in_loop[0] + k % ln
+            else:
+                ib = in_loop[0] + (rel % ln) + (k - rel)
+        fade_out = 1.0 if k < swap else max(0.0, 1.0 - (k - swap) / max(bars - swap, 1))
+        fade_in = min(1.0, (k + 1) / max(1.0, min(4.0, bars * 0.25)))
+        e = max(_energy(out_s, ob) * fade_out, _energy(in_s, ib) * fade_in)
+        out.append((e, _kick(out_s, ob) and fade_out > 0.3 or _kick(in_s, ib)))
+    return out
+
+
+def dead_bars(profile) -> int:
+    """Bars that would sound empty: very quiet, or no beat at all for more than a bar."""
+    dead = sum(1 for e, _k in profile if e < DEAD)
+    run = longest = 0
+    for _e, k in profile:
+        run = 0 if k else run + 1
+        longest = max(longest, run)
+    return dead + max(0, longest - 2)
 
 
 def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_bars: int = 4,
                     harmonic: float = 1.0, tempo_gap_pct: float = 0.0,
                     out_marker_bar: float | None = None, in_marker_bar: float | None = None,
-                    genre_short: bool = False, learned: dict | None = None) -> Plan:
+                    genre_short: bool = False, learned: dict | None = None,
+                    out_end_bar: float | None = None, auto: bool = True) -> Plan:
     """Decide how and where to go from the outgoing to the incoming track.
 
+    max_bars: the longest blend (auto) or the blend length (auto=False).
     harmonic: key compatibility 0..1; tempo_gap_pct: tempo change needed.
-    Bars are counted from each track's grid downbeat.
+    out_end_bar: the DJ's outro-end marker: the blend lasts exactly from the
+    mix-out marker to there. Bars are counted from each track's grid downbeat.
     """
     max_bars = max(1, int(max_bars))
     if genre_short:
         max_bars = min(max_bars, 8)
+    last_beat_end = out_s.last_beat_bar + 1
+    drop_end = out_s.last_drop_end if out_s.last_drop_end is not None else last_beat_end
+    drop_in = in_s.first_drop_bar
+    in_first = float(in_s.first_beat_bar - (in_s.first_beat_bar % 4))
+
+    def in_start_for(bars: int) -> float:
+        """Start so the incoming drop lands at the end of the blend."""
+        if in_marker_bar is not None:
+            return float(in_marker_bar)
+        if harmonic < 0.7 and drop_in is not None and drop_in - bars < in_s.first_beat_bar - 1:
+            return in_first                  # never start in an out-of-key beatless fill
+        if drop_in is not None and drop_in - bars >= 0 and drop_in - bars >= _audible_span(in_s)[0] - 4:
+            return float(drop_in - bars)
+        return in_first
+
+    def out_loop_for(start: float, bars: int):
+        """Loop the outgoing's last groove when it runs out of beats during the blend."""
+        if start + bars <= last_beat_end + 2:          # the outgoing is fading out by then anyway
+            return None
+        groove = last_beat_end - max(out_s.first_beat_bar, 0)
+        if groove < 4:
+            return None
+        le = last_beat_end + (1 if (last_beat_end + 1) % 4 == 0 else 0)   # on the phrase grid
+        le = le - le % 4 if le % 4 else le
+        le = max(le, 4)
+        lb = 8 if le - start >= 8 and groove >= 8 else 4
+        return (float(le - lb), float(le))
+
+    # ---- the DJ's own outro start + end: exactly that long
+    if out_marker_bar is not None and out_end_bar is not None and out_end_bar > out_marker_bar:
+        bars = int(max(1, round(out_end_bar - out_marker_bar)))
+        start = float(out_marker_bar)
+        in_start = in_start_for(bars)
+        loop = out_loop_for(start, bars)
+        lands = drop_in is not None and abs((drop_in - in_start) - bars) < 1e-6
+        swap = float(bars) if lands else float(max(1, bars // 2))
+        return Plan("loop_blend" if loop else "blend", start, in_start, bars, swap_bar=swap, loop=loop,
+                    reason=f"your outro markers ({bars} bars)", exact=True)
 
     # ---- learned from the DJ's own transitions (markers still win)
     if learned and out_marker_bar is None and in_marker_bar is None and harmonic >= 0.5 and tempo_gap_pct <= 8:
         bars = int(min(max_bars, max(1, learned["bars"])))
-        drop_end = out_s.last_drop_end if out_s.last_drop_end is not None else out_s.last_beat_bar + 1
-        drop_in = in_s.first_drop_bar if in_s.first_drop_bar is not None else in_s.first_beat_bar
+        drop_in2 = drop_in if drop_in is not None else in_s.first_beat_bar
         start = float(max(out_s.first_beat_bar + 4, np.round((drop_end + learned["out_offset"]) / 4) * 4))
-        in_start = float(max(0, np.round((drop_in - learned["in_lead"]) / 4) * 4))
+        in_start = float(max(0, np.round((drop_in2 - learned["in_lead"]) / 4) * 4))
         loop = None
-        last_beat_end = out_s.last_beat_bar + 1
         if start + bars > last_beat_end:                # would run out of beats: hold the groove
             lb = 8 if last_beat_end - start >= 8 else 4
             loop = (float(last_beat_end - lb), float(last_beat_end))
-        swap = float(min(bars, max(1.0, drop_in - in_start))) if drop_in > in_start else float(max(1, bars // 2))
+        swap = float(min(bars, max(1.0, drop_in2 - in_start))) if drop_in2 > in_start else float(max(1, bars // 2))
         return Plan("loop_blend" if loop else "blend", start, in_start, bars, swap_bar=swap, loop=loop,
                     reason="your style (learned from your mixes)")
-
-    # ---- incoming: where to start, and how long until its first drop
-    if in_marker_bar is not None:
-        in_start = float(in_marker_bar)
-    else:
-        in_start = float(in_s.first_beat_bar - (in_s.first_beat_bar % 4))
-    drop_in = in_s.first_drop_bar
-    intro_len = (drop_in - in_start) if drop_in is not None and drop_in > in_start else None
 
     # ---- clash -> short echo-out style transition
     if harmonic < 0.5 or tempo_gap_pct > 8:
@@ -230,59 +329,124 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
         if out_marker_bar is not None:
             start = out_marker_bar
         else:
-            end = (out_s.last_drop_end if out_s.last_drop_end is not None else out_s.last_beat_bar + 1)
-            start = max(float(end - bars), 0.0)
-        # bring the incoming in right at its drop if it has one close by
+            start = max(float(drop_end - bars), 0.0)
+        in_start = float(in_marker_bar) if in_marker_bar is not None else in_first
         if in_marker_bar is None and drop_in is not None:
-            in_start = float(max(drop_in - bars, 0))
+            in_start = float(max(drop_in - bars, 0))      # drop the next track on the one
         return Plan("echo_out", start, in_start, bars, swap_bar=float(bars),
                     reason="keys/tempo clash: echo out and drop the next track on the one")
 
+    fill_cap = max(max_bars, 8) if auto else max_bars
+    in_aud0, _in_aud1 = _audible_span(in_s)
+    in_beat4 = int(round(in_s.first_beat_bar / 4.0) * 4)   # the beat starts on a phrase line
+    in_fill = in_beat4 - in_aud0                      # audible intro bars before the beat starts
+    _out_aud0, out_aud1 = _audible_span(out_s)
+    out_fill = out_aud1 - last_beat_end               # audible bars after the beat stops
+    out_has_groove = last_beat_end - out_s.first_beat_bar >= 4
+    in_groove = (drop_in if drop_in is not None and drop_in > in_first else in_s.last_beat_bar + 1) - in_first
+
+    # ---- the next track opens with a long beatless fill: play it over the
+    #      outgoing groove (looped if the outro is short), its beat lands as
+    #      the outgoing leaves
+    if in_marker_bar is None and in_fill >= 8 and harmonic >= 0.7 and out_has_groove and not genre_short:
+        bars = _phrase_floor(min(in_fill, fill_cap))
+        in_start = float(max(0, in_beat4 - bars))
+        start = float(out_marker_bar) if out_marker_bar is not None else float(min(drop_end, last_beat_end))
+        loop = out_loop_for(start, bars)
+        if loop is not None and start > loop[0]:
+            start = loop[0]                         # beats would stop inside the blend: loop from the last groove
+        return Plan("loop_blend" if loop else "blend", start, in_start, bars, swap_bar=float(bars), loop=loop,
+                    reason="the next track's intro fill plays over this groove"
+                    + (" (looped outro)" if loop else ""), exact=True)
+
+    # ---- the outgoing ends in a long beatless fill: bring the next beat in
+    #      under it, looping the next intro if it is too short
+    if out_marker_bar is None and out_fill >= 8 and in_groove >= 4 and in_fill < 8 and not genre_short:
+        bars = _phrase_floor(min(out_fill, fill_cap if harmonic >= 0.7 else 8))
+        start = float(last_beat_end)
+        in_start = float(in_marker_bar) if in_marker_bar is not None else in_first
+        in_loop = release = None
+        if in_groove < bars:
+            lb = 8 if in_groove >= 8 else 4
+            in_loop = (in_start, in_start + lb)
+            release = float(np.ceil((bars - in_groove) / lb) * lb)
+            bars = int(release + in_groove)                # the incoming drop lands at the end
+        return Plan("blend", start, in_start, bars, swap_bar=1.0, reason="the outro fill plays over the next "
+                    "track's beat" + (" (looped intro)" if in_loop else ""), in_loop=in_loop,
+                    in_release=release, exact=True)
+
     # ---- blend length: let the incoming intro decide (drop lands at the end)
-    if intro_len is not None and intro_len >= min_bars:
+    intro_len = (drop_in - in_first) if drop_in is not None and drop_in > in_first else None
+    if in_marker_bar is not None and drop_in is not None and drop_in > in_marker_bar:
+        intro_len = drop_in - in_marker_bar
+    if not auto:
+        bars = max_bars
+    elif intro_len is not None and intro_len >= min_bars:
         bars = int(min(max_bars, intro_len))
-        if intro_len > max_bars and in_marker_bar is None:
-            in_start = float(drop_in - bars)            # skip the part of a long intro
     else:
         bars = max_bars
-    bars = max(min_bars if max_bars >= min_bars else max_bars, bars)
+    if auto:
+        bars = max(min_bars if max_bars >= min_bars else max_bars, bars)
+    in_start = in_start_for(bars) if (intro_len is None or intro_len >= bars or not auto) else in_first
 
     # ---- outgoing: start the blend in its outro, after the last drop
     loop = None
     if out_marker_bar is not None:
         start = float(out_marker_bar)
         reason = "your mix-out marker"
+        loop = out_loop_for(start, bars)
     else:
-        last_beat_end = out_s.last_beat_bar + 1
-        drop_end = out_s.last_drop_end if out_s.last_drop_end is not None else last_beat_end
         outro_beats = max(0, last_beat_end - drop_end)          # beat bars after the last drop
-        if outro_beats >= bars:
-            # enough groove after the last drop: start blending right as it ends
+        if outro_beats >= bars or not auto:
             start = float(drop_end)
+            loop = out_loop_for(start, bars)
             reason = "blend over the outgoing outro"
         elif outro_beats >= 8:
             # outro a bit shorter than the blend: fit the blend to it, keep the
             # incoming drop landing at the end
             bars = int(outro_beats // 4 * 4)
-            if in_marker_bar is None and drop_in is not None and drop_in - bars >= 0:
-                in_start = float(drop_in - bars)
+            in_start = in_start_for(bars)
             start = float(drop_end)
             reason = "blend fitted to the outgoing outro"
         elif outro_beats >= 4:
             start = float(drop_end)
-            # outro shorter than the blend: loop its last 4 bars to hold the beat
             lb = 4 if outro_beats < 8 else 8
             loop = (float(last_beat_end - lb), float(last_beat_end))
             reason = "short outro: loop the last bars to keep the beat"
         else:
-            # no beat outro (track ends after the drop / fades): loop the end
-            # of the last drop and blend over it
-            lb = 8 if drop_end - (out_s.first_beat_bar) >= 16 else 4
+            # no beat outro: loop the end of the last drop and blend over it
+            lb = 8 if drop_end - out_s.first_beat_bar >= 16 else 4
             start = float(max(drop_end - lb, out_s.first_beat_bar))
             loop = (start, start + lb)
             reason = "no outro: loop the final groove and blend over it"
+
+    def swap_for(b, ist):
+        lands = drop_in is not None and abs((drop_in - ist) - b) < 1e-6
+        return float(b) if lands else float(max(1, b // 2))
+
+    # ---- never hang on dead air: find a length (and a start a few bars either
+    #      side) where every bar of the blend has music and a beat
+    if auto and out_marker_bar is None and loop is None:
+        def ok(st, b, ist):
+            return dead_bars(blend_profile(out_s, in_s, st, ist, b, swap_for(b, ist))) == 0
+
+        if not ok(start, bars, in_start):
+            found = None
+            lengths = [p for p in PHRASES if min_bars <= p <= bars][::-1] or [bars]
+            for nb in lengths:
+                ist = in_start_for(nb)
+                cands = [start + 4 * k for k in range(0, 9)] + [start - 4 * k for k in range(1, 3)]
+                for st in cands:
+                    if st < out_s.first_beat_bar or (st != start and st + nb > last_beat_end):
+                        continue
+                    if ok(st, nb, ist):
+                        found = (st, nb, ist)
+                        break
+                if found:
+                    break
+            if found and (found[0], found[1]) != (start, bars):
+                start, bars, in_start = found
+                reason += f" ({bars} bars, placed to avoid dead air)"
     style = "loop_blend" if loop else "blend"
-    # basses swap on the incoming drop (end of the blend) or half way
-    lands = drop_in is not None and abs((drop_in - in_start) - bars) < 1e-6
-    swap = float(bars) if lands else float(max(1, bars // 2))
-    return Plan(style, start, in_start, bars, swap_bar=swap, loop=loop, reason=reason)
+    return Plan(style, start, in_start, bars, swap_bar=swap_for(bars, in_start), loop=loop, reason=reason,
+                exact=not auto)

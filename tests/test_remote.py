@@ -68,7 +68,7 @@ class FakeBackend:
     def art(self, idx):
         return b"\x89PNG fake" if idx == 1 else None
 
-    def wave(self, deck):
+    def wave(self, deck, bins=4000):
         return {"deck": deck} if deck == "A" else None
 
 
@@ -304,3 +304,39 @@ def test_crash_log_detects_an_unclean_exit(tmp_data_dir):
     assert not crashed
     faulthandler.disable()
     f.close()
+
+
+def test_seeding_the_playing_song_never_queues_it_again():
+    from cta.gui.remote import RemoteBackend
+
+    class Lib:
+        n = 5
+        titles = [f"t{i}" for i in range(5)]
+
+    tracks = _tracks(3)
+    eng = Engine()
+    am = AutoMix(eng, lambda i: tracks[i], AutoMixSettings(mix_bars=16), synchronous_loads=True)
+    am.set_queue([0, 1])
+    am.start()
+    _run(eng, 0.5)
+    assert _master_title(eng) == "t0"
+    main = SimpleNamespace(lib=Lib(), settings=SimpleNamespace(value=lambda k, d=None: d),
+                           mix_settings=lambda: None, setlist=[], _refresh_setlist=lambda: None)
+    main._setlist_options = lambda n: None
+    dj = SimpleNamespace(engine=eng, automix=am, main=main, played_indices=lambda: {0},
+                         _show_queue=lambda: None)
+    be = RemoteBackend.__new__(RemoteBackend)
+    be.dj, be.eng, be.am = dj, eng, am
+    import cta.mixer as M
+
+    orig = M.build_setlist
+    M.build_setlist = lambda lib, i, opts, exclude=None: [i, 2, 1]
+    try:
+        res = be._cmd_seed(0)
+    finally:
+        M.build_setlist = orig
+    _run(eng, 1.0)
+    assert "playing now" in res["message"]
+    assert _master_title(eng) == "t0"
+    nxt = [d.info.title for d in eng.decks.values() if d.loaded and not d.playing]
+    assert nxt == ["t2"] and list(am.queue) == [1]

@@ -70,6 +70,7 @@ MIGRATIONS = [
     ("mix_out", "REAL"),          # DJ-set outro marker (seconds): where mixing out starts
     ("grid_ver", "INTEGER"),      # 1 = fitted, 2 = downbeat refined, 3 = edited by the DJ
     ("phrase_origin", "INTEGER"), # bar (mod 8) where phrases start
+    ("mix_out_end", "REAL"),      # DJ-set outro end (seconds): where the outgoing track is gone
 ]
 
 TRACK_FIELDS = [
@@ -186,10 +187,16 @@ class Database:
         r = self.conn().execute("SELECT mix_in, mix_out FROM tracks WHERE path=?", (path,)).fetchone()
         return (r[0], r[1]) if r else (None, None)
 
-    def set_markers(self, path: str, mix_in: float | None, mix_out: float | None):
+    def get_out_end(self, path: str) -> float | None:
+        r = self.conn().execute("SELECT mix_out_end FROM tracks WHERE path=?", (path,)).fetchone()
+        return r[0] if r else None
+
+    def set_markers(self, path: str, mix_in: float | None, mix_out: float | None,
+                    mix_out_end: float | None = None):
         c = self.conn()
         with c:
-            c.execute("UPDATE tracks SET mix_in=?, mix_out=? WHERE path=?", (mix_in, mix_out, path))
+            c.execute("UPDATE tracks SET mix_in=?, mix_out=?, mix_out_end=? WHERE path=?",
+                      (mix_in, mix_out, mix_out_end, path))
 
     def get_cues(self, path: str) -> list[float | None]:
         out: list[float | None] = [None] * 8

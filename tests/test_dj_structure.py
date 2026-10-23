@@ -142,3 +142,55 @@ def test_learns_from_manual_transitions(tmp_path):
     assert p.bars == 8 and p.out_start_bar == 96 and p.in_start_bar == 0
     # stored in the database: survives a restart
     assert MixLearner(db, am).count() == 3
+
+
+FILL_INTRO = (("breakdown", 16), ("drop", 32), ("outro", 8))        # 16 bars of beatless fill first
+FILL_OUTRO = (("intro", 8), ("drop", 32), ("breakdown", 16))        # ends in 16 bars of beatless fill
+
+
+def test_long_intro_fill_plays_over_the_outgoing_groove():
+    full, fill_in, no_outro = _struct(FULL), _struct(FILL_INTRO), _struct(NO_OUTRO)
+    assert fill_in.first_beat_bar >= 14
+    p = plan_transition(full, fill_in, max_bars=16)
+    assert p.bars == 16 and abs(p.in_start_bar + p.bars - fill_in.first_beat_bar) <= 1   # beat lands as it ends
+    assert p.loop is None and "fill" in p.reason
+    p = plan_transition(no_outro, fill_in, max_bars=16)                          # short outro
+    assert p.loop is not None and "looped outro" in p.reason
+    p = plan_transition(full, fill_in, max_bars=16, harmonic=0.6)               # clashing melody: skip the fill
+    assert p.in_start_bar >= fill_in.first_beat_bar - 4
+
+
+def test_long_outro_fill_gets_the_next_beat_under_it():
+    fill_out, short = _struct(FILL_OUTRO), _struct(SHORT)
+    p = plan_transition(fill_out, short, max_bars=16)
+    assert p.out_start_bar == fill_out.last_beat_bar + 1                        # as the beat stops
+    assert p.in_loop is not None and "looped intro" in p.reason                  # 8-bar intro looped
+    assert p.in_release is not None and p.bars == p.in_release + 8               # drop lands at the end
+
+
+def test_out_end_marker_sets_the_exact_length():
+    full, nxt = _struct(FULL), _struct(SHORT)
+    p = plan_transition(full, nxt, max_bars=8, out_marker_bar=64, out_end_bar=128)
+    assert p.bars == 64 and p.out_start_bar == 64 and p.exact
+    p = plan_transition(full, nxt, max_bars=128, auto=False)                     # fixed 128 bars
+    assert p.bars == 128 and p.loop is not None                                  # loops to last that long
+
+
+def test_auto_length_avoids_dead_air():
+    from cta.dj.structure import blend_profile, dead_bars
+
+    full, quiet_in = _struct(FULL), _struct(SHORT)
+    # the outgoing fades to near silence over its last 8 bars, the next intro is quiet
+    full.bar_energy[-8:] = 0.05
+    quiet_in.bar_energy[:8] = 0.15
+    p = plan_transition(full, quiet_in, max_bars=16)
+    prof = blend_profile(full, quiet_in, p.out_start_bar, p.in_start_bar, p.bars, p.swap_bar, p.loop)
+    assert dead_bars(prof) == 0, p
+
+
+def test_automix_plays_a_looped_intro_under_an_outro_fill():
+    tr = {"a": _track("a", 126.0, FILL_OUTRO), "b": _track("b", 126.0, SHORT)}
+    am, events, peak, t = _run_mix(tr, ["a", "b"], seconds=400)
+    assert am.history == ["a", "b"] and peak <= 0.99
+    eng_tr = events[0]
+    assert eng_tr[0] == "start"

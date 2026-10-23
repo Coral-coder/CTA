@@ -36,7 +36,16 @@ input{font:inherit;color:var(--fg);background:var(--card2);border:1px solid #333
 #transport small{display:block;font-size:11px;color:var(--mut);margin-top:2px}#transport .pri small{color:#e3ecff}
 #gear{width:100%;height:auto;display:block;border-radius:var(--r);background:#17181c;touch-action:pan-y}
 .wv{position:relative;margin-top:8px}.wv canvas{width:100%;height:84px;display:block;border-radius:10px;background:#16171b;touch-action:none}
-.wv .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);margin:6px 2px 0}
+.wv .lab{display:flex;justify-content:space-between;font-size:12px;color:var(--mut);margin:10px 2px 4px}
+.wv canvas{height:140px}
+.wvc{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}.wvc button{padding:9px 11px;font-size:14px}
+.wv .lab{gap:8px;align-items:center}.zm{display:flex;gap:4px;flex:none}.zm button{padding:6px 11px;font-size:15px}
+.seg{display:flex;gap:4px}.seg button{border:2px solid transparent;color:var(--c);font-weight:800}
+.seg button.sel{border-color:var(--c);background:#2c2f38}
+.chips button.sel{outline:2px solid var(--acc)}
+button.mini{padding:6px 10px;font-size:12px;letter-spacing:0;text-transform:none}
+h2.row{display:flex;align-items:center}
+.list .it{touch-action:pan-y;transition:transform .15s}.list .it.swiping{transition:none}
 .chips{display:flex;gap:6px;flex-wrap:wrap}.chips button{padding:8px 12px;font-size:14px}
 .list .it{display:flex;gap:10px;align-items:center;padding:8px 4px;border-bottom:1px solid #26282f}
 .list .it:last-child{border-bottom:0}
@@ -83,13 +92,16 @@ display:none;z-index:10;max-width:90%;box-shadow:0 6px 24px #0008}
 
 <h2>Transition</h2>
 <div class="card">
- <div class="row small"><span class="grow mut">Blend length (bars)</span><div class="chips" id="bars"></div></div>
+ <div class="small mut" id="blabel">Blend length (bars)</div><div class="chips" id="bars" style="margin-top:6px"></div>
  <div id="waves"></div>
- <div class="hint">Drag <b style="color:var(--ok)">IN</b> (where the next track starts) and <b style="color:var(--bad)">OUT</b>
- (where the playing track starts to leave). They snap to the start of the bar and are saved with the track.</div>
+ <div class="hint"><b style="color:var(--ok)">IN</b>: where the next track starts · <b style="color:var(--bad)">OUT</b>: where the
+ playing track starts to leave · <b style="color:#ff9800">END</b>: where it is gone (sets the blend length).
+ Pick one and tap a bar, drag a flag, or nudge it −4/+4 beats. Pinch or ＋/− to zoom, swipe to scroll.
+ Markers snap to the start of the bar and are saved with the track.</div>
 </div>
 
-<h2>Up next</h2><div class="card list" id="queue"></div>
+<h2 class="row">Up next<span class="grow"></span><button class="mini" onclick="clearQueue()">Clear queue</button></h2>
+<div class="card list" id="queue"></div>
 
 <h2>Start a set from a seed song</h2>
 <div class="card"><input id="q" placeholder="Search artist, title, genre…" oninput="search()" autocomplete="off">
@@ -141,7 +153,7 @@ function artTag(it) {
 }
 function setHTML(el, html) { if (el._h !== html) { el._h = html; el.innerHTML = html; } }   // no flicker, no reloads
 function trackRow(it, acts) {
-  return `<div class="it ${it.played ? 'played' : ''}">${artTag(it)}<div class="grow"><div class="t ell">${esc(it.title)}</div>
+  return `<div class="it ${it.played ? 'played' : ''}" ${it.pos != null ? `data-pos="${it.pos}"` : ''}>${artTag(it)}<div class="grow"><div class="t ell">${esc(it.title)}</div>
   <div class="s ell">${[esc(it.artist), it.bpm ? it.bpm.toFixed(1) : '', esc(it.key)].filter(Boolean).join(' · ')}${it.played ? ' · <span class="pl">✓ played</span>' : ''}</div></div>
   <div class="acts">${acts}</div></div>`;
 }
@@ -160,8 +172,11 @@ function render() {
   $('status').textContent = S.automix.status + (S.paused ? ' · PAUSED' : '');
   $('pp').innerHTML = (S.paused ? '▶' : '❚❚') + `<small>${S.paused ? 'resume' : 'pause'}</small>`;
   $('am').textContent = S.automix.active ? '■ Auto-mix on' : '▶ Start auto-mix'; $('am').className = 'grow ' + (S.automix.active ? 'on' : '');
-  setHTML($('bars'), [4, 8, 16, 32].map(b => `<button class="${S.automix.blend_bars === b ? 'on' : ''}" onclick="cmd('blend',{bars:${b}})">${b}</button>`).join(''));
-  setHTML($('queue'), S.queue.length ? S.queue.map((it, i) => trackRow(it,
+  const au = S.automix.auto_length;
+  $('blabel').textContent = au ? `Blend length: auto, up to ${S.automix.blend_bars} bars (never dead air)` : `Blend length: exactly ${S.automix.blend_bars} bars`;
+  setHTML($('bars'), `<button class="${au ? 'on' : ''}" onclick="cmd('blend',{auto:${!au}})">Auto</button>` +
+    [4, 8, 16, 32, 64, 128].map(b => `<button class="${S.automix.blend_bars === b ? 'sel' : ''}" onclick="cmd('blend',{bars:${b}})">${b}</button>`).join(''));
+  setHTML($('queue'), S.queue.length ? S.queue.map((it, i) => trackRow(Object.assign({pos: i}, it),
     `<button title="play next" onclick="cmd('queue_play',{pos:${i}})">▶</button>` +
     (i ? `<button title="move up" onclick="cmd('queue_move',{pos:${i},to:${i - 1}})">↑</button>` : '') +
     `<button title="remove" onclick="cmd('queue_remove',{pos:${i}})">✕</button>`)).join('')
@@ -240,87 +255,212 @@ function spin(dt) {
   for (const d of S.decks) if (d.playing) gearAng[d.deck] = ((gearAng[d.deck] || 0) + dt * (33.333 / 60) * 2 * Math.PI * (d.rate || 1)) % (2 * Math.PI);
 }
 
-// ---- transition waveforms ------------------------------------------------------------------------
+// ---- transition waveforms: zoom (pinch / buttons), drag or bump IN / OUT / OUT END ----------------
+const VIEW = {}, PICK = {};
+const MK = {in: ['IN', '#3ddc84'], out: ['OUT', '#ff4d5e'], out_end: ['END', '#ff9800']};
 async function getWave(d) {
   const key = d.deck + ':' + d.wid;
-  if (waves[key] === undefined) { waves[key] = null; try { waves[key] = await api('/api/wave?deck=' + d.deck); renderWaves(); } catch (e) { delete waves[key]; } }
+  if (waves[key] === undefined) { waves[key] = null; try { waves[key] = await api('/api/wave?bins=4000&deck=' + d.deck); renderWaves(); } catch (e) { delete waves[key]; } }
   return waves[key];
 }
-function renderWaves() {
+function deckOf(n) { return S && S.decks.find(d => d.deck === n); }
+function waveOf(d) { return d && waves[d.deck + ':' + d.wid]; }
+function viewOf(d, w) { const v = VIEW[d.deck]; return v && v.wid === d.wid ? v : {wid: d.wid, v0: 0, v1: w.duration}; }
+function setView(d, w, v0, v1) {
+  const barLen = w.bpm > 0 ? 240 / w.bpm : 2, span = Math.min(Math.max(v1 - v0, barLen * 4), w.duration);
+  v0 = Math.min(Math.max(v0, 0), Math.max(w.duration - span, 0));
+  VIEW[d.deck] = {wid: d.wid, v0, v1: v0 + span};
+}
+function zoomWave(deck, f, around) {
+  const d = deckOf(deck), w = waveOf(d); if (!w) return;
+  const v = viewOf(d, w), span = v.v1 - v.v0;
+  let c = around;
+  if (c == null) { const m = d[pickOf(d) === 'out_end' ? 'mix_out_end' : pickOf(d) === 'out' ? 'mix_out' : 'mix_in'];
+    c = m != null && m >= v.v0 && m <= v.v1 ? m : (v.v0 + v.v1) / 2; }
+  const ns = span * f, k = (c - v.v0) / span;
+  setView(d, w, c - k * ns, c - k * ns + ns); drawWave(d);
+}
+function fitWave(deck) { delete VIEW[deck]; const d = deckOf(deck); if (d) drawWave(d); }
+function pickOf(d) { return PICK[d.deck] || (d.master ? 'out' : 'in'); }
+function setPick(deck, k) { PICK[deck] = k; renderWaves(true); }
+function bump(deck, beats) { const d = deckOf(deck); if (d) cmd('bump', {deck, which: pickOf(d), beats}); }
+function outLen(deck, bars) { cmd('out_length', {deck, bars}); }
+function renderWaves(force) {
   if (!S) return;
   const box = $('waves'), list = S.decks.filter(d => d.loaded && (d.playing || d.next)).sort((a, b) => b.master - a.master);
-  const ids = list.map(d => d.deck).join(',');
+  const ids = list.map(d => d.deck + d.wid).join(',');
   if (box.dataset.ids !== ids) {
     box.dataset.ids = ids;
-    box.innerHTML = list.length ? list.map(d => `<div class="wv"><canvas id="wv${d.deck}" data-deck="${d.deck}"></canvas>
-      <div class="lab"><span class="ell" id="wl${d.deck}"></span><span id="wr${d.deck}"></span></div></div>`).join('')
+    box.innerHTML = list.length ? list.map(d => `<div class="wv">
+      <div class="lab"><span class="ell grow" id="wl${d.deck}"></span><span class="zm">
+        <button onclick="zoomWave('${d.deck}',1.6)" title="zoom out">−</button><button onclick="zoomWave('${d.deck}',0.55)" title="zoom in">＋</button><button onclick="fitWave('${d.deck}')" title="whole track">⤢</button></span></div>
+      <canvas id="wv${d.deck}" data-deck="${d.deck}"></canvas>
+      <div class="wvc"><div class="seg" id="seg${d.deck}"></div>
+        <button onclick="bump('${d.deck}',-4)" title="4 beats earlier">−4</button><button onclick="bump('${d.deck}',4)" title="4 beats later">+4</button>
+        <span class="grow"></span><span class="small mut" id="wr${d.deck}"></span></div>
+      <div class="wvc small" id="ol${d.deck}"></div></div>`).join('')
       : '<div class="mut small" style="margin-top:8px">Load or start a track to edit its transition markers.</div>';
     list.forEach(d => bindWave($('wv' + d.deck)));
   }
   list.forEach(d => {
-    $('wl' + d.deck).innerHTML = `<b>${d.deck}</b> · ${esc(d.title)} ${d.master ? '<span class="pl">playing</span>' : '<span class="mut">next</span>'}`;
+    setHTML($('wl' + d.deck), `<b>${d.deck}</b> · ${esc(d.title)} ${d.master ? '<span class="pl">playing</span>' : '<span class="mut">next</span>'}`);
+    const p = pickOf(d);
+    setHTML($('seg' + d.deck), Object.keys(MK).map(k => `<button class="${p === k ? 'sel' : ''}" style="--c:${MK[k][1]}" onclick="setPick('${d.deck}','${k}')">${MK[k][0]}</button>`).join(''));
+    const ob = d.mix_out != null && d.mix_out_end != null && waveOf(d) && waveOf(d).bpm > 0 ? Math.round((d.mix_out_end - d.mix_out) * waveOf(d).bpm / 240) : null;
+    setHTML($('ol' + d.deck), d.mix_out == null ? '<span class="mut">Set OUT to choose an outro length</span>' : '<span class="mut">Outro</span>' +
+      [['Auto', 0], ['16', 16], ['32', 32], ['64', 64], ['128', 128]].map(([t, b]) => `<button class="${(b ? ob === b : ob == null) ? 'on' : ''}" onclick="outLen('${d.deck}',${b || 'null'})">${t}</button>`).join(''));
     getWave(d); drawWave(d);
   });
 }
-function deckOf(n) { return S && S.decks.find(d => d.deck === n); }
 function drawWave(d) {
   const cv = $('wv' + d.deck); if (!cv) return;
-  const w = waves[d.deck + ':' + d.wid];
-  const W = cv.clientWidth * devicePixelRatio, H = cv.clientHeight * devicePixelRatio;
+  const w = waveOf(d), dpr = devicePixelRatio;
+  const W = cv.clientWidth * dpr, H = cv.clientHeight * dpr;
   if (cv.width !== W) { cv.width = W; cv.height = H; }
   const c = cv.getContext('2d'); c.clearRect(0, 0, W, H);
   if (!w) return;
-  const dur = w.duration, X = t => t / dur * W, n = w.low.length, bw = W / n;
-  for (let i = 0; i < n; i++) {
-    const lo = w.low[i] / 99, mi = w.mid[i] / 99, hi = w.high[i] / 99, h = Math.max(lo, mi, hi) * H * 0.9;
+  const v = viewOf(d, w), span = v.v1 - v.v0, X = t => (t - v.v0) / span * W, n = w.low.length, dur = w.duration;
+  const top = 18 * dpr, wh = H - top - 14 * dpr, step = Math.max(1, Math.round(dpr));
+  for (let x = 0; x < W; x += step) {
+    const t0 = v.v0 + x / W * span, t1 = v.v0 + (x + step) / W * span;
+    let i0 = Math.floor(t0 / dur * n), i1 = Math.max(i0 + 1, Math.ceil(t1 / dur * n));
+    if (i0 >= n || i1 <= 0) continue;
+    i0 = Math.max(i0, 0); i1 = Math.min(i1, n);
+    let lo = 0, mi = 0, hi = 0;
+    for (let i = i0; i < i1; i++) { lo = Math.max(lo, w.low[i]); mi = Math.max(mi, w.mid[i]); hi = Math.max(hi, w.high[i]); }
+    lo /= 99; mi /= 99; hi /= 99;
+    const h = Math.max(lo, mi, hi) * wh;
     c.fillStyle = `rgb(${40 + 200 * lo | 0},${70 + 140 * mi | 0},${90 + 165 * hi | 0})`;
-    c.fillRect(i * bw, (H - h) / 2, Math.max(bw, 1), h);
+    c.fillRect(x, top + (wh - h) / 2, step, h);
   }
-  // bar lines every 8 bars
+  // bars: phrase lines and bar numbers, beats when close enough
   if (w.bpm > 0) {
-    const bar = 4 * 60 / w.bpm; c.fillStyle = '#ffffff22';
-    for (let t = w.first_beat; t < dur; t += bar * 8) c.fillRect(X(t), 0, 1, H);
+    const bar = 240 / w.bpm, ppb = bar / span * W, every = [1, 4, 8, 16, 32, 64].find(k => ppb * k >= 34 * dpr) || 128;
+    c.font = `${10 * dpr}px system-ui`;
+    const b0 = Math.max(0, Math.floor((v.v0 - w.first_beat) / bar)), b1 = Math.ceil((v.v1 - w.first_beat) / bar);
+    for (let b = b0; b <= b1; b++) {
+      const x = X(w.first_beat + b * bar);
+      if (b % every === 0) {
+        c.fillStyle = b % 8 === 0 ? '#ffffff66' : '#ffffff30'; c.fillRect(x, top, Math.max(1, dpr * (b % 8 === 0 ? 1.5 : 1)), wh);
+        c.fillStyle = '#9a9ca6'; c.fillText(String(b + 1), x + 2 * dpr, H - 3 * dpr);
+      }
+      if (ppb >= 90 * dpr) { c.fillStyle = '#ffffff18'; for (let k = 1; k < 4; k++) c.fillRect(X(w.first_beat + (b + k / 4) * bar), top, 1, wh); }
+    }
   }
-  const mk = drag && drag.deck === d.deck ? drag : {in: d.mix_in, out: d.mix_out};
-  // planned blend
-  const tr = S.transition;
-  if (tr && w.bpm > 0) {
-    if (tr.out_deck === d.deck && tr.start_t != null) { c.fillStyle = '#ff4d5e33'; c.fillRect(X(tr.start_t), 0, X(tr.beats * 60 / w.bpm), H); }
-    if (tr.in_deck === d.deck && tr.in_start_t != null) { c.fillStyle = '#3ddc8433'; c.fillRect(X(tr.in_start_t), 0, X(tr.beats * 60 / w.bpm), H); }
+  const mk = drag && drag.deck === d.deck ? drag : {in: d.mix_in, out: d.mix_out, out_end: d.mix_out_end};
+  const tr = S.transition, bl = w.bpm > 0 ? 60 / w.bpm : 0;
+  if (mk.out != null && bl) {      // the outgoing blend: OUT .. END (or the blend length)
+    const e = mk.out_end != null ? mk.out_end : mk.out + S.automix.blend_bars * 4 * bl;
+    c.fillStyle = '#ff4d5e26'; c.fillRect(X(mk.out), top, X(e) - X(mk.out), wh);
   }
-  const flag = (t, col, txt) => { if (t == null) return; const x = X(t); c.fillStyle = col; c.fillRect(x - 1.5 * devicePixelRatio, 0, 3 * devicePixelRatio, H);
-    c.font = `bold ${11 * devicePixelRatio}px system-ui`; const tw = c.measureText(txt).width + 10 * devicePixelRatio;
-    c.fillRect(Math.min(x, W - tw), 0, tw, 16 * devicePixelRatio); c.fillStyle = '#111'; c.fillText(txt, Math.min(x, W - tw) + 5 * devicePixelRatio, 12 * devicePixelRatio); };
-  flag(mk.in, '#3ddc84', 'IN'); flag(mk.out, '#ff4d5e', 'OUT');
-  c.fillStyle = '#fff'; c.fillRect(X(d.time) - 1, 0, 2 * devicePixelRatio, H);
-  $('wr' + d.deck).textContent = fmt(d.time) + ' / ' + fmt(dur);
+  if (tr && bl) {
+    if (tr.in_deck === d.deck && tr.in_start_t != null) { c.fillStyle = '#3ddc8426'; c.fillRect(X(tr.in_start_t), top, tr.beats * bl / span * W, wh); }
+  }
+  const p = pickOf(d);
+  for (const k of ['in', 'out', 'out_end']) {
+    const t = mk[k]; if (t == null) continue;
+    const x = X(t), [txt, col] = MK[k], sel = p === k;
+    c.fillStyle = col; c.fillRect(x - (sel ? 2 : 1) * dpr, top, (sel ? 4 : 2) * dpr, wh);
+    c.font = `bold ${11 * dpr}px system-ui`;
+    const label = txt + (w.bpm > 0 ? ' ' + (Math.round((t - w.first_beat) * w.bpm / 240) + 1) : ''), tw = c.measureText(label).width + 10 * dpr;
+    let lx = Math.min(Math.max(x - (k === 'out_end' ? tw : 0), 0), W - tw);
+    if (x < 0 || x > W) {           // off screen: point at it instead of pretending it is here
+      const arrow = x < 0 ? '◂ ' : ' ▸'; const lab2 = x < 0 ? arrow + label : label + arrow, tw2 = c.measureText(lab2).width + 10 * dpr;
+      lx = x < 0 ? 0 : W - tw2; c.globalAlpha = 0.75; c.fillRect(lx, 0, tw2, top - 2 * dpr);
+      c.fillStyle = '#111'; c.fillText(lab2, lx + 5 * dpr, top - 6 * dpr); c.globalAlpha = 1; continue;
+    }
+    c.fillRect(lx, 0, tw, top - 2 * dpr); if (sel) { c.strokeStyle = '#fff'; c.lineWidth = dpr; c.strokeRect(lx, 0, tw, top - 2 * dpr); }
+    c.fillStyle = '#111'; c.fillText(label, lx + 5 * dpr, top - 6 * dpr);
+  }
+  c.fillStyle = '#fff'; c.fillRect(X(d.time) - dpr / 2, top, 2 * dpr, wh);
+  const zoomed = span < dur * 0.98;
+  setHTML($('wr' + d.deck), (zoomed ? `<span class="pl">${Math.max(1, Math.round(dur / span))}×</span> · ` : '') + fmt(d.time) + ' / ' + fmt(dur));
 }
 function snapBar(w, t) {
   if (!(w.bpm > 0)) return t;
-  const bar = 4 * 60 / w.bpm; return Math.max(0, w.first_beat + Math.floor((t - w.first_beat) / bar + 1e-6) * bar);
+  const bar = 240 / w.bpm; return Math.max(0, w.first_beat + Math.round((t - w.first_beat) / bar) * bar);
 }
 function bindWave(cv) {
-  const deck = cv.dataset.deck;
-  const tAt = ev => { const r = cv.getBoundingClientRect(), d = deckOf(deck), w = d && waves[deck + ':' + d.wid];
-    return w ? Math.min(Math.max((ev.clientX - r.left) / r.width, 0), 1) * w.duration : 0; };
+  const deck = cv.dataset.deck, pts = new Map();
+  let g = null;                                        // gesture
+  const tAt = (x) => { const r = cv.getBoundingClientRect(), d = deckOf(deck), w = waveOf(d), v = viewOf(d, w);
+    return v.v0 + Math.min(Math.max((x - r.left) / r.width, 0), 1) * (v.v1 - v.v0); };
   cv.addEventListener('pointerdown', ev => {
-    const d = deckOf(deck), w = d && waves[deck + ':' + d.wid]; if (!w) return;
-    const t = tAt(ev), tol = w.duration * 0.04;
-    const di = d.mix_in != null ? Math.abs(t - d.mix_in) : 1e9, dO = d.mix_out != null ? Math.abs(t - d.mix_out) : 1e9;
-    let which = di <= dO ? (di < tol ? 'in' : null) : (dO < tol ? 'out' : null);
-    if (!which) which = d.master ? 'out' : 'in';             // tap empty space: the playing track's OUT, the next track's IN
-    drag = {deck, which, in: d.mix_in, out: d.mix_out}; drag[which] = snapBar(w, t);
-    cv.setPointerCapture(ev.pointerId); drawWave(d); ev.preventDefault();
+    const d = deckOf(deck), w = waveOf(d); if (!w) return;
+    cv.setPointerCapture(ev.pointerId); pts.set(ev.pointerId, ev.clientX); ev.preventDefault();
+    const v = viewOf(d, w);
+    if (pts.size === 2) {                              // pinch to zoom
+      const xs = [...pts.values()]; drag = null;
+      g = {pinch: true, d0: Math.abs(xs[0] - xs[1]) || 1, c: tAt((xs[0] + xs[1]) / 2), v0: v.v0, v1: v.v1, rel: ((xs[0] + xs[1]) / 2 - cv.getBoundingClientRect().left) / cv.getBoundingClientRect().width};
+      return;
+    }
+    const r = cv.getBoundingClientRect(), px = ev.clientX - r.left;
+    let hit = null, best = 16;
+    for (const [k, f] of [['in', 'mix_in'], ['out', 'mix_out'], ['out_end', 'mix_out_end']]) {
+      if (d[f] == null) continue; const x = (d[f] - v.v0) / (v.v1 - v.v0) * r.width;
+      if (Math.abs(x - px) < best) { best = Math.abs(x - px); hit = k; }
+    }
+    g = {x0: ev.clientX, v0: v.v0, v1: v.v1, hit, moved: false};
+    if (hit) { PICK[deck] = hit; drag = {deck, which: hit, in: d.mix_in, out: d.mix_out, out_end: d.mix_out_end}; renderWaves(true); }
   });
   cv.addEventListener('pointermove', ev => {
-    if (!drag || drag.deck !== deck) return; const d = deckOf(deck), w = waves[deck + ':' + d.wid];
-    drag[drag.which] = snapBar(w, tAt(ev)); drawWave(d);
+    if (!pts.has(ev.pointerId) || !g) return;
+    pts.set(ev.pointerId, ev.clientX);
+    const d = deckOf(deck), w = waveOf(d); if (!w) return;
+    if (g.pinch && pts.size >= 2) {
+      const xs = [...pts.values()], dist = Math.abs(xs[0] - xs[1]) || 1, span = (g.v1 - g.v0) * g.d0 / dist;
+      setView(d, w, g.c - g.rel * span, g.c - g.rel * span + span); drawWave(d); return;
+    }
+    if (Math.abs(ev.clientX - g.x0) > 6) g.moved = true;
+    if (drag && drag.deck === deck) {
+      const t = snapBar(w, tAt(ev.clientX));
+      if (drag.which === 'out' && d.mix_out != null && d.mix_out_end != null) drag.out_end = d.mix_out_end + (t - d.mix_out);
+      drag[drag.which] = t; drawWave(d);
+    } else if (g.moved) {                              // scroll the zoomed view
+      const r = cv.getBoundingClientRect(), dt = (g.x0 - ev.clientX) / r.width * (g.v1 - g.v0);
+      setView(d, w, g.v0 + dt, g.v1 + dt); drawWave(d);
+    }
   });
-  const end = () => { if (!drag || drag.deck !== deck) return; const g = drag; drag = null;
-    if (g.in != null && g.out != null && g.out <= g.in) { toast('OUT must come after IN'); renderWaves(); return; }
-    cmd('markers', {deck, in: g.in, out: g.out}); };
-  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', () => { drag = null; renderWaves(); });
+  const up = ev => {
+    pts.delete(ev.pointerId);
+    if (!g) return;
+    const d = deckOf(deck), w = waveOf(d), gg = g;
+    if (gg.pinch) { if (pts.size === 0) g = null; return; }
+    g = null;
+    if (drag && drag.deck === deck) {
+      const m = drag; drag = null;
+      const body = {deck}; body[m.which] = m[m.which]; if (m.which === 'out' && m.out_end != null) body.out_end = m.out_end;
+      cmd('markers', body);
+    } else if (!gg.moved && w) {                       // tap: put the selected marker on that bar
+      const k = pickOf(d), body = {deck}; body[k] = snapBar(w, tAt(ev.clientX));
+      if (k === 'out' && d.mix_out != null && d.mix_out_end != null) body.out_end = d.mix_out_end + (body.out - d.mix_out);
+      cmd('markers', body);
+    }
+  };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', ev => { pts.delete(ev.pointerId); g = null; drag = null; renderWaves(true); });
 }
+
+// ---- queue: swipe a row left to remove it, or clear everything -------------------------------------
+function clearQueue() { if (S && S.queue.length && confirm('Remove every track from the queue?')) cmd('queue_clear'); }
+(function swipeToRemove() {
+  const box = $('queue'); let sw = null;
+  box.addEventListener('pointerdown', ev => {
+    const row = ev.target.closest('.it[data-pos]'); if (!row || ev.target.closest('button')) return;
+    sw = {row, x0: ev.clientX, y0: ev.clientY, dx: 0, on: false};
+  });
+  box.addEventListener('pointermove', ev => {
+    if (!sw) return; const dx = ev.clientX - sw.x0, dy = ev.clientY - sw.y0;
+    if (!sw.on && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.5) { sw.on = true; sw.row.classList.add('swiping'); }
+    if (sw.on) { sw.dx = Math.min(0, dx); sw.row.style.transform = `translateX(${sw.dx}px)`; sw.row.style.opacity = 1 + sw.dx / 300; }
+  });
+  const end = () => {
+    if (!sw) return; const s = sw; sw = null; s.row.classList.remove('swiping');
+    if (s.on && s.dx < -90) { s.row.style.transform = 'translateX(-110%)'; cmd('queue_remove', {pos: +s.row.dataset.pos}); }
+    else { s.row.style.transform = ''; s.row.style.opacity = ''; }
+  };
+  box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+})();
 
 // ---- search / seed -----------------------------------------------------------------------------
 let sTimer = null;

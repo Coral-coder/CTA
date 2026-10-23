@@ -167,6 +167,7 @@ class Waveform(QWidget):
         self.span = 8.0
         self.mix_in = None         # seconds
         self.mix_out = None
+        self.mix_out_end = None    # seconds: the blend ends here when set
         self.mix_beats = 64.0      # blend length shown after the outro marker
         self._over = None          # cached (width, heights, colours)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -202,7 +203,10 @@ class Waveform(QWidget):
         stamp = f"{int(t // 60)}:{t % 60:04.1f}"
         m.addAction(f"Set mix-in (intro) here  [{stamp}]", lambda: self.marker.emit("in", t))
         m.addAction(f"Set mix-out (outro) here  [{stamp}]", lambda: self.marker.emit("out", t))
+        m.addAction(f"Set outro end here  [{stamp}]", lambda: self.marker.emit("out_end", t))
         m.addAction(f"Set cue point here  [{stamp}]", lambda: self.marker.emit("cue", t))
+        m.addSeparator()
+        m.addAction("Edit markers (zoom in)…", lambda: self.marker.emit("edit", 0.0))
         if self.mix_in is not None or self.mix_out is not None:
             m.addSeparator()
             m.addAction("Clear mix-in / mix-out markers", lambda: self.marker.emit("clear", 0.0))
@@ -298,9 +302,11 @@ class Waveform(QWidget):
         # mix markers: green IN flag, red OUT flag + the blend region after it
         if self.mix_out is not None and self.grid is not None:
             x0 = self._x(self.mix_out, w)
-            x1 = self._x(self.mix_out + self.mix_beats * self.grid.beat_len, w)
+            x1 = self._x(self.mix_out_end if self.mix_out_end is not None
+                         else self.mix_out + self.mix_beats * self.grid.beat_len, w)
             p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(229, 57, 53, 45))
-        for t, label, colr in ((self.mix_in, "IN", QColor(67, 160, 71)), (self.mix_out, "OUT", QColor(229, 57, 53))):
+        for t, label, colr in ((self.mix_in, "IN", QColor(67, 160, 71)), (self.mix_out, "OUT", QColor(229, 57, 53)),
+                               (self.mix_out_end, "END", QColor(255, 152, 0))):
             if t is None:
                 continue
             x = self._x(t, w)
@@ -504,6 +510,411 @@ class _Scratcher:
             self.eng.jog_release(self.deck)
 
 
+class QueueList(QListWidget):
+    """Auto-mix queue: drag to reorder, drag out / ✕ / Delete to remove."""
+
+    removeRequested = Signal(int)
+    reordered = Signal()
+
+    def __init__(self):
+        super().__init__()
+        from PySide6.QtWidgets import QAbstractItemView, QStyledItemDelegate
+
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.model().rowsMoved.connect(lambda *_: self.reordered.emit())
+
+        class Delegate(QStyledItemDelegate):
+            def paint(self, p, opt, ix):
+                super().paint(p, opt, ix)
+                r = opt.rect
+                p.save()
+                p.setPen(QColor(230, 90, 100))
+                p.drawText(QRectF(r.right() - 24, r.top(), 22, r.height()), Qt.AlignCenter, "✕")
+                p.restore()
+        self.setItemDelegate(Delegate(self))
+
+    def mousePressEvent(self, ev):
+        it = self.itemAt(ev.position().toPoint())
+        if it is not None and ev.button() == Qt.LeftButton and ev.position().x() > self.viewport().width() - 26:
+            self.removeRequested.emit(self.row(it))         # the ✕
+            return
+        super().mousePressEvent(ev)
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.currentRow() >= 0:
+            self.removeRequested.emit(self.currentRow())
+            return
+        super().keyPressEvent(ev)
+
+    def startDrag(self, actions):
+        from PySide6.QtGui import QCursor, QDrag
+
+        row = self.currentRow()
+        it = self.currentItem()
+        if it is None:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.mimeData([it]))
+        res = drag.exec(Qt.MoveAction)
+        inside = self.viewport().rect().contains(self.viewport().mapFromGlobal(QCursor.pos()))
+        if res == Qt.IgnoreAction and not inside:
+            self.removeRequested.emit(row)                  # dropped outside the list: remove it
+
+
+class MarkerWave(QWidget):
+    """Zoomable full waveform for placing the mix markers precisely.
+
+    Wheel: zoom around the mouse · drag a flag: move it (snaps to the bar) ·
+    drag elsewhere: scroll · double-click: play from there."""
+
+    moved = Signal(str, float)      # marker kind, seconds (bar-snapped)
+    seek = Signal(float)
+
+    COLORS = {"in": QColor(67, 160, 71), "out": QColor(229, 57, 53), "out_end": QColor(255, 152, 0)}
+    LABELS = {"in": "IN", "out": "OUT", "out_end": "OUT END"}
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(200)
+        self.setMouseTracking(True)
+        self.bands = None
+        self.duration = 1.0
+        self.grid = None
+        self.pos = 0.0
+        self.marks: dict[str, float | None] = {"in": None, "out": None, "out_end": None}
+        self.blend_beats = 64.0      # shown after OUT when there is no OUT END
+        self.v0, self.v1 = 0.0, 1.0
+        self._drag = None            # ("mark", kind) | ("pan", x0, v0, v1)
+        self._preview: tuple[str, float] | None = None
+
+    def set_track(self, bands, duration, grid):
+        self.bands, self.duration, self.grid = bands, max(duration, 1e-3), grid
+        self._coarse = (None,)
+        self.v0, self.v1 = 0.0, self.duration
+
+    # ---- view ------------------------------------------------------------------------
+    def zoom(self, factor: float, around: float | None = None):
+        span = self.v1 - self.v0
+        c = around if around is not None else (self.v0 + self.v1) / 2
+        min_span = (self.grid.beat_len * 8) if self.grid else 4.0
+        ns = float(np.clip(span * factor, min_span, self._extent()))
+        f = (c - self.v0) / max(span, 1e-9)
+        self.v0 = c - f * ns
+        self.v1 = self.v0 + ns
+        self._clamp()
+        self.update()
+
+    def show_around(self, t: float, bars: float = 32):
+        bl = self.grid.beat_len * 4 if self.grid else 2.0
+        span = min(self.duration, bars * bl)
+        self.v0, self.v1 = t - span * 0.3, t - span * 0.3 + span
+        self._clamp()
+        self.update()
+
+    def _extent(self) -> float:
+        """Track length, or further when OUT END lies past the end (a looped outro)."""
+        ends = [t for t in self.marks.values() if t is not None]
+        bl = self.grid.beat_len * 4 if self.grid else 2.0
+        return max([self.duration] + [t + 2 * bl for t in ends])
+
+    def fit(self):
+        self.v0, self.v1 = 0.0, self._extent()
+        self.update()
+
+    def _clamp(self):
+        span = self.v1 - self.v0
+        lo, hi = 0.0, max(self._extent(), span)
+        if self.v0 < lo:
+            self.v0, self.v1 = lo, lo + span
+        if self.v1 > hi + span * 0.2:
+            self.v1 = hi + span * 0.2
+            self.v0 = self.v1 - span
+
+    def _t(self, x: float) -> float:
+        return self.v0 + x / max(self.width(), 1) * (self.v1 - self.v0)
+
+    def _x(self, t: float) -> float:
+        return (t - self.v0) / max(self.v1 - self.v0, 1e-9) * self.width()
+
+    def _snap(self, t: float) -> float:
+        if self.grid is None:
+            return t
+        return max(0.0, self.grid.time_of_beat(np.floor(self.grid.beat_at(t) / 4.0 + 0.5) * 4.0))
+
+    # ---- mouse --------------------------------------------------------------------------
+    def _hit(self, x: float) -> str | None:
+        best, bd = None, 9.0
+        for k, t in self.marks.items():
+            if t is not None and abs(self._x(t) - x) < bd:
+                best, bd = k, abs(self._x(t) - x)
+        return best
+
+    def wheelEvent(self, ev):
+        self.zoom(0.8 if ev.angleDelta().y() > 0 else 1.25, self._t(ev.position().x()))
+
+    def mousePressEvent(self, ev):
+        if ev.button() != Qt.LeftButton or self.bands is None:
+            return
+        x = ev.position().x()
+        k = self._hit(x)
+        self._drag = ("mark", k) if k else ("pan", x, self.v0, self.v1)
+        self.setCursor(Qt.SizeHorCursor if k else Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(self, ev):
+        x = ev.position().x()
+        if self._drag is None:
+            self.setCursor(Qt.SizeHorCursor if self._hit(x) else Qt.OpenHandCursor)
+            return
+        if self._drag[0] == "mark":
+            self._preview = (self._drag[1], self._snap(self._t(x)))
+        else:
+            _, x0, v0, v1 = self._drag
+            dt = (x0 - x) / max(self.width(), 1) * (v1 - v0)
+            self.v0, self.v1 = v0 + dt, v1 + dt
+            self._clamp()
+        self.update()
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag and self._drag[0] == "mark" and self._preview is not None:
+            self.moved.emit(*self._preview)
+        self._drag = None
+        self._preview = None
+        self.setCursor(Qt.OpenHandCursor)
+        self.update()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.seek.emit(self._snap(self._t(ev.position().x())))
+
+    # ---- paint ------------------------------------------------------------------------------
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor(16, 17, 20))
+        if self.bands is None or w < 4:
+            return
+        wave_h = h - 22
+        ts = self.v0 + (np.arange(w) + 0.5) / w * (self.v1 - self.v0)
+        idx = (ts * SR / 256).astype(np.int64)
+        valid = (idx >= 0) & (idx < self.bands.shape[0])
+        # max over each pixel's span so short hits survive zooming out
+        step = max(1, int((self.v1 - self.v0) / w * SR / 256))
+        b = np.zeros((w, 3), np.float32)
+        src = self.bands
+        if step > 1:
+            if getattr(self, "_coarse", (None,))[0] != step:
+                n = -(-src.shape[0] // step) * step
+                pad = np.zeros((n - src.shape[0], src.shape[1]), src.dtype)
+                self._coarse = (step, np.concatenate([src, pad]).reshape(-1, step, src.shape[1]).max(axis=1))
+            b[valid] = self._coarse[1][idx[valid] // step]
+        else:
+            b[valid] = src[idx[valid]]
+        p.drawImage(0, 0, _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), wave_h))
+        # bars (phrase lines every 8 bars, numbers), beats when close enough
+        if self.grid is not None:
+            g = self.grid
+            bar_px = 4 * g.beat_len / max(self.v1 - self.v0, 1e-9) * w
+            every = next((k for k in (1, 4, 8, 16, 32) if bar_px * k >= 28), 64)
+            b0 = int(np.floor(g.beat_at(self.v0) / 4)) - 1
+            b1 = int(np.ceil(g.beat_at(self.v1) / 4)) + 1
+            p.setFont(self.font())
+            for bar in range(max(b0, 0), b1 + 1):
+                x = self._x(g.time_of_beat(bar * 4))
+                phrase = bar % 8 == 0
+                if bar % every == 0 or phrase and every <= 8:
+                    p.setPen(QPen(QColor(255, 255, 255, 150 if phrase else 70), 2 if phrase else 1))
+                    p.drawLine(int(x), 0, int(x), wave_h)
+                if bar % every == 0:
+                    p.setPen(QColor(170, 172, 180))
+                    p.drawText(QRectF(x + 2, wave_h + 2, 60, 18), Qt.AlignLeft | Qt.AlignVCenter, str(bar + 1))
+                if bar_px >= 60:
+                    p.setPen(QPen(QColor(255, 255, 255, 35), 1))
+                    for k in range(1, 4):
+                        xb = self._x(g.time_of_beat(bar * 4 + k))
+                        p.drawLine(int(xb), 0, int(xb), wave_h)
+        marks = dict(self.marks)
+        if self._preview:
+            marks[self._preview[0]] = self._preview[1]
+            if self._preview[0] == "out" and self.marks["out"] is not None and self.marks["out_end"] is not None:
+                marks["out_end"] = self.marks["out_end"] + (self._preview[1] - self.marks["out"])
+        # the outgoing blend: OUT .. OUT END (or the auto-mix length)
+        if marks["out"] is not None:
+            end = marks["out_end"]
+            if end is None and self.grid is not None:
+                end = marks["out"] + self.blend_beats * self.grid.beat_len
+            if end is not None:
+                x0, x1 = self._x(marks["out"]), self._x(end)
+                p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), wave_h), QColor(229, 57, 53, 40))
+        for k in ("in", "out", "out_end"):
+            t = marks[k]
+            if t is None:
+                continue
+            x = self._x(t)
+            c = self.COLORS[k]
+            p.setPen(QPen(c, 3))
+            p.drawLine(int(x), 0, int(x), wave_h)
+            label = self.LABELS[k]
+            if self.grid is not None:
+                label += f"  bar {int(round(self.grid.beat_at(t) / 4)) + 1}"
+            fw = p.fontMetrics().horizontalAdvance(label) + 10
+            lx = x - fw if k == "out_end" else x                       # END's label sits before its line
+            lx = min(max(lx, 0), w - fw)
+            p.fillRect(QRectF(lx, 0, fw, 18), c)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(QRectF(lx, 0, fw, 18), Qt.AlignCenter, label)
+        px = self._x(self.pos)
+        p.setPen(QPen(QColor(255, 255, 255), 2))
+        p.drawLine(int(px), 0, int(px), wave_h)
+
+
+class MarkerEditor(QDialog):
+    """Per-deck marker editor: zoom in, drag or bump IN / OUT / OUT END."""
+
+    def __init__(self, dj: DJPanel, deck: str):
+        super().__init__(dj)
+        self.dj = dj
+        self.deck = deck
+        self.setWindowTitle(f"Mix markers - deck {deck}")
+        self.resize(1100, 430)
+        lay = QVBoxLayout(self)
+        top = QHBoxLayout()
+        self.title = QLabel("")
+        self.title.setStyleSheet("font-size: 15px; font-weight: 700;")
+        top.addWidget(self.title, 1)
+        for txt, f, tip in (("−", 1.6, "Zoom out (or mouse wheel)"), ("+", 0.6, "Zoom in (or mouse wheel)")):
+            b = _btn(txt, w=34, tip=tip)
+            b.clicked.connect(lambda _=False, f=f: self.wave.zoom(f))
+            top.addWidget(b)
+        b = _btn("Whole track", tip="Show the whole track")
+        b.clicked.connect(lambda: self.wave.fit())
+        top.addWidget(b)
+        lay.addLayout(top)
+        self.wave = MarkerWave()
+        self.wave.moved.connect(self._moved)
+        self.wave.seek.connect(lambda t: self.dj.engine.seek(self.deck, t))
+        lay.addWidget(self.wave, 1)
+        hint = QLabel("Drag a flag to move it (it snaps to the start of the bar) · drag elsewhere to scroll · "
+                      "wheel to zoom · double-click to play from there")
+        hint.setStyleSheet("color: #9a9ba3;")
+        lay.addWidget(hint)
+        self.rows = {}
+        g = QGridLayout()
+        for r, (kind, name) in enumerate((("in", "IN (next track starts)"), ("out", "OUT (start mixing out)"),
+                                          ("out_end", "OUT END (outgoing gone)"))):
+            lab = QLabel(name)
+            lab.setStyleSheet(f"color: {MarkerWave.COLORS[kind].name()}; font-weight: 700;")
+            val = QLabel("—")
+            val.setMinimumWidth(170)
+            g.addWidget(lab, r, 0)
+            g.addWidget(val, r, 1)
+            col = 2
+            for txt, beats in (("−4 beats", -4), ("+4 beats", 4)):
+                b = _btn(txt, tip=f"Move {kind.upper().replace('_', ' ')} {beats:+d} beats (one bar)")
+                b.clicked.connect(lambda _=False, k=kind, bt=beats: self._do(self.dj.bump_marker, self.deck, k, bt))
+                g.addWidget(b, r, col)
+                col += 1
+            b = _btn("At playhead", tip="Put it at the start of the bar that is playing")
+            b.clicked.connect(lambda _=False, k=kind: self._at_playhead(k))
+            g.addWidget(b, r, col)
+            b = _btn("Show", tip="Zoom to it")
+            b.clicked.connect(lambda _=False, k=kind: self._show(k))
+            g.addWidget(b, r, col + 1)
+            b = _btn("Clear")
+            b.clicked.connect(lambda _=False, k=kind: self._clear(k))
+            g.addWidget(b, r, col + 2)
+            self.rows[kind] = val
+        lrow = QHBoxLayout()
+        lrow.addWidget(QLabel("Outro length:"))
+        for n in (8, 16, 32, 64, 128):
+            b = _btn(f"{n} bars", tip=f"OUT END = OUT + {n} bars (the outgoing track is looped if it ends sooner)")
+            b.clicked.connect(lambda _=False, n=n: self._do(self.dj.set_out_length, self.deck, n))
+            lrow.addWidget(b)
+        b = _btn("Auto", tip="No OUT END: auto-mix picks the length")
+        b.clicked.connect(lambda: self._do(self.dj.set_out_length, self.deck, None))
+        lrow.addWidget(b)
+        lrow.addStretch()
+        g.addLayout(lrow, 3, 0, 1, 8)
+        lay.addLayout(g)
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        self._path = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(50)
+        self.refresh()
+
+    def _do(self, fn, *a):
+        try:
+            self.status.setText(fn(*a) or "")
+        except ValueError as e:
+            self.status.setText(f"⚠ {e}")
+        self.refresh()
+
+    def _moved(self, kind, t):
+        mi, mo, me = self.dj.markers_of(self.deck)
+        if kind == "in":
+            mi = t
+        elif kind == "out":
+            if me is not None and mo is not None:
+                me = t + (me - mo)
+            mo = t
+        else:
+            me = t
+        self._do(self.dj.set_markers, self.deck, mi, mo, me)
+
+    def _at_playhead(self, kind):
+        d = self.dj.engine.decks[self.deck]
+        self._moved(kind, self.dj._snap_bar(self.deck, d.time))
+
+    def _clear(self, kind):
+        mi, mo, me = self.dj.markers_of(self.deck)
+        if kind == "in":
+            mi = None
+        elif kind == "out":
+            mo = me = None
+        else:
+            me = None
+        self._do(self.dj.set_markers, self.deck, mi, mo, me)
+
+    def _show(self, kind):
+        t = dict(zip(("in", "out", "out_end"), self.dj.markers_of(self.deck)))[kind]
+        if t is not None:
+            self.wave.show_around(t)
+
+    def refresh(self):
+        d = self.dj.engine.decks[self.deck]
+        if d.info.path != self._path:
+            self._path = d.info.path
+            self.title.setText(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}" if d.loaded
+                               else "Deck is empty")
+            if d.loaded:
+                self.wave.marks = dict(zip(("in", "out", "out_end"), self.dj.markers_of(self.deck)))
+                self.wave.set_track(getattr(d, "bands", None), d.length / SR, d.grid)
+                self.wave.fit()
+        if not d.loaded:
+            return
+        self.wave.pos = d.time
+        self.wave.grid = d.grid
+        self.wave.blend_beats = 4.0 * self.dj.automix.s.mix_bars
+        marks = dict(zip(("in", "out", "out_end"), self.dj.markers_of(self.deck)))
+        self.wave.marks = marks
+        for k, t in marks.items():
+            if t is None:
+                self.rows[k].setText("—" if k != "out_end" else "— (auto length)")
+            else:
+                bar = int(round(d.grid.beat_at(t) / 4)) + 1 if d.grid else 0
+                txt = f"{fmt_time(t)}  ·  bar {bar}"
+                if k == "out_end" and marks["out"] is not None and d.grid is not None:
+                    txt += f"  ·  {int(round((d.grid.beat_at(t) - d.grid.beat_at(marks['out'])) / 4))} bars"
+                self.rows[k].setText(txt)
+        self.wave.update()
+
+    def done(self, r):
+        self.timer.stop()
+        super().done(r)
+
+
 class DeckPanel(QFrame):
     """Controller-style deck: header, scrolling waveform (drag to scratch),
     overview, jog platter, performance pads and transport."""
@@ -666,6 +1077,9 @@ class DeckPanel(QFrame):
         b1 = _btn("1↓", w=30, tip="Set beat 1 (downbeat) at the playhead", h=26)
         b1.clicked.connect(self._grid_downbeat)
         krow.addWidget(b1)
+        b_mk = _btn("✎ MARKERS", tip="Zoom in and place the IN / OUT / OUT END mix markers precisely", h=26)
+        b_mk.clicked.connect(lambda: self.dj.edit_markers(name))
+        krow.addWidget(b_mk)
         mid = QVBoxLayout()
         mid.setSpacing(4)
         mid.addLayout(pads)
@@ -847,6 +1261,7 @@ class DeckPanel(QFrame):
             wv.grid = d.grid
             wv.mix_in = d.mix_in / SR if d.mix_in is not None else None
             wv.mix_out = d.mix_out / SR if d.mix_out is not None else None
+            wv.mix_out_end = d.mix_out_end / SR if d.mix_out_end is not None else None
             wv.mix_beats = 4.0 * self.dj.automix.s.mix_bars
             wv.update()
         if not self.platter.held:
@@ -1472,16 +1887,23 @@ class DJPanel(QWidget):
         col.addWidget(self.b_pause)
         lay.addLayout(col)
         form = QFormLayout()
+        self.auto_len = QCheckBox("Auto")
+        self.auto_len.setToolTip("Auto: the blend length follows the music (up to the number of bars set) and "
+                                 "never hangs on dead air.\nOff: always blend over exactly that many bars "
+                                 "(the outgoing track is looped if it ends sooner).")
+        self.auto_len.setChecked(self.settings.value("dj_auto_len", "true") == "true")
+        self.auto_len.toggled.connect(self._update_am_settings)
         self.mix_bars = QSpinBox()
-        self.mix_bars.setRange(1, 64)
-        self.mix_bars.setToolTip("How many bars the auto-mix blend lasts (both tracks playing together)")
+        self.mix_bars.setRange(1, 128)
+        self.mix_bars.setToolTip("Blend length in bars (the longest blend when Auto is on)")
         self.mix_bars.setValue(int(self.settings.value("dj_mix_bars", 16)))
         self.mix_bars.valueChanged.connect(self._update_am_settings)
         brow = QHBoxLayout()
         brow.setSpacing(2)
+        brow.addWidget(self.auto_len)
         brow.addWidget(self.mix_bars)
-        for n in (4, 8, 16, 32):
-            b = _btn(str(n), w=32, h=22, tip=f"Blend over {n} bars")
+        for n in (4, 8, 16, 32, 64, 128):
+            b = _btn(str(n), w=34, h=22, tip=f"Blend over {n} bars")
             b.clicked.connect(lambda _=False, n=n: self.mix_bars.setValue(n))
             brow.addWidget(b)
         form.addRow("Blend (bars)", brow)
@@ -1510,8 +1932,17 @@ class DJPanel(QWidget):
         self.am_status = QLabel("Auto-mix off")
         self.am_status.setStyleSheet("font-weight: bold;")
         col.addWidget(self.am_status)
-        self.queue_list = QListWidget()
-        self.queue_list.setMaximumHeight(70)
+        qh = QHBoxLayout()
+        qh.addWidget(QLabel("Up next"))
+        qh.addStretch()
+        b_clear = _btn("Clear queue", h=22, tip="Remove every track from the auto-mix queue")
+        b_clear.clicked.connect(self.clear_queue)
+        qh.addWidget(b_clear)
+        col.addLayout(qh)
+        self.queue_list = QueueList()
+        self.queue_list.setMaximumHeight(150)
+        self.queue_list.removeRequested.connect(self.remove_from_queue)
+        self.queue_list.reordered.connect(self._queue_reordered)
         col.addWidget(self.queue_list)
         lay.addLayout(col, 1)
         return box
@@ -1704,22 +2135,43 @@ class DJPanel(QWidget):
         if kind == "cue":
             self.engine.set_cue(deck, t)
             return
+        if kind == "edit":
+            self.edit_markers(deck)
+            return
         mi = d.mix_in / SR if d.mix_in is not None else None
         mo = d.mix_out / SR if d.mix_out is not None else None
+        me = d.mix_out_end / SR if d.mix_out_end is not None else None
         if kind == "in":
             mi = t
         elif kind == "out":
+            if me is not None and mo is not None:
+                me = t + (me - mo)              # moving OUT keeps the blend length
             mo = t
+        elif kind == "out_end":
+            me = t
         elif kind == "clear":
-            mi = mo = None
+            mi = mo = me = None
         try:
-            self.set_markers(deck, mi, mo)
+            self.set_markers(deck, mi, mo, me)
         except ValueError as e:
             self._error.emit(str(e))
             return
-        what = {"in": "Mix-in (intro)", "out": "Mix-out (outro)", "clear": "Markers"}[kind]
+        what = {"in": "Mix-in (intro)", "out": "Mix-out (outro)", "out_end": "Outro end",
+                "clear": "Markers"}[kind]
         self.main.status_label.setText(f"{what} {'cleared' if kind == 'clear' else 'set'} for {d.info.title} "
                                        "(saved with the track)")
+
+    def edit_markers(self, deck: str):
+        if not self.engine.decks[deck].loaded:
+            self.main.status_label.setText(f"Load a track on deck {deck} first")
+            return
+        eds = self.__dict__.setdefault("_editors", {})
+        ed = eds.get(deck)
+        if ed is None or not ed.isVisible():
+            ed = MarkerEditor(self, deck)
+            eds[deck] = ed
+        ed.show()
+        ed.raise_()
 
     def _snap_bar(self, deck: str, t: float | None) -> float | None:
         g = self.engine.decks[deck].grid
@@ -1727,22 +2179,74 @@ class DJPanel(QWidget):
             return t
         return max(float(g.time_of_beat(np.floor(g.beat_at(t) / 4.0 + 1e-6) * 4.0)), 0.0)
 
-    def set_markers(self, deck: str, mi: float | None, mo: float | None) -> str:
-        """Set both mix markers (seconds, snapped to the start of their bar),
-        re-plan auto-mix with them and save them with the track."""
+    def set_markers(self, deck: str, mi: float | None, mo: float | None, me: float | None = None) -> str:
+        """Set the mix markers (seconds, snapped to the start of their bar):
+        intro, outro start and (optional) outro end. Re-plans auto-mix with
+        them and saves them with the track."""
         d = self.engine.decks[deck]
         if not d.loaded:
             raise ValueError("That deck is empty.")
-        mi, mo = self._snap_bar(deck, mi), self._snap_bar(deck, mo)
+        mi, mo, me = self._snap_bar(deck, mi), self._snap_bar(deck, mo), self._snap_bar(deck, me)
+        dur = d.length / SR
+        mi, mo = (None if t is None else min(max(t, 0.0), dur) for t in (mi, mo))
+        # the outro end may lie past the end of the track: auto-mix loops the groove to last that long
+        if mo is None:
+            me = None
         if mi is not None and mo is not None and mo <= mi:
             raise ValueError("The mix-out (outro) marker must come after the mix-in (intro) marker.")
-        self.engine.set_markers(deck, mi, mo)
+        if me is not None and me <= mo:
+            raise ValueError("The outro end must come after the outro start.")
+        self.engine.set_markers(deck, mi, mo, me)
         self.automix.refresh_markers(deck)
         try:
-            self.main.db.set_markers(d.info.path, mi, mo)
+            self.main.db.set_markers(d.info.path, mi, mo, me)
         except Exception:  # noqa: BLE001
             log.exception("saving markers failed")
-        return f"Markers saved for {d.info.title}"
+        msg = f"Markers saved for {d.info.title}"
+        if mo is not None and me is not None and d.grid is not None:
+            bars = round((d.grid.beat_at(me) - d.grid.beat_at(mo)) / 4)
+            msg += f" (outro blend {bars} bars)"
+        return msg
+
+    def markers_of(self, deck: str) -> tuple[float | None, float | None, float | None]:
+        d = self.engine.decks[deck]
+        f = lambda v: v / SR if v is not None else None  # noqa: E731
+        return f(d.mix_in), f(d.mix_out), f(d.mix_out_end)
+
+    def set_out_length(self, deck: str, bars: int | None) -> str:
+        """Outro end = outro start + bars (None: no end marker, auto length)."""
+        d = self.engine.decks[deck]
+        mi, mo, _me = self.markers_of(deck)
+        if mo is None or d.grid is None:
+            raise ValueError("Set the OUT marker first.")
+        me = None if not bars else d.grid.time_of_beat(d.grid.beat_at(mo) + 4 * int(bars))
+        return self.set_markers(deck, mi, mo, me)
+
+    def bump_marker(self, deck: str, kind: str, beats: float) -> str:
+        """Move a marker by a number of beats (4 = one bar)."""
+        d = self.engine.decks[deck]
+        if not d.loaded or d.grid is None:
+            raise ValueError("That deck is empty.")
+        mi, mo, me = self.markers_of(deck)
+        g = d.grid
+        mv = lambda t: max(0.0, g.time_of_beat(g.beat_at(t) + beats)) if t is not None else None  # noqa: E731
+        if kind == "in":
+            if mi is None:
+                raise ValueError("Set the IN marker first.")
+            mi = mv(mi)
+        elif kind == "out":
+            if mo is None:
+                raise ValueError("Set the OUT marker first.")
+            mo, me = mv(mo), mv(me)            # the outro moves as a whole
+        elif kind == "out_end":
+            if me is None:
+                if mo is None:
+                    raise ValueError("Set the OUT marker first.")
+                me = mo
+            me = mv(me)
+        else:
+            raise ValueError(f"unknown marker {kind!r}")
+        return self.set_markers(deck, mi, mo, me)
 
     def grid_changed(self, deck: str):
         def save():
@@ -1804,9 +2308,12 @@ class DJPanel(QWidget):
     # ---- auto-mix --------------------------------------------------------------------
     def _automix_settings(self) -> AutoMixSettings:
         return AutoMixSettings(mix_bars=int(self.settings.value("dj_mix_bars", 16)),
+                               auto_length=self.settings.value("dj_auto_len", "true") == "true",
                                glide=self.settings.value("dj_glide", "true") == "true")
 
     def _update_am_settings(self, *_):
+        self.settings.setValue("dj_auto_len", "true" if self.auto_len.isChecked() else "false")
+        self.automix.s.auto_length = self.auto_len.isChecked()
         self.settings.setValue("dj_mix_bars", self.mix_bars.value())
         self.settings.setValue("dj_glide", "true" if self.glide.isChecked() else "false")
         self.automix.s.mix_bars = self.mix_bars.value()
@@ -1832,11 +2339,42 @@ class DJPanel(QWidget):
         self._show_queue()
 
     def _show_queue(self):
+        from PySide6.QtWidgets import QListWidgetItem
+
         self.queue_list.clear()
         lib = self.main.lib
+        if lib is None:
+            return
         for i in list(self.automix.queue):
-            t = lib.track(i)
-            self.queue_list.addItem(f"{t.bpm:6.1f}  {camelot_str(t.key):>3}  {t.artist} - {t.title}")
+            if not isinstance(i, (int, np.integer)) or not 0 <= int(i) < lib.n:
+                continue
+            t = lib.track(int(i))
+            it = QListWidgetItem(f"{t.bpm:6.1f}  {camelot_str(t.key):>3}  {t.artist} - {t.title}")
+            it.setData(Qt.UserRole, int(i))
+            it.setToolTip("Drag to reorder · drag out of the list, click ✕ or press Delete to remove")
+            self.queue_list.addItem(it)
+
+    def clear_queue(self):
+        with self.automix._lock:
+            self.automix.queue.clear()
+        self._show_queue()
+        self.main.status_label.setText("Queue cleared (auto-mix picks the next track itself when it runs dry)"
+                                        if self.auto_suggest.isChecked() else "Queue cleared")
+
+    def remove_from_queue(self, pos: int):
+        with self.automix._lock:
+            q = list(self.automix.queue)
+            if 0 <= pos < len(q):
+                q.pop(pos)
+                self.automix.queue.clear()
+                self.automix.queue.extend(q)
+        self._show_queue()
+
+    def _queue_reordered(self):
+        order = [self.queue_list.item(r).data(Qt.UserRole) for r in range(self.queue_list.count())]
+        with self.automix._lock:
+            self.automix.queue.clear()
+            self.automix.queue.extend(int(i) for i in order if i is not None)
 
     def toggle_automix(self, on):
         if on:

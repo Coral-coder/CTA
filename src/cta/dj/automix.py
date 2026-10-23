@@ -35,7 +35,8 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class AutoMixSettings:
-    mix_bars: int = 16
+    mix_bars: int = 16           # blend length (the longest one when auto_length)
+    auto_length: bool = True     # pick the length from the music, never hanging on dead air
     phrase_bars: int = 8
     glide: bool = True
     glide_bars: int = 16
@@ -50,6 +51,7 @@ class _Meta:
     title: str
     genre: str = ""
     long_form: bool = False          # trance / progressive: 16-bar phrases, long blends
+    out_end_bar: float | None = None   # user outro end marker (bar): blend lasts until here
 
     @property
     def mix_in_beat(self) -> float:
@@ -73,6 +75,11 @@ class _Transition:
     started: bool = False
     fixed_length: bool = False       # set by "transition now" with an explicit length
     loop_set: bool = False
+    in_loop: tuple[float, float] | None = None   # incoming loop (its beats) stretching a short intro
+    in_release: float = 0.0          # beats into the blend when the incoming loop is let go
+    in_loop_on: bool = False
+    in_wraps: float = 0.0            # beats the incoming loop has wrapped back (keeps x moving forward)
+    last_raw: float = 0.0
     echo_on: bool = False
 
     @property
@@ -269,7 +276,11 @@ class AutoMix:
             self._load_next(d, autoplay=False)
 
     def _load_next(self, deck: str, autoplay: bool):
+        on_air = {d.info.lib_index for d in self.eng.decks.values() if d.playing and d.info.lib_index >= 0}
         with self._lock:
+            # never the song that is on air again (back to back)
+            while self.queue and isinstance(self.queue[0], (int, np.integer)) and int(self.queue[0]) in on_air:
+                self.queue.popleft()
             if not self.queue:
                 return
             item = self.queue.popleft()
@@ -295,7 +306,7 @@ class AutoMix:
                     return                      # replaced meanwhile ("play next")
                 e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
                         mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
-                        bands=getattr(lt, "bands", None))
+                        bands=getattr(lt, "bands", None), mix_out_end=getattr(lt, "mix_out_end", None))
                 d = e.decks[deck]
                 if getattr(lt, "cues", None):
                     d.hotcues = (list(lt.cues) + [None] * 8)[:8]
@@ -350,9 +361,15 @@ class AutoMix:
         in_m = out_m = None
         if d.mix_in is not None:
             in_m = float(np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6))
+        out_end = None
         if d.mix_out is not None:
             out_m = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6))
-        return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, title=d.info.title,
+            if getattr(d, "mix_out_end", None) is not None:
+                out_end = float(np.floor(g.beat_at(d.mix_out_end / SR) / 4.0 + 1e-6))
+                if out_end <= out_m:
+                    out_end = None
+        return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, out_end_bar=out_end,
+                     title=d.info.title,
                      genre=getattr(d.info, "genre", "") or "", long_form=long_form)
 
     # ---- audio-thread logic ------------------------------------------------------
@@ -373,7 +390,9 @@ class AutoMix:
         plan = plan_transition(mo.structure, mi.structure, max_bars=force_bars or self.s.mix_bars,
                                harmonic=harmonic, tempo_gap_pct=gap,
                                out_marker_bar=mo.out_marker_bar, in_marker_bar=mi.in_marker_bar,
-                               genre_short=short and force_bars is None, learned=learned)
+                               genre_short=short and force_bars is None, learned=learned,
+                               out_end_bar=mo.out_end_bar if force_bars is None else None,
+                               auto=force_bars is None and self.s.auto_length)
         start = plan.out_start_bar * 4.0
         if immediate or start <= now_beat + 1.0:
             # too late for the planned spot (or "transition now"): next bar line
@@ -382,9 +401,11 @@ class AutoMix:
         else:
             loop = (plan.loop[0] * 4.0, plan.loop[1] * 4.0) if plan.loop else None
         style = plan.style if (loop or plan.style != "loop_blend") else "blend"
+        in_loop = (plan.in_loop[0] * 4.0, plan.in_loop[1] * 4.0) if plan.in_loop else None
         return _Transition(m.name, din_name, start, plan.bars * 4.0, in_start_beat=plan.in_start_bar * 4.0,
                            swap_beat=plan.swap_bar * 4.0, style=style, loop=loop, reason=plan.reason,
-                           fixed_length=force_bars is not None)
+                           fixed_length=force_bars is not None or plan.exact, in_loop=in_loop,
+                           in_release=(plan.in_release or 0.0) * 4.0)
 
     def _plan_now(self, bars: int | None):
         e = self.eng
@@ -455,6 +476,10 @@ class AutoMix:
             e._seek(din, din.grid.time_of_beat(target_beat) * SR)
             din.volume = 0.0
             din.eq = np.array([0.0, 0.5, 1.0]) if self.s.bass_swap else np.ones(3)
+            if tr.in_loop is not None:
+                g = din.grid
+                din.loop = (g.time_of_beat(tr.in_loop[0]) * SR, g.time_of_beat(tr.in_loop[1]) * SR)
+                tr.in_loop_on = True
             din.playing = True
             tr.started = True
             self.history.append(din.info.title)
@@ -471,7 +496,14 @@ class AutoMix:
 
         # beats into the transition, counted on the incoming track: the outgoing
         # may be looping, so its position is not a clock
-        x = din.grid.beat_at(din.time) - tr.in_start_beat
+        raw = din.grid.beat_at(din.time) - tr.in_start_beat
+        if tr.in_loop_on and raw < tr.last_raw - 1.0:
+            tr.in_wraps += tr.in_loop[1] - tr.in_loop[0]         # the incoming loop jumped back
+        tr.last_raw = raw
+        x = raw + tr.in_wraps
+        if tr.in_loop_on and x >= tr.in_release - 1e-6:
+            din.loop = None                    # let the incoming run on into its drop
+            tr.in_loop_on = False
         if tr.style == "echo_out":
             self._echo_out(e, tr, din, dout, x)
         else:
@@ -560,6 +592,9 @@ class AutoMix:
 
     def _finish(self, e: Engine, tr: _Transition, mb: float):
         din, dout = e.decks[tr.in_deck], e.decks[tr.out_deck]
+        if tr.in_loop_on:
+            din.loop = None
+            tr.in_loop_on = False
         dout.playing = False
         dout.volume = 1.0
         dout.eq = np.ones(3)

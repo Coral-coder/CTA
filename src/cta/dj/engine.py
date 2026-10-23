@@ -135,6 +135,7 @@ class Deck:
     level: float = 0.0                       # post-fader peak for the channel meter
     mix_in: float | None = None              # intro marker (source frames)
     mix_out: float | None = None             # outro marker (source frames)
+    mix_out_end: float | None = None         # outro end marker (source frames): blend ends here
     bands: object = None                     # waveform bands (frames, 3) for analysis/drawing
     phrase_origin: int = 0                   # bar (mod 8) where phrases start
     _filter: object = None
@@ -264,7 +265,8 @@ class Engine:
     # ---- deck operations (called inside the audio thread via cmd) -------------
     @staticmethod
     def _load(eng, deck: str, audio, grid, info, peaks, cue: float | None = None,
-              mix_in: float | None = None, mix_out: float | None = None, bands=None):
+              mix_in: float | None = None, mix_out: float | None = None, bands=None,
+              mix_out_end: float | None = None):
         """cue / mix_in / mix_out in seconds. The cue point defaults to the
         intro marker, else the first audible beat, else the first grid beat."""
         d = eng.decks[deck]
@@ -277,6 +279,7 @@ class Engine:
         d.end_reached = False
         d.mix_in = mix_in * SR if mix_in is not None else None
         d.mix_out = mix_out * SR if mix_out is not None else None
+        d.mix_out_end = mix_out_end * SR if mix_out_end is not None and mix_out is not None else None
         if d.mix_in is not None:
             d.cue_point = d.mix_in
         elif cue is not None:
@@ -299,18 +302,20 @@ class Engine:
                 return
             e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
                     mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
-                    bands=getattr(lt, "bands", None))
+                    bands=getattr(lt, "bands", None), mix_out_end=getattr(lt, "mix_out_end", None))
             e.decks[deck].phrase_origin = getattr(lt, "phrase_origin", 0)
             if getattr(lt, "cues", None):
                 e.decks[deck].hotcues = (list(lt.cues) + [None] * 8)[:8]
         self.cmd(f)
 
-    def set_markers(self, deck: str, mix_in: float | None, mix_out: float | None):
-        """Intro/outro markers in seconds (None clears)."""
+    def set_markers(self, deck: str, mix_in: float | None, mix_out: float | None,
+                    mix_out_end: float | None = None):
+        """Intro/outro(/outro end) markers in seconds (None clears)."""
         def f(e):
             d = e.decks[deck]
             d.mix_in = mix_in * SR if mix_in is not None else None
             d.mix_out = mix_out * SR if mix_out is not None else None
+            d.mix_out_end = mix_out_end * SR if mix_out_end is not None and mix_out is not None else None
             if d.mix_in is not None and not d.playing:
                 d.cue_point = d.mix_in
         self.cmd(f)

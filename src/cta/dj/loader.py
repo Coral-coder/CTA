@@ -22,6 +22,7 @@ class LoadedTrack:
     cues: list | None = None     # saved hot cues (source frames)
     mix_in: float | None = None  # user intro marker (seconds)
     mix_out: float | None = None # user outro marker (seconds)
+    mix_out_end: float | None = None  # user outro end: the blend lasts from mix_out to here
     first_beat_t: float = 0.0    # first audible beat (seconds) -> default cue point
     phrase_origin: int = 0       # bar (mod 8) where the track's phrases start
 
@@ -98,10 +99,11 @@ def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
             cues = [None if c is None else c * SR for c in db.get_cues(path)]
         except Exception:  # noqa: BLE001
             cues = None
-    mix_in = mix_out = None
+    mix_in = mix_out = mix_out_end = None
     if db is not None:
         try:
             mix_in, mix_out = db.get_markers(path)
+            mix_out_end = db.get_out_end(path)
         except Exception:  # noqa: BLE001
             pass
     fine = waveform_bands(audio, hop=256)
@@ -117,5 +119,6 @@ def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
     over = np.maximum.reduceat(fine, edges[:-1], axis=0).astype(np.float32)
     _prof, first, _last = beat_activity(fine, grid)
     return LoadedTrack(audio=audio, grid=grid, peaks=over, info=info, bands=fine, cues=cues,
-                       mix_in=mix_in, mix_out=mix_out, first_beat_t=max(0.0, grid.time_of_beat(first)),
+                       mix_in=mix_in, mix_out=mix_out, mix_out_end=mix_out_end,
+                       first_beat_t=max(0.0, grid.time_of_beat(first)),
                        phrase_origin=phrase_origin)
