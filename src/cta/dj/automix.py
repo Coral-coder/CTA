@@ -84,10 +84,15 @@ class _Transition:
 
     @property
     def tail_beats(self) -> float:
-        """Extra time after the swap for the outgoing track to leave."""
+        """Extra time after the swap for the outgoing track to leave: a
+        quarter of the blend, 2 to 8 bars, so it never just vanishes."""
         if self.style == "echo_out":
             return 8.0
-        return 4.0 if self.swap_beat >= self.beats - 1e-6 else 0.0
+        if self.style == "cut":
+            return 0.0
+        if self.swap_beat >= self.beats - 1e-6:
+            return float(np.clip(0.25 * self.beats, 8.0, 32.0))
+        return 0.0
 
 
 SHORT_BLEND_GENRES = {"Hip Hop", "Pop", "Rock", "Funk / Soul", "Latin", "Reggae", "Folk, World, & Country",
@@ -554,20 +559,23 @@ class AutoMix:
         return float(np.clip(v, 0.0, 1.0))
 
     def _blend(self, tr: _Transition, din, dout, x: float):
-        """EQ mixing like a DJ: incoming highs first, mids under, bass cut;
-        basses swap on the downbeat; then the outgoing leaves."""
+        """EQ mixing like a DJ: the incoming comes in highs first with mids
+        under and bass cut; the outgoing eases off (highs, mids, a little
+        level) through the second half of the build-up; the basses swap on
+        the downbeat; then the outgoing fades away over the tail - a real
+        crossfade, never a sudden drop."""
         beats = max(tr.beats, 1.0)
-        sw = tr.swap_beat
-        fade_in = max(4.0, beats * 0.25)              # at least one bar
+        sw = min(tr.swap_beat, beats)
+        fade_in = min(float(np.clip(0.4 * beats, 4.0, 32.0)), max(sw, 4.0))
         din.volume = float(np.sin(self._ramp(x / fade_in) * np.pi / 2))
-        swap = self._ramp((x - sw) / 0.25 + 0.5) if self.s.bass_swap else self._ramp(x / beats)
+        swap = self._ramp((x - sw) / 0.5 + 0.5) if self.s.bass_swap else self._ramp(x / beats)
         mid_in = 0.5 + 0.5 * self._ramp(x / max(sw, 1.0))
         din.eq = np.array([swap, mid_in, 1.0])
-        # outgoing: full until the swap, then bass out and fade
-        after = max(beats + tr.tail_beats - sw, 1.0)
-        q = self._ramp((x - sw) / after)
-        dout.eq = np.array([1.0 - swap, 1.0 - 0.5 * q, 1.0 - 0.4 * q])
-        dout.volume = float(np.cos(q * np.pi / 2))
+        pre = self._ramp((x - 0.5 * sw) / max(0.5 * sw, 1.0))        # second half before the swap
+        post = self._ramp((x - sw) / max(beats + tr.tail_beats - sw, 4.0))
+        dout.eq = np.array([1.0 - swap, float(np.clip(1.0 - 0.3 * pre - 0.5 * post, 0, 1)),
+                            float(np.clip(1.0 - 0.35 * pre - 0.5 * post, 0, 1))])
+        dout.volume = float((1.0 - 0.2 * pre) * np.cos(post * np.pi / 2))
 
     def _echo_out(self, e: Engine, tr: _Transition, din, dout, x: float):
         """Clash-safe: the outgoing track echoes away on the last bar, the next

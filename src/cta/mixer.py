@@ -102,6 +102,31 @@ def score_from(lib: Library, a: int, s: MixSettings, target_energy: float | None
     return Scored(total, tempo, key, sound, genre, energy, pct, valid)
 
 
+ANCHOR_KEEP = 0.3          # only the 30 % of the library that sounds most like the seed
+ANCHOR_TEMPO_PCT = 8.0     # ... and within 8 % of its tempo (half / double time allowed)
+
+
+def anchor_scores(lib: Library, seed: int) -> np.ndarray:
+    """How close every track is to the seed of the set (0..1): its AI style
+    first, its sound second. This keeps a set in the seed's genre instead of
+    drifting one "close enough" step at a time (electro house -> trance)."""
+    return 0.6 * lib.style_score(seed) + 0.4 * lib.sound_score(seed)
+
+
+def anchor_mask(lib: Library, seed: int, anc: np.ndarray | None = None, ramp: bool = False,
+                keep: float = ANCHOR_KEEP) -> np.ndarray:
+    """Tracks that still belong to the seed's set (style, sound and tempo):
+    the share `keep` of the library closest to the seed."""
+    anc = anchor_scores(lib, seed) if anc is None else anc
+    ok = anc >= np.quantile(anc, 1.0 - keep) if lib.n > 10 else np.ones(lib.n, bool)
+    if not ramp:
+        ok &= tempo_match(lib, seed, MixSettings(max_pitch_pct=ANCHOR_TEMPO_PCT))[2]
+    ok[seed] = True
+    if ok.sum() < min(12, lib.n):                 # tiny / unusual library: do not starve the set
+        return np.ones(lib.n, bool)
+    return ok
+
+
 @dataclass
 class Suggestion:
     idx: int
@@ -115,11 +140,26 @@ class Suggestion:
 
 
 def suggest_next(lib: Library, a: int, s: MixSettings, n: int = 50,
-                 exclude: set[int] | None = None) -> list[Suggestion]:
+                 exclude: set[int] | None = None, anchor: int | None = None,
+                 anchor_w: float = 0.4) -> list[Suggestion]:
+    """anchor: the seed of the set - suggestions stay close to it as well as
+    mixing well from track a."""
     if lib.n == 0:
         return []
     sc = score_from(lib, a, s)
-    total = np.where(sc.valid, sc.total, -np.inf)
+    valid = sc.valid
+    total0 = sc.total
+    if anchor is not None and 0 <= anchor < lib.n:
+        anc = anchor_scores(lib, anchor)
+        total0 = (1.0 - anchor_w) * sc.total + anchor_w * anc
+        free = ~np.isin(np.arange(lib.n), [int(i) for i in (exclude or ())] + [a])
+        # the seed's genre ran dry (long night): widen step by step, never let go at once
+        for keep in (ANCHOR_KEEP, 0.5, 0.75):
+            m = sc.valid & anchor_mask(lib, anchor, anc, keep=keep)
+            if (m & free).any():
+                valid = m
+                break
+    total = np.where(valid, total0, -np.inf)
     banned = np.zeros(lib.n, bool)
     banned[a] = True
     if exclude:
@@ -128,7 +168,7 @@ def suggest_next(lib: Library, a: int, s: MixSettings, n: int = 50,
     total[banned] = -np.inf
     if not np.isfinite(total).any():
         # nothing inside the hard limits: fall back to the best overall matches
-        total = np.where(banned, -np.inf, sc.total)
+        total = np.where(banned, -np.inf, total0)
     k = min(n, lib.n)
     idx = np.argpartition(-total, k - 1)[:k]
     idx = idx[np.argsort(-total[idx])]
@@ -164,7 +204,8 @@ class SetlistOptions:
     mix: MixSettings = field(default_factory=MixSettings)
 
 
-def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None) -> list[int]:
+def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None,
+                  anchor_w: float = 0.0, anchor_idx: int | None = None) -> list[int]:
     """Beam search for a sequence that maximises transition quality while
     following the requested tempo ramp and energy curve. Tracks in exclude
     (e.g. already played tonight) are never picked after the seed."""
@@ -176,6 +217,13 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None
         if ex:
             banned[ex] = True
             banned |= np.isin(lib.dedup_code, lib.dedup_code[ex])
+        banned[seed_idx] = False
+    anc = None
+    if anchor_w > 0:
+        # stay in the seed's genre: every track is also scored against the seed
+        a_idx = seed_idx if anchor_idx is None else anchor_idx
+        anc = anchor_scores(lib, a_idx)
+        banned |= ~anchor_mask(lib, a_idx, anc, ramp=bool(opt.end_bpm))
         banned[seed_idx] = False
     length = max(1, min(opt.length, lib.n))
     rng = np.random.default_rng(opt.seed)
@@ -201,6 +249,8 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None
                 # pull towards the ramp: tempo distance from the planned BPM
                 t_score, _, _ = tempo_match(lib, last, s, ref_bpm=target_bpm)
                 total = 0.7 * total + 0.3 * t_score
+            if anc is not None:
+                total = (1.0 - anchor_w) * total + anchor_w * anc
             if opt.variety > 0:
                 total = total + rng.gumbel(size=lib.n) * 0.08 * opt.variety
             ok = sc.valid & ~banned

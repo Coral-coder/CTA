@@ -310,7 +310,7 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
                     reason=f"your outro markers ({bars} bars)", exact=True)
 
     # ---- learned from the DJ's own transitions (markers still win)
-    if learned and out_marker_bar is None and in_marker_bar is None and harmonic >= 0.5 and tempo_gap_pct <= 8:
+    if learned and out_marker_bar is None and in_marker_bar is None and harmonic >= 0.3 and tempo_gap_pct <= 10:
         bars = int(min(max_bars, max(1, learned["bars"])))
         drop_in2 = drop_in if drop_in is not None else in_s.first_beat_bar
         start = float(max(out_s.first_beat_bar + 4, np.round((drop_end + learned["out_offset"]) / 4) * 4))
@@ -323,8 +323,9 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
         return Plan("loop_blend" if loop else "blend", start, in_start, bars, swap_bar=swap, loop=loop,
                     reason="your style (learned from your mixes)")
 
-    # ---- clash -> short echo-out style transition
-    if harmonic < 0.5 or tempo_gap_pct > 8:
+    # ---- real clash -> short echo-out style transition (only when a blend
+    #      would sound wrong: keys far apart or a big tempo jump)
+    if harmonic < 0.3 or tempo_gap_pct > 10:
         bars = min(4, max_bars)
         if out_marker_bar is not None:
             start = out_marker_bar

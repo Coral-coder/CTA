@@ -194,3 +194,28 @@ def test_automix_plays_a_looped_intro_under_an_outro_fill():
     assert am.history == ["a", "b"] and peak <= 0.99
     eng_tr = events[0]
     assert eng_tr[0] == "start"
+
+
+def test_crossfade_is_gradual_never_a_sudden_drop():
+    tr = {"a": _track("a", 126.0, FULL), "b": _track("b", 126.0, SHORT)}
+    eng = Engine()
+    am = AutoMix(eng, lambda i: tr[i], AutoMixSettings(mix_bars=16), synchronous_loads=True)
+    am.set_queue(["a", "b"])
+    am.start()
+    vols, t, beat = [], 0.0, 60 / 126.0
+    while t < 300:
+        eng.render(1024)
+        t += 1024 / SR
+        x = am.tr
+        if x is not None and x.started:
+            vols.append((t, eng.decks[x.out_deck].volume, eng.decks[x.in_deck].volume))
+        elif vols:
+            break
+    assert vols
+    out = np.array([v[1] for v in vols])
+    steps = np.abs(np.diff(out))
+    assert steps.max() < 0.08                          # no jumps: a fade, not a cut
+    # the outgoing is still audible (> 20 %) for at least 2 bars after the incoming is at full level
+    t_full = next(tt for tt, _o, i in vols if i > 0.99)
+    audible_after = [tt for tt, o, _i in vols if tt > t_full and o > 0.2]
+    assert audible_after and audible_after[-1] - t_full >= 8 * beat

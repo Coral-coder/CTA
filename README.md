@@ -110,6 +110,12 @@ into their own window.
   how far before the next track's drop you brought it in. After 3
   examples for a style, auto-mix mixes that style your way. The auto-mix
   panel shows how much it has learned and has a **Forget** button.
+- **Sets stay in the seed's genre:** every suggestion is scored against the
+  song the set started from (its AI style, sound and tempo), not just the
+  previous track. A set started from electro house can't walk off into
+  trance one "close enough" step at a time. When the closest tracks run
+  out, it widens gradually. This applies to the phone's seed sets,
+  auto-mix's own picks and the Setlist Builder.
 - **Never the same song twice:** auto-mix and "auto-load best next track"
   skip anything played this session, queued, loading or on a deck,
   including other files of the same song.
@@ -147,8 +153,11 @@ into their own window.
     is too wide, the outgoing track gets a beat-synced echo tail and the
     next track drops in clean on the downbeat.
   - **It mixes with EQ, not just volume.** The incoming track comes in highs
-    first with mids reduced; the outgoing track's highs and mids tail off
-    after the swap.
+    first with mids reduced. The outgoing track eases off (highs, mids, a
+    little level) as the incoming builds. After the bass swap it fades out
+    over 2 to 8 more bars, so it never just disappears.
+  - **Echo-out is kept for real clashes** (keys far apart, or a tempo jump of
+    more than 10 %). Everything else gets a blend.
   - **Blend length depends on genre:** long blends for house and techno,
     short ones for hip-hop and pop. Your bars setting is the maximum.
   - **A peak limiter guards the master**, so two loud tracks overlapping
@@ -181,7 +190,9 @@ into their own window.
     You can also set the outro length (16–128 bars) and the blend length
     (Auto, 4–128 bars);
   - swipe a queued track left to remove it, or **Clear queue**;
-  - tap **Listen** to hear the mix (a few seconds behind).
+  - tap **Listen** to hear the mix. **Live** (the default) is about 0.2 s
+    behind the PC but stops when the phone's screen locks. **Radio** keeps
+    playing with the screen locked and runs a few seconds behind.
 
   On iPhone, use Share → **Add to Home Screen**: it opens full screen like
   an app, with its own icon, and connects by itself. A 6-digit PIN (shown

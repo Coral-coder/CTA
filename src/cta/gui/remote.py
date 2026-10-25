@@ -91,6 +91,13 @@ class RemoteBackend:
         m = e._master()
         if m is None and held:
             m = e.decks[e.master_deck] if e.master_deck in held else e.decks[sorted(held)[0]]
+        # "now playing" is the track you hear the most: during a blend that
+        # moves to the incoming track as soon as it is the louder one
+        loud = {n: (d.volume ** 2) * getattr(d, "trim", 1.0) * e._xf_gain(d.xf_side)
+                * (1.0 if m is not None and n == m.name else 0.999)          # ties stay with the master
+                for n, d in e.decks.items() if n in on_air and d.loaded}
+        if loud:
+            m = e.decks[max(loud, key=loud.get)]
         tr = am.tr
         nxt = {d for d in am.meta if d != (m.name if m else None) and d not in on_air}
         decks = []
@@ -308,8 +315,12 @@ class RemoteBackend:
             opts = SetlistOptions(length=length, mix=main.mix_settings())
         from ..mixer import build_setlist
 
+        # a seed from the phone keeps the seed's tempo and vibe (no BPM ramp from the PC's setlist tab)
+        opts.end_bpm = None
+        opts.energy_curve = "steady"
         exclude = self.dj.played_indices() - {i}
-        sl = build_setlist(self.lib, i, opts, exclude=exclude)
+        sl = build_setlist(self.lib, i, opts, exclude=exclude, anchor_w=0.45)
+        self.dj.set_seed = i                  # later auto-picks stay in this song's genre
         rest = [x for x in sl if x != i]
         main.setlist = list(sl)
         main._refresh_setlist()

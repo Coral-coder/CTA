@@ -69,6 +69,7 @@ display:none;z-index:10;max-width:90%;box-shadow:0 6px 24px #0008}
 
 <div id="alert"></div>
 <div id="top"><span class="logo">CTA</span><span class="mut small grow ell" id="conn">connecting…</span>
+<button id="lmode" class="mini" onclick="toggleMode()" title="Live: about 0.2 s behind the PC. Radio: keeps playing with the screen locked, a few seconds behind."></button>
 <button id="listen" onclick="listen()">🔈 Listen</button></div>
 
 <div class="card">
@@ -479,12 +480,61 @@ function search() {
 }
 
 // ---- listen ----------------------------------------------------------------------------------------
-function listen() {
-  const a = $('aud'), b = $('listen');
-  if (!a.paused) { a.pause(); a.removeAttribute('src'); a.load(); b.textContent = '🔈 Listen'; b.className = ''; return; }
-  a.src = q('/live.mp3?' + Date.now()); a.play().catch(() => toast('Tap again to start audio'));
-  b.textContent = '🔊 Stop'; b.className = 'on';
+// Live: raw audio into Web Audio with ~0.2 s of buffer (drops audio rather than falling behind).
+// Radio: the MP3 stream in an <audio> element - keeps playing with the screen locked, a few seconds behind.
+let MODE = localStorage.getItem('cta_listen') || 'live', live = null;
+function showMode() { $('lmode').textContent = MODE === 'live' ? 'Live' : 'Radio'; }
+function toggleMode() {
+  const was = listening(); if (was) stopListening();
+  MODE = MODE === 'live' ? 'radio' : 'live'; localStorage.setItem('cta_listen', MODE); showMode();
+  toast(MODE === 'live' ? 'Live: about 0.2 s behind the PC (stops when the screen locks)' : 'Radio: plays with the screen locked, a few seconds behind');
+  if (was) listen();
 }
+function listening() { return !!live || !$('aud').paused; }
+function stopListening() {
+  if (live) { try { live.ac.abort(); } catch (e) {} try { live.ctx.close(); } catch (e) {} live = null; }
+  const a = $('aud'); if (!a.paused) { a.pause(); a.removeAttribute('src'); a.load(); }
+  $('listen').textContent = '🔈 Listen'; $('listen').className = '';
+}
+async function startLive() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx({latencyHint: 'interactive'}); await ctx.resume();
+  const ac = new AbortController(), me = {ctx, ac}; live = me;
+  const res = await fetch(q('/live.pcm?' + Date.now()), {signal: ac.signal, cache: 'no-store'});
+  if (!res.ok || !res.body) throw new Error('no stream');
+  const SR = +(res.headers.get('X-Sample-Rate') || 44100), reader = res.body.getReader();
+  const TARGET = 0.15, MAXLAG = 0.45, MINF = 2048;
+  let carry = new Uint8Array(0), next = 0;
+  while (live === me) {
+    const {value, done} = await reader.read(); if (done) break;
+    const buf = new Uint8Array(carry.length + value.length); buf.set(carry); buf.set(value, carry.length);
+    const frames = Math.floor(buf.length / 4);
+    if (frames < MINF) { carry = buf; continue; }
+    carry = buf.slice(frames * 4);
+    const pcm = new Int16Array(buf.buffer, 0, frames * 2), ab = ctx.createBuffer(2, frames, SR);
+    const L = ab.getChannelData(0), R = ab.getChannelData(1);
+    for (let i = 0; i < frames; i++) { L[i] = pcm[2 * i] / 32768; R[i] = pcm[2 * i + 1] / 32768; }
+    const now = ctx.currentTime;
+    if (next < now + 0.02) next = now + TARGET;                 // ran dry: rebuffer a little
+    if (next - now > MAXLAG) continue;                          // too far behind: skip to stay live
+    const src = ctx.createBufferSource(); src.buffer = ab; src.connect(ctx.destination); src.start(next);
+    next += ab.duration;
+  }
+}
+function listen() {
+  if (listening()) { stopListening(); return; }
+  $('listen').textContent = '🔊 Stop'; $('listen').className = 'on';
+  if (MODE === 'live' && window.fetch && window.ReadableStream) {
+    startLive().catch(e => { if (live) { stopListening(); toast('Live audio is not available here - switching to Radio'); MODE = 'radio'; showMode(); listen(); } });
+    return;
+  }
+  const a = $('aud'); a.src = q('/live.mp3?' + Date.now()); a.play().catch(() => toast('Tap again to start audio'));
+}
+setInterval(() => {                     // Radio: never let the player drift behind; jump to the live edge
+  const a = $('aud');
+  if (!a.paused && a.buffered.length) { const end = a.buffered.end(a.buffered.length - 1); if (end - a.currentTime > 3) a.currentTime = end - 1; }
+}, 2000);
+showMode();
 
 // ---- loop ----------------------------------------------------------------------------------------------
 let frames = null, framesT = 0;

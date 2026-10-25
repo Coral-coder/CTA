@@ -63,3 +63,46 @@ def test_setlist_never_repeats_played_tracks(tmp_path):
     again = build_setlist(lib, seed, SetlistOptions(length=10), exclude=played)
     assert again[0] == seed                      # the chosen seed still starts the set
     assert not (played - {seed}) & set(again)
+
+
+def test_sets_stay_in_the_seed_genre(tmp_path):
+    """A chain of tracks from electro house to trance where every neighbour
+    mixes well: without an anchor a long set walks down the chain."""
+    from cta.mixer import anchor_mask
+
+    rng = np.random.default_rng(3)
+    db = Database(str(tmp_path / "g.db"))
+    rows = []
+    a_style = np.zeros(400, np.float32)
+    a_style[10] = 1.0                        # "electro house"
+    b_style = np.zeros(400, np.float32)
+    b_style[20] = 1.0                        # "trance"
+    base = rng.random(1280).astype(np.float32)
+    far = rng.random(1280).astype(np.float32)
+    n = 100
+    for i in range(n):
+        t = i / (n - 1)
+        sv = (1 - t) * a_style + t * b_style + 0.001
+        emb = (1 - t) * base + t * far
+        rows.append(dict(path=f"/m/{i}.mp3", mtime=0, size=0, title=f"T{i}", artist=f"A{i}", album="",
+                         tag_genre="", tag_bpm=None, tag_key=-1, duration=300, bpm=126.0 + 10.0 * t,
+                         bpm_conf=1, key=15, key_conf=1, loudness=-8.0,
+                         centroid=2000, onset_rate=3, genre="Electronic", styles=None,
+                         style_vec=vec_to_blob(sv / sv.sum()), embedding=vec_to_blob(emb), status="ok", error=None,
+                         analyzed_at=0, version=1))
+    db.upsert_many(rows)
+    lib = Library(db)
+    pos = {i: int(lib.paths[i].split("/")[-1].split(".")[0]) for i in range(lib.n)}
+    seed = next(i for i in range(lib.n) if pos[i] == 0)
+    house = {i for i in range(lib.n) if pos[i] < 35}
+    opt = SetlistOptions(length=40, mix=MixSettings(max_pitch_pct=6))
+    drift = build_setlist(lib, seed, opt)                         # the old behaviour
+    assert set(drift) - house, "the test library must tempt a drift"
+    seq = build_setlist(lib, seed, opt, anchor_w=0.45)
+    assert len(seq) >= 15 and set(seq) <= house, sorted(pos[i] for i in seq)
+    sug = suggest_next(lib, seq[5], MixSettings(max_pitch_pct=6), n=10, exclude=set(seq[:6]), anchor=seed)
+    assert sug and all(s.idx in house for s in sug)
+    # every house track played: suggestions widen to the nearest tracks, not the far end of the chain
+    late = suggest_next(lib, seq[-1], MixSettings(max_pitch_pct=6), n=5, exclude=house, anchor=seed)
+    assert late and max(pos[s.idx] for s in late) < 60
+    assert anchor_mask(lib, seed).sum() < lib.n

@@ -677,7 +677,8 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Setlist", "Select a seed track in the library first.")
             return
         t0 = time.perf_counter()
-        self.setlist = build_setlist(self.lib, self.current, self._setlist_options(self.sl_len.value()))
+        self.setlist = build_setlist(self.lib, self.current, self._setlist_options(self.sl_len.value()),
+                                     anchor_w=0.35)
         dt = (time.perf_counter() - t0) * 1000
         self._refresh_setlist()
         self.tabs.setCurrentIndex(1)
@@ -695,7 +696,8 @@ class MainWindow(QMainWindow):
         if not self.setlist:
             return self.generate_setlist()
         opt = self._setlist_options(self.sl_len.value() + 1)
-        more = build_setlist(self.lib, self.setlist[-1], opt)
+        more = build_setlist(self.lib, self.setlist[-1], opt, exclude=set(self.setlist), anchor_w=0.35,
+                             anchor_idx=self.setlist[0])
         for i in more[1:]:
             if i not in self.setlist:
                 self.setlist.append(i)
@@ -821,7 +823,7 @@ class MainWindow(QMainWindow):
     def _regen_after(self, r):
         keep = self.setlist[: r + 1]
         opt = self._setlist_options(max(2, self.sl_len.value() - r))
-        more = build_setlist(self.lib, keep[-1], opt)
+        more = build_setlist(self.lib, keep[-1], opt, exclude=set(keep), anchor_w=0.35, anchor_idx=keep[0])
         self.setlist = keep + [i for i in more[1:] if i not in keep]
         self._refresh_setlist()
 

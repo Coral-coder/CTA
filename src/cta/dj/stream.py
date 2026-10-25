@@ -96,8 +96,9 @@ class StreamServer:
         self.pin = pin
         self._urls: list[str] | None = None
         self._fails: dict[str, list[float]] = {}
-        self._in: queue.Queue = queue.Queue(maxsize=200)
-        self._clients: list[queue.Queue] = []
+        self._in: queue.Queue = queue.Queue(maxsize=48)      # ~0.5 s: never build up a backlog
+        self._clients: list[queue.Queue] = []        # MP3 ("radio") listeners
+        self._pcm_clients: list[queue.Queue] = []    # low-delay ("live") listeners: raw 16-bit PCM
         self._lock = threading.Lock()
         self._httpd = None
         self._threads: list[threading.Thread] = []
@@ -105,16 +106,20 @@ class StreamServer:
 
     # engine tap (audio thread): must never block
     def write(self, block: np.ndarray):
-        if not self._clients:
+        if not self._clients and not self._pcm_clients:
             return
         try:
             self._in.put_nowait(block.copy())
-        except queue.Full:
-            pass
+        except queue.Full:                    # encoder behind: drop the oldest, keep it live
+            try:
+                self._in.get_nowait()
+                self._in.put_nowait(block.copy())
+            except (queue.Empty, queue.Full):
+                pass
 
     @property
     def listeners(self) -> int:
-        return len(self._clients)
+        return len(self._clients) + len(self._pcm_clients)
 
     @property
     def urls(self) -> list[str]:
@@ -197,6 +202,9 @@ class StreamServer:
                     elif path == "/live.mp3":
                         if self._authed(qs):
                             self._stream()
+                    elif path == "/live.pcm":
+                        if self._authed(qs):
+                            self._stream(pcm=True)
                     elif path.startswith("/api/") or path == "/art":
                         if not self._authed(qs):
                             return
@@ -258,12 +266,19 @@ class StreamServer:
                     log.exception("remote command failed")
                     self._json({"error": str(e)}, 500)
 
-            def _stream(self):
-                q: queue.Queue = queue.Queue(maxsize=64)
+            def _stream(self, pcm: bool = False):
+                # live: a small queue (old audio is dropped to stay close to real time)
+                q: queue.Queue = queue.Queue(maxsize=24 if pcm else 64)
+                pool = server._pcm_clients if pcm else server._clients
                 with server._lock:
-                    server._clients.append(q)
+                    pool.append(q)
                 self.send_response(200)
-                self.send_header("Content-Type", "audio/mpeg")
+                if pcm:
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("X-Sample-Rate", str(SR))
+                    self.send_header("X-Channels", "2")
+                else:
+                    self.send_header("Content-Type", "audio/mpeg")
                 self.send_header("Cache-Control", "no-cache, no-store")
                 self.send_header("Connection", "close")
                 self.end_headers()
@@ -279,8 +294,8 @@ class StreamServer:
                     pass
                 finally:
                     with server._lock:
-                        if q in server._clients:
-                            server._clients.remove(q)
+                        if q in pool:
+                            pool.remove(q)
 
         self._httpd = ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
         self._httpd.daemon_threads = True
@@ -327,6 +342,22 @@ class StreamServer:
                 continue
             if b is None:
                 break
+            if self._pcm_clients:
+                data = (np.clip(b.T, -1, 1) * 32767).astype("<i2").tobytes()
+                with self._lock:
+                    pcm = list(self._pcm_clients)
+                for q in pcm:
+                    try:
+                        q.put_nowait(data)
+                    except queue.Full:                   # behind: drop the oldest, stay live
+                        try:
+                            q.get_nowait()
+                            q.put_nowait(data)
+                        except (queue.Empty, queue.Full):
+                            pass
+            if not self._clients:
+                pending = np.zeros((2, 0), np.float32)
+                continue
             pending = np.concatenate([pending, b.astype(np.float32)], axis=1)
             out = bytearray()
             while pending.shape[1] >= fs:

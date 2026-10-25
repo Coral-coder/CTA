@@ -1798,6 +1798,7 @@ class DJPanel(QWidget):
         self.session = time.strftime("%Y-%m-%d ") + uuid.uuid4().hex[:6]
         self._logged: dict[str, tuple[str, float]] = {}
         self._played: set[int] = set()
+        self.set_seed: int | None = None     # the song the set started from: auto-picks stay in its genre
         self._error.connect(lambda msg: QMessageBox.warning(self, "DJ Mode", msg))
         self._browse_sig.connect(lambda d: self.main.browse_library(d))
         self._load_sig.connect(lambda deck: self.load_selected(deck))
@@ -2336,6 +2337,7 @@ class DJPanel(QWidget):
                                     "(or just start auto-mix: it picks the best next tracks itself).")
             return
         self.automix.set_queue(sl)
+        self.set_seed = sl[0]
         self._show_queue()
 
     def _show_queue(self):
@@ -2387,6 +2389,11 @@ class DJPanel(QWidget):
                     QMessageBox.information(self, "Auto-mix", "Select a track or build a setlist first.")
                     self.b_auto.setChecked(False)
                     return
+            if self.set_seed is None:
+                m = self.engine._master()
+                q = list(self.automix.queue)
+                self.set_seed = m.info.lib_index if m is not None and m.info.lib_index >= 0 else (
+                    int(q[0]) if q and isinstance(q[0], (int, np.integer)) else None)
             self.automix.start()
         else:
             self.automix.stop()
@@ -2422,7 +2429,9 @@ class DJPanel(QWidget):
         if any(not d.playing and d.loaded and n in am.meta for n, d in self.engine.decks.items()):
             return
         self._played |= {d.info.lib_index for d in self.engine.decks.values() if d.info.lib_index >= 0}
-        sug = suggest_next(lib, m.info.lib_index, self.main.mix_settings(), n=20, exclude=self.played_indices())
+        seed = self.set_seed if self.set_seed is not None and 0 <= self.set_seed < lib.n else None
+        sug = suggest_next(lib, m.info.lib_index, self.main.mix_settings(), n=20, exclude=self.played_indices(),
+                           anchor=seed)
         if sug:
             am.set_queue([sug[0].idx])
             self._show_queue()

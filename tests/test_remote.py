@@ -322,7 +322,9 @@ def test_seeding_the_playing_song_never_queues_it_again():
     assert _master_title(eng) == "t0"
     main = SimpleNamespace(lib=Lib(), settings=SimpleNamespace(value=lambda k, d=None: d),
                            mix_settings=lambda: None, setlist=[], _refresh_setlist=lambda: None)
-    main._setlist_options = lambda n: None
+    from cta.mixer import SetlistOptions
+
+    main._setlist_options = lambda n: SetlistOptions(length=n)
     dj = SimpleNamespace(engine=eng, automix=am, main=main, played_indices=lambda: {0},
                          _show_queue=lambda: None)
     be = RemoteBackend.__new__(RemoteBackend)
@@ -330,7 +332,7 @@ def test_seeding_the_playing_song_never_queues_it_again():
     import cta.mixer as M
 
     orig = M.build_setlist
-    M.build_setlist = lambda lib, i, opts, exclude=None: [i, 2, 1]
+    M.build_setlist = lambda lib, i, opts, exclude=None, **kw: [i, 2, 1]
     try:
         res = be._cmd_seed(0)
     finally:
@@ -340,3 +342,66 @@ def test_seeding_the_playing_song_never_queues_it_again():
     assert _master_title(eng) == "t0"
     nxt = [d.info.title for d in eng.decks.values() if d.loaded and not d.playing]
     assert nxt == ["t2"] and list(am.queue) == [1]
+
+
+def test_live_pcm_stream_stays_live():
+    from cta.dj.stream import StreamServer
+
+    port = _free_port()
+    eng = Engine()
+    y = synth_track(126.0, 20)
+    a = np.stack([y, y])
+    eng.load("A", a, fit_grid(y, SR, 126.0), TrackInfo(title="a", bpm=126.0, loudness=-10))
+    eng.set_playing("A", True, quantize=False)
+    import threading
+    import time as _t
+
+    srv = StreamServer(eng, port=port, pin="1")
+    srv.start()
+    got = bytearray()
+    done = threading.Event()
+    hdr = {}
+
+    def listen():
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/live.pcm?k=1")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            hdr["sr"] = r.headers.get("X-Sample-Rate")
+            while len(got) < 4 * 8192:
+                got.extend(r.read(4096))
+        done.set()
+
+    threading.Thread(target=listen, daemon=True).start()
+    try:
+        t0 = _t.time()
+        while not done.is_set() and _t.time() - t0 < 10:
+            eng.render(512)
+            _t.sleep(0.001)
+        assert done.is_set() and hdr["sr"] == str(SR)
+        pcm = np.frombuffer(bytes(got[: len(got) // 4 * 4]), "<i2").reshape(-1, 2)
+        assert np.abs(pcm).max() > 1000                 # real audio, stereo 16-bit
+        assert srv.listeners >= 0
+    finally:
+        srv.stop()
+
+
+def test_now_playing_follows_the_track_you_hear():
+    from cta.gui.remote import RemoteBackend
+
+    tracks = _tracks(2)
+    eng = Engine()
+    am = AutoMix(eng, lambda i: tracks[i], AutoMixSettings(mix_bars=16), synchronous_loads=True)
+    for n, i in (("A", 0), ("B", 1)):
+        t = tracks[i]
+        eng.load(n, t.audio, t.grid, t.info, bands=t.bands)
+        eng.set_playing(n, True, quantize=False)
+    eng.master_deck = "A"
+    be = RemoteBackend.__new__(RemoteBackend)
+    be.dj = SimpleNamespace(main=SimpleNamespace(lib=None))
+    be.eng, be.am = eng, am
+    eng.decks["A"].volume, eng.decks["B"].volume = 1.0, 0.4
+    st = be.state()
+    assert [d["deck"] for d in st["decks"] if d["master"]] == ["A"]
+    eng.decks["A"].volume, eng.decks["B"].volume = 0.5, 1.0        # mid-blend, B now louder
+    st = be.state()
+    assert [d["deck"] for d in st["decks"] if d["master"]] == ["B"]
+    json.dumps(st)
