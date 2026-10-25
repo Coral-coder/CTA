@@ -530,10 +530,16 @@ function listen() {
   }
   const a = $('aud'); a.src = q('/live.mp3?' + Date.now()); a.play().catch(() => toast('Tap again to start audio'));
 }
-setInterval(() => {                     // Radio: never let the player drift behind; jump to the live edge
+// Radio: phones keep several seconds buffered - that is what makes it smooth, so leave it alone.
+// Only if it has drifted far behind (e.g. after the phone slept) restart it at the live edge.
+let radioFix = 0;
+setInterval(() => {
   const a = $('aud');
-  if (!a.paused && a.buffered.length) { const end = a.buffered.end(a.buffered.length - 1); if (end - a.currentTime > 3) a.currentTime = end - 1; }
-}, 2000);
+  if (a.paused || !a.buffered.length || performance.now() - radioFix < 60000) return;
+  if (a.buffered.end(a.buffered.length - 1) - a.currentTime > 20) {
+    radioFix = performance.now(); a.src = q('/live.mp3?' + Date.now()); a.play().catch(() => {});
+  }
+}, 5000);
 showMode();
 
 // ---- loop ----------------------------------------------------------------------------------------------

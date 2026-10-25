@@ -405,3 +405,58 @@ def test_now_playing_follows_the_track_you_hear():
     st = be.state()
     assert [d["deck"] for d in st["decks"] if d["master"]] == ["B"]
     json.dumps(st)
+
+
+def test_radio_stream_is_continuous_alongside_live():
+    """Real-time engine, one Radio (MP3) and one Live (PCM) listener at once:
+    the MP3 must contain all the audio, with nothing dropped."""
+    import io
+    import threading
+    import time as _t
+
+    import av
+
+    from cta.dj.stream import StreamServer
+
+    port = _free_port()
+    eng = Engine()
+    y = synth_track(126.0, 30)
+    a = np.stack([y, y])
+    eng.load("A", a, fit_grid(y, SR, 126.0), TrackInfo(title="a", bpm=126.0, loudness=-10))
+    eng.set_playing("A", True, quantize=False)
+    srv = StreamServer(eng, port=port, pin="1")
+    srv.start()
+    mp3, pcm = bytearray(), bytearray()
+    stop = threading.Event()
+
+    def reader(path, buf):
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}?k=1", timeout=10) as r:
+            while not stop.is_set():
+                chunk = r.read(2048)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+
+    ts = [threading.Thread(target=reader, args=(p_, b), daemon=True)
+          for p_, b in (("/live.mp3", mp3), ("/live.pcm", pcm))]
+    for t in ts:
+        t.start()
+    eng.start_virtual(block=512)                    # paced like a sound card
+    try:
+        _t.sleep(0.5)
+        n0, t0 = len(mp3), _t.time()
+        _t.sleep(6.0)
+        wall = _t.time() - t0
+        stop.set()
+    finally:
+        eng.stop()
+        srv.stop()
+    assert srv.mp3_dropped == 0
+    frames = 0
+    with av.open(io.BytesIO(bytes(mp3[n0 - n0 % 1:])), format="mp3") as c:
+        for fr in c.decode(audio=0):
+            frames += fr.samples
+    got = frames / SR
+    # the MP3 holds (nearly) every second that went by: no gaps
+    assert got > wall * 0.9, (got, wall)
+    assert len(pcm) > 4 * SR * 5                    # live kept flowing too

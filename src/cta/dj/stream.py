@@ -96,7 +96,10 @@ class StreamServer:
         self.pin = pin
         self._urls: list[str] | None = None
         self._fails: dict[str, list[float]] = {}
-        self._in: queue.Queue = queue.Queue(maxsize=48)      # ~0.5 s: never build up a backlog
+        # Radio (MP3) gets a roomy buffer so encoder hiccups never cut the audio;
+        # Live (PCM) is fed straight from the engine and has its own tiny queues
+        self._in: queue.Queue = queue.Queue(maxsize=400)     # ~4.6 s of 512-frame blocks
+        self.mp3_dropped = 0
         self._clients: list[queue.Queue] = []        # MP3 ("radio") listeners
         self._pcm_clients: list[queue.Queue] = []    # low-delay ("live") listeners: raw 16-bit PCM
         self._lock = threading.Lock()
@@ -106,16 +109,25 @@ class StreamServer:
 
     # engine tap (audio thread): must never block
     def write(self, block: np.ndarray):
-        if not self._clients and not self._pcm_clients:
-            return
-        try:
-            self._in.put_nowait(block.copy())
-        except queue.Full:                    # encoder behind: drop the oldest, keep it live
+        pcm_clients = tuple(self._pcm_clients)
+        if pcm_clients:
+            # Live: 16-bit PCM, cheap to make here; a full queue drops its oldest
+            # audio so the phone stays close to real time
+            data = (np.clip(block.T, -1, 1) * 32767).astype("<i2").tobytes()
+            for q in pcm_clients:
+                try:
+                    q.put_nowait(data)
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(data)
+                    except (queue.Empty, queue.Full):
+                        pass
+        if self._clients:
             try:
-                self._in.get_nowait()
                 self._in.put_nowait(block.copy())
-            except (queue.Empty, queue.Full):
-                pass
+            except queue.Full:                # encoder stalled for seconds: count it, never block
+                self.mp3_dropped += 1
 
     @property
     def listeners(self) -> int:
@@ -342,19 +354,6 @@ class StreamServer:
                 continue
             if b is None:
                 break
-            if self._pcm_clients:
-                data = (np.clip(b.T, -1, 1) * 32767).astype("<i2").tobytes()
-                with self._lock:
-                    pcm = list(self._pcm_clients)
-                for q in pcm:
-                    try:
-                        q.put_nowait(data)
-                    except queue.Full:                   # behind: drop the oldest, stay live
-                        try:
-                            q.get_nowait()
-                            q.put_nowait(data)
-                        except (queue.Empty, queue.Full):
-                            pass
             if not self._clients:
                 pending = np.zeros((2, 0), np.float32)
                 continue
