@@ -106,19 +106,6 @@ def _low_band_envelope(y: np.ndarray) -> np.ndarray:
     return d / (d.max() + 1e-9)
 
 
-def energy_profile(y: np.ndarray, sr: int, grid: BeatGrid) -> np.ndarray:
-    """RMS energy per bar (4 beats), used to find intros/outros."""
-    bar = grid.beat_len * 4
-    n = max(1, int((y.size / sr - max(grid.first_beat, 0)) / bar))
-    out = np.zeros(n)
-    for i in range(n):
-        s = int((grid.first_beat + i * bar) * sr)
-        e = int((grid.first_beat + (i + 1) * bar) * sr)
-        seg = y[max(0, s):max(0, e)]
-        out[i] = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) if seg.size else 0.0
-    return out
-
-
 def beat_activity(bands: np.ndarray | None, grid: BeatGrid, hop: int = 256, sr: int = 44100):
     """Per-beat 'is there a beat here' profile from the waveform bands.
 

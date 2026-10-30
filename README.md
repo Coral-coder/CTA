@@ -92,6 +92,10 @@ the bar between them to give the decks more or less room.
   markers.
 - **Double-click resets** any knob, fader, the crossfader (centre) and the
   tempo fader.
+- **Oscilloscope** next to the MAIN level shows the master output (triggered,
+  auto-scaled). **Options → XY scope on the platters** draws each deck's
+  stereo image (a goniometer: mono is a vertical line) over its record.
+- **Search and filters** sit right above the track list.
 - **⏱ MIX AHEAD (Time-Shift):** the button next to ▶ AUTO-MIX (also
   **Ctrl+T**, the auto-mix ▾ menu and the toolbar). Mix the next transition *now*, on your
   headphones, while the room keeps hearing the live decks; auto-mix plays

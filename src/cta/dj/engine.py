@@ -39,6 +39,28 @@ EQ_HIGH_HZ = 2500.0
 # filters (scipy's sosfilt keeps state between blocks)
 # --------------------------------------------------------------------------
 
+def sos_filter(sos: np.ndarray, x: np.ndarray, zi: np.ndarray) -> np.ndarray:
+    """Filter a (channels, n) block with second-order sections, keeping the
+    state zi (channels, sections, 2) in place. scipy's own sosfilt checks and
+    reshapes its arguments on every call - most of the time for a 512-frame
+    block - so the audio thread calls its compiled core directly."""
+    y = np.array(x, dtype=np.float64, order="C")
+    if _SOS_CORE is not None:
+        _SOS_CORE(sos, y, zi)
+        return y
+    from scipy.signal import sosfilt
+
+    out, z = sosfilt(sos, y, axis=1, zi=np.moveaxis(zi, 0, 1))
+    zi[...] = np.moveaxis(z, 1, 0)
+    return out
+
+
+try:                                    # scipy's compiled core (same maths, no argument checks)
+    from scipy.signal._sosfilt import _sosfilt as _SOS_CORE
+except Exception:  # noqa: BLE001
+    _SOS_CORE = None
+
+
 def _lr4(freq: float, kind: str):
     """4th-order Linkwitz-Riley = two cascaded 2nd-order Butterworths."""
     from scipy.signal import butter
@@ -55,18 +77,15 @@ class ThreeBandEQ:
     _filters = None
 
     def __init__(self):
-        from scipy.signal import sosfilt
-
         if ThreeBandEQ._filters is None:
-            ThreeBandEQ._filters = (_lr4(EQ_LOW_HZ, "low"), _lr4(EQ_LOW_HZ, "high"),
-                                    _lr4(EQ_HIGH_HZ, "low"), _lr4(EQ_HIGH_HZ, "high"))
-        self._sosfilt = sosfilt
-        self.states = [np.zeros((f.shape[0], 2, 2)) for f in ThreeBandEQ._filters]
+            ThreeBandEQ._filters = tuple(np.ascontiguousarray(f) for f in (
+                _lr4(EQ_LOW_HZ, "low"), _lr4(EQ_LOW_HZ, "high"), _lr4(EQ_HIGH_HZ, "low"), _lr4(EQ_HIGH_HZ, "high")))
+        self.states = [np.zeros((2, f.shape[0], 2)) for f in ThreeBandEQ._filters]
         self.gains = np.ones(3)
+        self._ramp = np.zeros(0)
 
     def _f(self, i: int, x: np.ndarray) -> np.ndarray:
-        y, self.states[i] = self._sosfilt(ThreeBandEQ._filters[i], x, axis=1, zi=self.states[i])
-        return y
+        return sos_filter(ThreeBandEQ._filters[i], x, self.states[i])
 
     def process(self, x: np.ndarray, gains: np.ndarray) -> np.ndarray:
         """x: (2, n) float. gains: (low, mid, high) linear."""
@@ -75,10 +94,19 @@ class ThreeBandEQ:
         mid = self._f(2, rest)
         high = self._f(3, rest)
         n = x.shape[1]
-        ramp = np.linspace(0.0, 1.0, n)
-        g = [self.gains[i] + (gains[i] - self.gains[i]) * ramp for i in range(3)]
-        self.gains = np.array(gains, dtype=np.float64)
-        return (low * g[0] + mid * g[1] + high * g[2]).astype(np.float32)
+        gains = np.asarray(gains, dtype=np.float64)
+        if np.array_equal(gains, self.gains):             # steady: no ramp to build
+            g0, g1, g2 = gains
+            out = low * g0 + mid * g1 + high * g2
+        else:
+            if self._ramp.shape[0] != n:
+                self._ramp = np.linspace(0.0, 1.0, n)
+            r = self._ramp
+            out = (low * (self.gains[0] + (gains[0] - self.gains[0]) * r)
+                   + mid * (self.gains[1] + (gains[1] - self.gains[1]) * r)
+                   + high * (self.gains[2] + (gains[2] - self.gains[2]) * r))
+            self.gains = gains.copy()
+        return out.astype(np.float32)
 
 
 # --------------------------------------------------------------------------
@@ -126,6 +154,7 @@ class Deck:
     phase_offset: float = 0.0                # beats: where the DJ's jog nudge left the sync lock
     nudged: bool = False                     # the jog is (or was just) nudging this deck
     loop_size: float = 4.0                   # the chosen loop length (beats): OUT with no IN uses it
+    scope: np.ndarray | None = None          # the deck's newest output block (XY scope)
     scratching: bool = False
     scratch_rate: float = 0.0
     phase_corr: float = 0.0
@@ -240,6 +269,8 @@ class Engine:
         self.sync_outputs: set[str] | None = None
         self.clock_adjust_s = 0.0
         self.output_delay_s: dict[str, float] = {}
+        self.scope: np.ndarray | None = None
+        self.scope_prev: np.ndarray | None = None
         self.reset_on_load = True              # gain / EQ / filter back to neutral when a track loads
         self.cpu_load = 0.0                    # share of each block's time spent rendering (peak, decaying)
         self.slow_blocks = 0                   # blocks that nearly missed their deadline
@@ -593,12 +624,6 @@ class Engine:
 
     def hotcue_delete(self, deck: str, i: int):
         self.cmd(lambda e: e.decks[deck].hotcues.__setitem__(i, None))
-
-    def set_hotcues(self, deck: str, frames: list):
-        def f(e):
-            d = e.decks[deck]
-            d.hotcues = (list(frames) + [None] * 8)[:8]
-        self.cmd(f)
 
     def loop_in(self, deck: str):
         def f(e):
@@ -968,11 +993,14 @@ class Engine:
                 d.level *= 0.85
                 continue
             g = d.volume ** 2 * self._xf_gain(d.xf_side)   # squared: audio-taper fader
-            ramp = np.linspace(d._last_gain, g, n, dtype=np.float32)
+            if g == d._last_gain:                          # fader still: no ramp to build
+                master += y * np.float32(g)
+            else:
+                master += y * np.linspace(d._last_gain, g, n, dtype=np.float32)
             d._last_gain = g
+            d.scope = y                                    # newest block, for the XY scope (no copy)
             pre = float(np.abs(y).max()) if n else 0.0
             d.level = max(pre * d.volume ** 2, d.level * 0.85)   # channel meter (post-fader)
-            master += y * ramp
             if d.cue_phones:
                 cue += y
         self._apply_pause(master, n)
@@ -1001,6 +1029,7 @@ class Engine:
         self._lim_gain = g1
         self.peak_level = max(min(peak * g1, 1.0), self.peak_level * 0.9)
         np.clip(master, -0.99, 0.99, out=master)
+        self.scope_prev, self.scope = self.scope, master     # the oscilloscope shows the last two blocks
         phones = (cue * (1 - self.cue_mix) + master * self.cue_mix) * self.phones_volume
         if pv is not None:
             phones = phones + pv * self.phones_volume
@@ -1275,17 +1304,6 @@ class Engine:
     @property
     def running(self) -> bool:
         return self._stream is not None
-
-    @property
-    def latency_ms(self) -> float:
-        if self._stream is None:
-            return 0.0
-        try:
-            return float(self._stream.latency) * 1000
-        except Exception:  # noqa: BLE001
-            return 0.0
-
-
 
 class _VirtualOutput:
     """Clock-paced render thread standing in for a sound card."""

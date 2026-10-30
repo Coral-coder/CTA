@@ -33,7 +33,7 @@ class DeckFilter:
         return butter(2, fc, "high", fs=SR, output="sos")
 
     def process(self, x: np.ndarray, value: float) -> np.ndarray:
-        from scipy.signal import sosfilt
+        from .engine import sos_filter
 
         if abs(value) < 0.02:
             if self.sos is not None and abs(self.value) >= 0.02:
@@ -43,11 +43,10 @@ class DeckFilter:
             return x
         if self.sos is None or abs(value - self.value) > 1e-3:
             self.sos = self._design(value)
-            if self.zi is None or self.zi.shape[0] != self.sos.shape[0]:
-                self.zi = np.zeros((self.sos.shape[0], 2, 2))
+            if self.zi is None or self.zi.shape[1] != self.sos.shape[0]:
+                self.zi = np.zeros((2, self.sos.shape[0], 2))
             self.value = value
-        y, self.zi = sosfilt(self.sos, x, axis=1, zi=self.zi)
-        return y.astype(np.float32)
+        return sos_filter(self.sos, x, self.zi).astype(np.float32)
 
 
 class _Delay:

@@ -176,12 +176,6 @@ def check_latest(timeout: float = 15) -> Release:
     return release_from_json(d)
 
 
-def check_for_update(timeout: float = 15) -> Release | None:
-    """The latest release if it is newer than this build, else None."""
-    rel = check_latest(timeout)
-    return rel if is_newer(rel.version) else None
-
-
 # --------------------------------------------------------------------------
 # download + verify + stage
 # --------------------------------------------------------------------------
@@ -300,12 +294,6 @@ def _cli_path(app_root: str) -> str:
     if sys.platform == "win32":
         return os.path.join(app_root, "cta-cli.exe")
     return os.path.join(app_root, "cta-cli")
-
-
-def _gui_path(app_root: str) -> str:
-    if sys.platform == "darwin":
-        return app_root
-    return os.path.join(app_root, "CTA.exe" if sys.platform == "win32" else "CTA")
 
 
 def verify_build(new_root: str, expect_version: str | None) -> str:

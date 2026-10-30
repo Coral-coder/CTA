@@ -65,14 +65,6 @@ def waveform_bands(audio: np.ndarray, hop: int = 256) -> np.ndarray:
     return out / np.maximum(m, 1e-9)
 
 
-def waveform_peaks(audio: np.ndarray, width: int = 2000) -> np.ndarray:
-    """Overview: (width, 3) band peaks."""
-    bands = waveform_bands(audio, hop=1024)
-    n = bands.shape[0]
-    edges = np.linspace(0, n, min(width, n) + 1).astype(np.int64)
-    return np.maximum.reduceat(bands, edges[:-1], axis=0).astype(np.float32)
-
-
 def load_track(path: str, bpm: float, info: TrackInfo, db=None) -> LoadedTrack:
     audio = decode_stereo(path)
     grid = None

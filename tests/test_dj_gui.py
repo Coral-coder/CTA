@@ -479,11 +479,11 @@ def test_zoomed_waveform_scrolls_without_flicker():
         w.span = span
         col = span / 600
         w.pos = 20.0
-        a, _ = w._zoom_columns(600)
+        a, _ = w._zoom_image(600, 60)
         w.pos = 20.0 + col * 3.4
-        b, frac = w._zoom_columns(600)
+        b, frac = w._zoom_image(600, 60)
         assert abs(frac - 0.4) < 1e-6
-        assert np.allclose(a[3:], b[:-3])
+        assert np.array_equal(a._buf[:, 3:], b._buf[:, :-3])
 
 
 def test_waveform_themes_render_saturated_colours():
@@ -581,3 +581,25 @@ def test_timeshift_window_rehearses_on_the_preview_only(tmp_data_dir, monkeypatc
     assert live.preview is None
     dj.shutdown()
     w.close()
+
+
+def test_scopes_draw_the_master_and_the_stereo_image():
+    import numpy as np
+    from PySide6.QtGui import QColor
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui.dj_window import Oscilloscope, xy_scope_image
+
+    t = np.arange(2048) / 44100
+    mono = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    img = xy_scope_image(np.stack([mono, mono]), 41, QColor(255, 0, 0))
+    lit = (img._buf >> 24) > 0
+    cols = np.nonzero(lit.any(axis=0))[0]
+    assert cols.min() >= 19 and cols.max() <= 21          # mono: one vertical line
+    wide = xy_scope_image(np.stack([mono, -mono]), 41, QColor(255, 0, 0))
+    assert ((wide._buf >> 24) > 0).any(axis=1).sum() <= 3  # out of phase: a horizontal line
+    osc = Oscilloscope(110, 46)
+    osc.data = np.stack([mono, mono])
+    osc.resize(110, 46)
+    pm = osc.grab()                                         # paints without errors
+    assert pm.width() == 110

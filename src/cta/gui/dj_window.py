@@ -249,6 +249,50 @@ def _wave_image(b: np.ndarray, h: int, past: int | None = None, rng=None) -> QIm
     return _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b, rng), h, past)
 
 
+def xy_scope_image(x: np.ndarray, size: int, color: QColor) -> QImage:
+    """XY (goniometer) picture of a (2, n) stereo block: L-R turned 45 degrees,
+    so mono is a vertical line and wide stereo a broad cloud."""
+    size = max(int(size), 8)
+    img = np.zeros((size, size), np.float32)
+    if x is not None and x.size:
+        left, right = x[0], x[1]
+        side = (left - right) * 0.7071
+        mid = (left + right) * 0.7071
+        peak = max(float(np.abs(mid).max()), float(np.abs(side).max()), 0.05)
+        half = (size - 1) / 2
+        px = np.clip(half + side / peak * half * 0.95, 0, size - 1).astype(np.int64)
+        py = np.clip(half - mid / peak * half * 0.95, 0, size - 1).astype(np.int64)
+        np.add.at(img, (py, px), 1.0)
+        img = np.minimum(img / max(float(img.max()) * 0.35, 1.0), 1.0)
+    a = (img * 230).astype(np.uint32)
+    rgb = (color.red() << 16) | (color.green() << 8) | color.blue()
+    argb = (a << 24) | np.uint32(rgb)
+    argb = np.where(a > 0, argb, np.uint32(0)).astype(np.uint32)
+    q = QImage(argb.data, size, size, 4 * size, QImage.Format_ARGB32)
+    q._buf = argb
+    return q
+
+
+def _grid_columns(img: np.ndarray, xs: np.ndarray, alpha: float, wide: bool = False):
+    """Lighten whole pixel columns of a packed RGB32 image towards white (beat lines)."""
+    w = img.shape[1]
+    cols = np.round(xs).astype(np.int64)
+    if wide:
+        cols = np.concatenate([cols, cols + 1])
+    cols = cols[(cols >= 0) & (cols < w)]
+    if cols.size == 0:
+        return
+    sub = img[:, cols]
+    a = int(alpha * 256)
+    r = (sub >> 16) & 0xFF
+    g = (sub >> 8) & 0xFF
+    b = sub & 0xFF
+    r = r + (((255 - r) * a) >> 8)
+    g = g + (((255 - g) * a) >> 8)
+    b = b + (((255 - b) * a) >> 8)
+    img[:, cols] = np.uint32(0xFF000000) | (r << 16) | (g << 8) | b
+
+
 def _render_layers(b: np.ndarray, h: int, past: int | None = None) -> QImage:
     """Three-band view: the bass outline with the mids and highs drawn over it."""
     w = b.shape[0]
@@ -406,24 +450,43 @@ class Waveform(QWidget):
         self.span = float(np.clip(span, 2.0, 32.0))
         self.update()
 
-    def _zoom_columns(self, w: int) -> tuple[np.ndarray, float]:
-        """Band levels for w+1 pixel columns of the zoomed view. The columns sit
-        on a grid fixed to the track (not to the screen) and each one holds
-        the loudest point inside it, so scrolling never makes peaks blink.
-        Returns (levels (w+1, 3), sub-pixel offset to draw them at)."""
-        col = self.span / w                          # seconds per pixel
-        hop = 256 / SR
+    def _zoom_image(self, w: int, h: int):
+        """The scrolling view's picture. Its columns are fixed to the track, so
+        levels and colours are worked out once per zoom level for the whole
+        track; each frame only slices them (no per-frame colour maths)."""
+        col = self.span / w
+        key = (round(self.span, 6), w, _theme["name"], _theme["sat"], self.crange, id(self.bands))
+        cache = getattr(self, "_zcache", None)
+        if cache is None or cache[0] != key:
+            hop = 256 / SR
+            n = self.bands.shape[0]
+            ncols = int(np.ceil(n * hop / col)) + 1
+            first = -(w + 2)                          # columns before the start (silence)
+            cidx = np.arange(first, ncols + w + 3)
+            edges = np.floor(cidx * col / hop).astype(np.int64)
+            padded = np.vstack([self.bands, np.zeros((1, 3), self.bands.dtype)])
+            b = np.maximum.reduceat(padded, np.clip(edges, 0, n))[:-1].astype(np.float32)
+            inside = (edges[1:] > 0) & (edges[:-1] < n)
+            b[~inside] = 0
+            heights = np.clip(b.max(axis=1), 0, 1)
+            colors = _band_colors(b, self.crange)
+            cache = self._zcache = (key, first, b, heights, colors)
+        _key, first, b, heights, colors = cache
         t0 = self.pos - self.span / 2
-        c0 = np.floor(t0 / col)
+        c0 = int(np.floor(t0 / col))
         frac = float(t0 / col - c0)
-        n = self.bands.shape[0]
-        edges = np.floor((c0 + np.arange(w + 2)) * col / hop).astype(np.int64)
-        lo, hi = edges[:-1], edges[1:]
-        inside = (hi > 0) & (lo < n)
-        padded = np.vstack([self.bands, np.zeros((1, 3), self.bands.dtype)])
-        out = np.maximum.reduceat(padded, np.clip(edges, 0, n))[:-1]   # the last segment runs to the end
-        out[~inside] = 0
-        return out.astype(np.float32), frac
+        i = c0 - first
+        lo, hi = max(i, 0), min(i + w + 1, len(heights))
+        pad_l, pad_r = lo - i, (i + w + 1) - hi
+        hs = heights[lo:hi]
+        if _theme["name"] == "Three-band":
+            bb = np.pad(b[lo:hi], ((pad_l, max(pad_r, 0)), (0, 0)))
+            return _render_layers(np.clip(bb, 0, 1), h), frac
+        cs = colors[lo:hi]
+        if pad_l or pad_r > 0:
+            hs = np.pad(hs, (pad_l, max(pad_r, 0)))
+            cs = np.pad(cs, ((pad_l, max(pad_r, 0)), (0, 0)))
+        return _render(hs, cs, h), frac
 
     def _x(self, t, w):
         if self.zoom:
@@ -440,8 +503,16 @@ class Waveform(QWidget):
                 p.drawText(self.rect(), Qt.AlignCenter, "Drag a track here, or right-click a track → Load to Deck")
             return
         if self.zoom and self.bands is not None:
-            b, frac = self._zoom_columns(w)
-            p.drawImage(QPointF(-frac, 0), _wave_image(b, h, rng=self.crange))
+            img, frac = self._zoom_image(w, h)
+            if self.grid is not None:
+                # beat / bar lines go straight into the picture (one numpy pass, not a line call each)
+                t0 = self.pos - self.span / 2
+                b0 = int(np.floor(self.grid.beat_at(t0)))
+                beats = np.arange(b0, int(np.ceil(self.grid.beat_at(t0 + self.span))) + 1)
+                xs = (np.array([self.grid.time_of_beat(int(bt)) for bt in beats]) - t0) / self.span * w + frac
+                _grid_columns(img._buf, xs[beats % 4 == 0], 0.55, wide=True)
+                _grid_columns(img._buf, xs[beats % 4 != 0], 0.16)
+            p.drawImage(QPointF(-frac, 0), img)
         else:
             if self._over is None or self._over[0] != w:
                 n = self.peaks.shape[0]
@@ -455,13 +526,6 @@ class Waveform(QWidget):
         if self.loop:
             x0, x1 = self._x(self.loop[0] / SR, w), self._x(self.loop[1] / SR, w)
             p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(80, 220, 120, 60))
-        if self.zoom and self.grid is not None:
-            t0 = self.pos - self.span / 2
-            for bt in range(int(np.floor(self.grid.beat_at(t0))), int(np.ceil(self.grid.beat_at(t0 + self.span))) + 1):
-                x = self._x(self.grid.time_of_beat(bt), w)
-                bar = bt % 4 == 0
-                p.setPen(QPen(QColor(255, 255, 255, 150 if bar else 45), 2 if bar else 1))
-                p.drawLine(int(x), 0, int(x), h)
         for i, c in enumerate(self.hotcues):
             if c is None:
                 continue
@@ -495,6 +559,48 @@ class Waveform(QWidget):
         px = w // 2 if self.zoom else int(self._x(self.pos, w))
         p.setPen(QPen(QColor(255, 60, 60) if self.zoom else QColor(255, 255, 255), 2))
         p.drawLine(px, 0, px, h)
+
+
+class Oscilloscope(QWidget):
+    """The master output as a trace, triggered on a rising zero crossing so a
+    steady sound stands still (drawn with numpy into one image)."""
+
+    def __init__(self, w: int = 110, h: int = 46):
+        super().__init__()
+        self.setFixedSize(w, h)
+        self.setToolTip("Oscilloscope: the master output")
+        self.data: np.ndarray | None = None      # (2, n) the newest master audio
+        self.data_id = None
+
+    def paintEvent(self, _ev):
+        w, h = self.width(), self.height()
+        img = np.full((h, w), np.uint32(0xFF101114), np.uint32)
+        img[h // 2, :] = np.uint32(0xFF2A2C33)           # zero line
+        x = self.data
+        if x is not None and x.shape[1] > 64:
+            mono = (x[0] + x[1]) * 0.5
+            span = min(1024, mono.size // 2)
+            seg = mono[: mono.size - span]
+            up = np.nonzero((seg[:-1] <= 0) & (seg[1:] > 0))[0]
+            i0 = int(up[-1]) if up.size else mono.size - span
+            k = max(span // w, 1)
+            win = mono[i0:i0 + k * w]
+            if win.size < k * w:
+                win = np.pad(win, (0, k * w - win.size))
+            win = win.reshape(w, k)
+            lo, hi = win.min(axis=1), win.max(axis=1)
+            gain = 0.9 / max(float(max(hi.max(), -lo.min())), 0.15)   # auto-scale: quiet passages stay readable
+            lo, hi = lo * gain, hi * gain
+            ys = np.arange(h)[:, None]
+            y_lo = np.clip((1 - hi) * (h - 1) / 2, 0, h - 1)
+            y_hi = np.clip((1 - lo) * (h - 1) / 2, 0, h - 1)
+            hit = (ys >= np.floor(y_lo)[None, :]) & (ys <= np.ceil(y_hi)[None, :])
+            img = np.where(hit, np.uint32(0xFF5CE08A), img).astype(np.uint32)
+        q = QImage(img.data, w, h, 4 * w, QImage.Format_RGB32)
+        p = QPainter(self)
+        p.drawImage(0, 0, q)
+        p.setPen(QColor(60, 62, 70))
+        p.drawRect(0, 0, w - 1, h - 1)
 
 
 class PhaseMeter(QWidget):
@@ -572,6 +678,7 @@ class JogPlatter(QWidget):
         self.angle = 0.0
         self.held = False
         self.art: QPixmap | None = None      # album art: the record label
+        self.scope: np.ndarray | None = None  # (2, n) recent samples: XY scope over the record (optional)
         self._last = None
         self.setCursor(Qt.OpenHandCursor)
         self.setToolTip("Grab and drag around to scratch")
@@ -629,37 +736,59 @@ class JogPlatter(QWidget):
         self._bg = (key, pm)
         return pm
 
-    def paintEvent(self, _ev):
-        p = QPainter(self)
-        p.drawPixmap(0, 0, self._static())
+    def _label(self, lr: float) -> QPixmap:
+        """The record label (round album art, or the deck colour), drawn once
+        per track and size; each frame only rotates this picture."""
+        key = (id(self.art), int(lr))
+        if getattr(self, "_lab", (None, None))[0] == key:
+            return self._lab[1]
+        d = int(2 * lr)
+        pm = QPixmap(d, d)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect().adjusted(4, 4, -4, -4)
-        c = QPointF(r.center())
-        a = np.radians(self.angle - 90)
-        # the record label: album art turning with the platter (most of the record)
-        lr = r.width() * 0.34
-        p.save()
-        p.translate(c)
-        p.rotate(self.angle)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
         clip = QPainterPath()
-        clip.addEllipse(QPointF(0, 0), lr, lr)
+        clip.addEllipse(QRectF(0, 0, d, d))
         p.setClipPath(clip)
         if self.art is not None and not self.art.isNull():
             aw, ah = self.art.width(), self.art.height()
             sq = min(aw, ah)
-            p.drawPixmap(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.art, QRectF((aw - sq) / 2, (ah - sq) / 2, sq, sq))
+            p.drawPixmap(QRectF(0, 0, d, d), self.art, QRectF((aw - sq) / 2, (ah - sq) / 2, sq, sq))
         else:
-            p.fillRect(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.color.darker(170))
+            p.fillRect(QRectF(0, 0, d, d), self.color.darker(170))
             p.setPen(QPen(self.color, 2))
-            p.drawEllipse(QPointF(0, 0), lr * 0.6, lr * 0.6)
-        p.restore()
+            p.drawEllipse(QPointF(d / 2, d / 2), d * 0.3, d * 0.3)
+        p.setClipping(False)
         p.setPen(QPen(QColor(0, 0, 0, 160), 1.5))
-        p.setBrush(Qt.NoBrush)
-        p.drawEllipse(c, lr, lr)
+        p.drawEllipse(QRectF(0.75, 0.75, d - 1.5, d - 1.5))
+        p.end()
+        self._lab = (key, pm)
+        return pm
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._static())
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        r = self.rect().adjusted(4, 4, -4, -4)
+        c = QPointF(r.center())
+        a = np.radians(self.angle - 90)
+        lr = r.width() * 0.34
+        lab = self._label(lr)
+        p.save()
+        p.translate(c)
+        p.rotate(self.angle)
+        p.drawPixmap(QPointF(-lab.width() / 2, -lab.height() / 2), lab)
+        p.restore()
         # spinning marker on the vinyl, outside the label
         rad0, rad1 = lr + 3, r.width() / 2 - 9
         p.setPen(QPen(QColor(240, 240, 245), 4, Qt.SolidLine, Qt.RoundCap))
         p.drawLine(c + QPointF(np.cos(a) * rad0, np.sin(a) * rad0), c + QPointF(np.cos(a) * rad1, np.sin(a) * rad1))
+        if self.scope is not None:
+            # XY scope: left against right, turned 45 degrees (mono = a vertical line)
+            img = xy_scope_image(self.scope, int(r.width() * 0.62), self.color)
+            p.drawImage(QPointF(c.x() - img.width() / 2, c.y() - img.height() / 2), img)
         p.setBrush(QColor(20, 20, 24))
         p.setPen(QPen(QColor(200, 200, 205), 1))
         p.drawEllipse(c, 3, 3)
@@ -1732,12 +1861,29 @@ class DeckPanel(QFrame):
             wv.mix_out = d.mix_out / SR if d.mix_out is not None else None
             wv.mix_out_end = d.mix_out_end / SR if d.mix_out_end is not None else None
             wv.mix_beats = 4.0 * self.dj.automix.s.mix_bars
-            wv.update()
+        # redraw only what changed: the scrolling view whenever the track moves,
+        # the overview only when its playhead moves a pixel or a marker / loop changes
+        state = (round(t_vis, 3), d.cue_point, d.loop, tuple(d.hotcues), d.mix_in, d.mix_out, d.mix_out_end,
+                 self.zoom.span, self.zoom.width(), self.zoom.height())
+        if state != getattr(self, "_zoom_state", None):
+            self._zoom_state = state
+            self.zoom.update()
+        ow = max(self.over.width(), 1)
+        ostate = (int(t_vis / max(self.over.duration, 1e-9) * ow), d.cue_point, d.loop, tuple(d.hotcues),
+                  d.mix_in, d.mix_out, d.mix_out_end, ow, self.over.height())
+        if ostate != getattr(self, "_over_state", None):
+            self._over_state = ostate
+            self.over.update()
         if not self.platter.held:
-            self.platter.angle = (t_vis / 1.8) * 360.0 % 360.0
-        self.platter.update()
-        self.phase.err = self.eng.phase_error(self.name) if d.playing else None
-        self.phase.update()
+            ang = (t_vis / 1.8) * 360.0 % 360.0
+            if abs(ang - self.platter.angle) > 0.4:
+                self.platter.angle = ang
+                self.platter.update()
+        err = self.eng.phase_error(self.name) if d.playing else None
+        if err is None or self.phase.err is None or abs(err - self.phase.err) > 0.002:
+            if err != self.phase.err:
+                self.phase.err = err
+                self.phase.update()
         for b, on in ((self.b_play, d.playing), (self.b_sync, d.sync), (self.b_key, d.keylock),
                       (self.b_master, self.eng.master_deck == self.name), (self.b_flux, d.flux),
                       (self.b_loop, d.loop is not None)):
@@ -1845,8 +1991,9 @@ class ChannelStrip(QWidget):
 
     def refresh(self):
         d = self.eng.decks[self.name]
-        self.meter.value = d.level
-        self.meter.update()
+        if abs(self.meter.value - d.level) > 0.004:
+            self.meter.value = d.level
+            self.meter.update()
         _sync_value(self.fader, int(d.volume * 1000))
         _sync_check(self.fx1, 0 in d.fx)
         _sync_check(self.fx2, 1 in d.fx)
@@ -1902,6 +2049,8 @@ class MixerPanel(QFrame):
         mcol.addWidget(self.limiter, 0, Qt.AlignHCenter)
         g.addLayout(mcol)
         g.addWidget(self.master_meter)
+        self.scope = Oscilloscope()
+        g.addWidget(self.scope)
         # ---- crossfader bar (under the decks) ----
         self.xf_bar = QWidget()
         # three equal-stretch columns: the crossfader sits dead centre, between the decks
@@ -1994,8 +2143,15 @@ class MixerPanel(QFrame):
             s.setVisible(show_cd or n in "AB")
             if s.isVisible():
                 s.refresh()
-        self.master_meter.value = eng.peak_level
-        self.master_meter.update()
+        cur = eng.scope
+        if cur is not None and cur is not self.scope.data_id:
+            prev = eng.scope_prev
+            self.scope.data_id = cur
+            self.scope.data = np.concatenate([prev, cur], axis=1) if prev is not None and prev.shape[0] == 2 else cur
+            self.scope.update()
+        if abs(self.master_meter.value - eng.peak_level) > 0.004:
+            self.master_meter.value = eng.peak_level
+            self.master_meter.update()
         _sync_value(self.xf, int(eng.crossfader * 100), 1)
         r = eng.recorder
         _sync_check(self.rec, r is not None)
@@ -3026,6 +3182,10 @@ class DJPanel(QWidget):
                                     "a stopped deck) and dragging the platter or waveform does nothing")
         self.scratch_chk.setChecked(self.settings.value("dj_scratch", "true") == "true")
         self.scratch_chk.toggled.connect(self._scratch_toggled)
+        self.xy_chk = QCheckBox("XY scope on the platters")
+        self.xy_chk.setToolTip("Show each deck's stereo image (a goniometer) over its jog platter")
+        self.xy_chk.setChecked(self.settings.value("dj_xyscope", "false") == "true")
+        self.xy_chk.toggled.connect(lambda on: self.settings.setValue("dj_xyscope", "true" if on else "false"))
         self.tools_chk = QCheckBox("Global section (FX, auto-mix, recorder)")
         self.tools_chk.setToolTip("Show the row above the decks: FX units, auto-mix, main level, recorder")
         self.tools_chk.setChecked(self.settings.value("dj_tools", "true") == "true")
@@ -3055,7 +3215,7 @@ class DJPanel(QWidget):
         b_opts.setText("Options ▾")
         b_opts.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(b_opts)
-        for chk in (self.platter_chk, self.scratch_chk, self.tools_chk, self.quant, self.show_cd):
+        for chk in (self.platter_chk, self.xy_chk, self.scratch_chk, self.tools_chk, self.quant, self.show_cd):
             act = QWidgetAction(menu)
             holder = QWidget()
             hl = QHBoxLayout(holder)
@@ -4113,9 +4273,16 @@ class DJPanel(QWidget):
         self._audio_health()
         self.automix.maybe_resume()
         show_cd = self.show_cd.isChecked()
-        for p in self.decks.values():
+        xy = self.xy_chk.isChecked()
+        for n, p in self.decks.items():
             if p.isVisible():
                 p.refresh()
+                if p.platter.isVisible():
+                    d = self.engine.decks[n]
+                    sc = d.scope if xy and d.playing else None
+                    if sc is not p.platter.scope:
+                        p.platter.scope = sc
+                        p.platter.update()
         self.mixer.refresh(show_cd)
         for f in self.fx:
             f.refresh()

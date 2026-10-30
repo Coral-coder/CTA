@@ -229,11 +229,6 @@ class Database:
         return {r[0]: (r[1], r[2]) for r in self.conn().execute(
             "SELECT path, COUNT(*), MAX(ts) FROM history GROUP BY path")}
 
-    def purge_missing(self) -> int:
-        c = self.conn()
-        with c:
-            return c.execute("DELETE FROM tracks WHERE missing=1").rowcount
-
     def all_tracks(self):
         return self.conn().execute("SELECT * FROM tracks WHERE missing=0 ORDER BY id").fetchall()
 
