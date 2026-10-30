@@ -183,4 +183,12 @@ def pytest_unconfigure(config):
     sys.stdout.write(f"\n[cta] pytest exit status {_EXIT_STATUS['code']}; threads still running: {alive}\n")
     sys.stdout.flush()
     sys.stderr.flush()
+    if sys.platform == "win32":
+        # os._exit still unloads every DLL, and a native library (Qt, ONNX
+        # Runtime, PortAudio) crashes while unloading in the CI runner. End
+        # the process without that teardown; pytest has already reported.
+        import ctypes
+
+        k32 = ctypes.windll.kernel32
+        k32.TerminateProcess(k32.GetCurrentProcess(), _EXIT_STATUS["code"])
     os._exit(_EXIT_STATUS["code"])
