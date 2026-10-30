@@ -648,7 +648,7 @@ class Oscilloscope(QWidget):
     """The master output as a trace, triggered on a rising zero crossing so a
     steady sound stands still (drawn with numpy into one image)."""
 
-    def __init__(self, w: int = 110, h: int = 46):
+    def __init__(self, w: int = 84, h: int = 46):
         super().__init__()
         self.setFixedSize(w, h)
         self.setToolTip("Oscilloscope: the master output")

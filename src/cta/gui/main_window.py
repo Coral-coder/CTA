@@ -356,21 +356,13 @@ class MainWindow(QMainWindow):
 
         # right side tabs
         self.tabs = QTabWidget()
-        def scrolled(w):
-            # tab pages scroll instead of forcing a minimum height (small screens)
-            from PySide6.QtWidgets import QScrollArea
-
-            sa = QScrollArea()
-            sa.setWidget(w)
-            sa.setWidgetResizable(True)
-            sa.setFrameShape(QFrame.NoFrame)
-            return sa
+        scrolled = self.scrolled
         self.tabs.addTab(scrolled(self._build_next_tab()), "Next Track")
         self.tabs.addTab(scrolled(self._build_setlist_tab()), "Setlist Builder")
         from .playlists import PlaylistPanel
 
         self.playlists = PlaylistPanel(self)
-        self.tabs.addTab(self.playlists, "Playlists")
+        self.tabs.addTab(scrolled(self.playlists), "Playlists")
 
         split = QSplitter(Qt.Horizontal)
         left = QWidget()
@@ -400,6 +392,17 @@ class MainWindow(QMainWindow):
         sb.addWidget(self.status_label, 1)
         sb.addPermanentWidget(self.device_label)
         sb.addPermanentWidget(self.progress)
+
+    @staticmethod
+    def scrolled(w):
+        """Tab pages scroll instead of forcing a minimum size (small screens)."""
+        from PySide6.QtWidgets import QScrollArea
+
+        sa = QScrollArea()
+        sa.setWidget(w)
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.NoFrame)
+        return sa
 
     def _build_next_tab(self) -> QWidget:
         w = QWidget()
@@ -936,7 +939,7 @@ class MainWindow(QMainWindow):
                 return
             self.dj = DJPanel(self)
             self.dj_dock = self.dj                # the decks live in the top half of the splitter
-            self.tabs.addTab(self.dj.queue_panel, "Auto-mix queue")
+            self.tabs.addTab(self.scrolled(self.dj.queue_panel), "Auto-mix queue")
             self.vsplit.insertWidget(0, self.dj)
             st = self.settings.value("dj_split")
             if st is None or not self.vsplit.restoreState(st):
