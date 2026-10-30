@@ -78,9 +78,16 @@ jobs:
         shell: bash
         run: |
           set +e
-          pytest -v --durations=15
-          code=$?
+          pytest -v --durations=15 2>&1 | tee pytest.log
+          code=${PIPESTATUS[0]}
           echo "pytest process exit code: $code"
+          # tests/conftest.py prints pytest's own result before the process ends; a
+          # native library crashing while the process is torn down afterwards
+          # (seen on Windows runners) is not a test failure
+          if [ "$code" -ne 0 ] && grep -q "^\[cta\] pytest exit status 0;" pytest.log; then
+            echo "::warning::all tests passed; the process crashed during teardown (exit $code)"
+            code=0
+          fi
           exit $code
 
   build:

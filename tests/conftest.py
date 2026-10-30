@@ -188,7 +188,10 @@ def pytest_unconfigure(config):
         # Runtime, PortAudio) crashes while unloading in the CI runner. End
         # the process without that teardown; pytest has already reported.
         import ctypes
+        from ctypes import wintypes
 
         k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE      # 64-bit handle, not a C int
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
         k32.TerminateProcess(k32.GetCurrentProcess(), _EXIT_STATUS["code"])
     os._exit(_EXIT_STATUS["code"])
