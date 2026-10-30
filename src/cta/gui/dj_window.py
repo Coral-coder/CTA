@@ -2382,6 +2382,12 @@ class AudioSettings(QDialog):
                                "glitches when the computer is busy or CTA is in the background; less = "
                                "buttons answer a few milliseconds sooner.")
         form.addRow("Output safety", self.safety)
+        self.own_proc = QCheckBox("Audio engine in its own process (recommended)")
+        self.own_proc.setToolTip("The decks, mixing and auto-mix run in a separate process, so the screen, "
+                                 "library scans or a stuck window can never make the music glitch. "
+                                 "Takes effect after a restart.")
+        self.own_proc.setChecked(settings.value("dj_audio_process", "true") == "true")
+        form.addRow("", self.own_proc)
         self.mdelay, self.m_auto, self.m_info = self._delay_row(form, "Master delay", "master")
         self.pdelay, self.p_auto, self.p_info = self._delay_row(form, "Headphones delay", "phones")
         # more speakers on the master (Bluetooth...), each in its own helper: they can come
@@ -2746,6 +2752,7 @@ class AudioSettings(QDialog):
         self.s.setValue("dj_phones", self.phones.currentText())
         self.s.setValue("dj_block", self.block.currentText())
         self.s.setValue("dj_safety", self.safety.currentData())
+        self.s.setValue("dj_audio_process", "true" if self.own_proc.isChecked() else "false")
         self.s.setValue("dj_master_delay_ms", "" if self.m_auto.isChecked() else self.mdelay.value())
         self.s.setValue("dj_phones_delay_ms", "" if self.p_auto.isChecked() else self.pdelay.value())
         self.s.setValue("rec_dir", self.rec_dir.text())

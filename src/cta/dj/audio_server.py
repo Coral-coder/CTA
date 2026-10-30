@@ -621,7 +621,19 @@ def serve(conn, cfg: dict | None = None):
     gc.collect()
     gc.freeze()
     gc.set_threshold(50000, 50, 1000)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s audio %(levelname)s %(name)s: %(message)s")
+    # its own log next to the app's (a windowed build has no stderr): what happened in here
+    handlers: list = []
+    try:
+        from .. import paths
+
+        handlers.append(logging.FileHandler(__import__("os").path.join(paths.data_dir(), "audio.log"), mode="w",
+                                            encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s audio %(levelname)s %(name)s: %(message)s",
+                        handlers=handlers or None)
     try:
         from .outputs import raise_priority
 

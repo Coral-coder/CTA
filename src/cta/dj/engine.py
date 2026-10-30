@@ -1407,8 +1407,10 @@ class _VirtualOutput:
             delay = nxt - time.monotonic()
             if delay > 0:
                 time.sleep(delay)
-            elif delay < -1.0:
-                nxt = time.monotonic()            # fell far behind: do not race to catch up
+            elif delay < -0.025:
+                self.eng.underruns += 1           # later than a sound card's cushion: a real card would glitch
+                if delay < -1.0:
+                    nxt = time.monotonic()        # fell far behind: do not race to catch up
 
     def stop(self):
         self._run = False

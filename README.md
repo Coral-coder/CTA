@@ -196,6 +196,17 @@ the bar between them to give the decks more or less room.
     back the faster output so master and headphones stay in time, and
     draws the waveforms and playheads that late so what you see matches
     what you hear.
+- **The audio engine runs in its own process.** Decks, mixing, auto-mix,
+  the sound card, extra speakers and the Mix Ahead preview live in a child
+  process with nothing else to do; the window talks to it over a pipe
+  (commands one way, 30 state snapshots a second the other) and the music
+  comes back through shared memory for the phone stream, the recorder and
+  the scopes. The screen painting, library scans, a stuck dialog or a slow
+  plugin can no longer delay a single audio block: in the stress test the
+  window's interpreter is frozen 150 ms out of every 200 and the audio
+  process stays exactly on time. If the audio process ever dies, the window
+  starts a new one and reloads the decks (watchdog). Controls still land
+  within a millisecond. Audio… has a switch to run it in-process instead.
 - **Audio stability (Audio… → Output safety):** how much audio the sound card
   holds in reserve. **Normal** (25 ms, default) is tight and stable; **Safe**
   (50 ms) gives a slow or busy computer more headroom; **Tight** is the
