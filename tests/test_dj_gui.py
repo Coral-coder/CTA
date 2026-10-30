@@ -603,3 +603,32 @@ def test_scopes_draw_the_master_and_the_stereo_image():
     osc.resize(110, 46)
     pm = osc.grab()                                         # paints without errors
     assert pm.width() == 110
+
+
+def test_knobs_turn_with_vertical_drag_and_never_jump():
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui.dj_window import Knob
+
+    k = Knob(50, 38)
+    k.resize(38, 38)
+
+    def ev(kind, x, y, mods=Qt.NoModifier):
+        btn = Qt.LeftButton if kind != QEvent.MouseMove else Qt.NoButton
+        held = Qt.NoButton if kind == QEvent.MouseButtonRelease else Qt.LeftButton
+        p = QPointF(x, y)
+        app.sendEvent(k, QMouseEvent(kind, p, p, btn, held, mods))
+    ev(QEvent.MouseButtonPress, 2, 36)            # click at the bottom-left edge: no jump
+    assert k.value() == 50
+    ev(QEvent.MouseMove, 2, 16)                   # 20 px up: +10 (200 px = the whole range)
+    assert k.value() == 60
+    ev(QEvent.MouseMove, 2, 56)                   # back down 40 px
+    assert k.value() == 40
+    ev(QEvent.MouseMove, 2, 56, Qt.ShiftModifier)  # Shift: fine, carries on from here
+    ev(QEvent.MouseMove, 2, 6, Qt.ShiftModifier)   # 50 px up, fine: +5
+    assert k.value() == 45
+    ev(QEvent.MouseButtonRelease, 2, 6)
+    ev(QEvent.MouseMove, 2, -500)                 # not held: nothing
+    assert k.value() == 45

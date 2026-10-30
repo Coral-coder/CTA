@@ -79,9 +79,47 @@ class Knob(QDial):
         self.setValue(default)
         self.setNotchesVisible(True)
         self.setFixedSize(size, size)
-        self.setToolTip(tip + ("\n" if tip else "") + "Double-click to reset")
+        self.setToolTip(tip + ("\n" if tip else "") + "Drag up / down (Shift: fine) · double-click to reset")
+
+    # drag like a hardware knob: up = more, down = less, from where it is now
+    # (a click never jumps it to the mouse); Shift = fine
+    PIXELS_FULL_TURN = 200.0
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._drag = (ev.position().y(), float(self.value()))
+            self._fine = bool(ev.modifiers() & Qt.ShiftModifier)
+            self.setSliderDown(True)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        drag = getattr(self, "_drag", None)
+        if drag is None:
+            return                                # only a drag that started on the knob turns it
+        fine = bool(ev.modifiers() & Qt.ShiftModifier)
+        if fine != self._fine:
+            # Shift pressed / let go mid-drag: carry on from here, no jump
+            self._fine = fine
+            self._drag = (ev.position().y(), float(self.value()))
+            return
+        y0, v0 = drag
+        scale = (self.maximum() - self.minimum()) / self.PIXELS_FULL_TURN * (0.2 if fine else 1.0)
+        v = v0 + (y0 - ev.position().y()) * scale
+        self.setValue(int(round(min(max(v, self.minimum()), self.maximum()))))
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        if getattr(self, "_drag", None) is not None:
+            self._drag = None
+            self.setSliderDown(False)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
     def mouseDoubleClickEvent(self, _ev):
+        self._drag = None
         self.setValue(self.default)
 
 

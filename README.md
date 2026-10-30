@@ -90,6 +90,8 @@ the bar between them to give the decks more or less room.
   wheel no longer zooms). **⛓ Sync zoom** keeps both decks at the same zoom.
   Double-click the overview to open the whole track, zoomable, with its
   markers.
+- **Knobs turn like hardware:** drag up for more, down for less, from where the
+  knob is (a click never jumps it); hold Shift for fine moves.
 - **Double-click resets** any knob, fader, the crossfader (centre) and the
   tempo fader.
 - **Oscilloscope** next to the MAIN level shows the master output (triggered,
