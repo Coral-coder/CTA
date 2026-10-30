@@ -88,11 +88,12 @@ def test_mac_update_target_escapes_translocation(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.os, "makedirs",
                         lambda p, exist_ok=False: real_makedirs(str(apps) if p == "/Applications" else p,
                                                                 exist_ok=exist_ok))
-    monkeypatch.setattr(updater, "_writable", lambda p: p.startswith("/Applications/"))
-    assert updater.update_target() == "/Applications/CTA.app"
+    dest = os.path.join("/Applications", "CTA.app")          # the separator differs on Windows runners
+    monkeypatch.setattr(updater, "_writable", lambda p: p == dest)
+    assert updater.update_target() == dest
     # a normal, writable install updates in place
-    monkeypatch.setattr(updater, "install_root", lambda: "/Applications/CTA.app")
-    assert updater.update_target() == "/Applications/CTA.app"
+    monkeypatch.setattr(updater, "install_root", lambda: dest)
+    assert updater.update_target() == dest
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="bash helper")
