@@ -33,7 +33,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QListWidget,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -510,6 +512,23 @@ class _Scratcher:
             self.eng.jog_release(self.deck)
 
 
+def _relayout(widget: QWidget) -> int:
+    """Forget every cached size below widget (nested layouts and child
+    widgets included) and return its minimum height for the rows now shown."""
+    def walk(lay):
+        for i in range(lay.count()):
+            it = lay.itemAt(i)
+            if it.layout() is not None:
+                walk(it.layout())
+            w = it.widget()
+            if w is not None and w.layout() is not None and not w.isHidden():
+                walk(w.layout())
+                w.updateGeometry()
+        lay.invalidate()
+    walk(widget.layout())
+    return widget.layout().totalMinimumSize().height()
+
+
 class QueueList(QListWidget):
     """Auto-mix queue: drag to reorder, drag out / ✕ / Delete to remove."""
 
@@ -931,12 +950,13 @@ class DeckPanel(QFrame):
         self.setObjectName("deck")
         col = DECK_COLORS[name]
         self.col = col
-        self.setStyleSheet(f"#deck {{ background: #17181c; border: 1px solid {col.darker(150).name()};"
-                           f" border-top: 3px solid {col.name()}; border-radius: 8px; }}")
+        self.setStyleSheet(f"#deck {{ background: #1c1c1e; border: 1px solid #0b0b0b;"
+                           f" border-top: 3px solid {col.name()}; border-radius: 3px; }}")
         self.scr = _Scratcher(self.eng, name)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 6, 8, 8)
         outer.setSpacing(5)
+        outer.setSizeConstraint(QLayout.SetNoConstraint)      # the view decides what fits
 
         # ---- header ----------------------------------------------------------
         head = QHBoxLayout()
@@ -998,6 +1018,7 @@ class DeckPanel(QFrame):
             wv.marker.connect(lambda kind, t, n=name: self.dj.set_marker(n, kind, t))
         self.zoom.scratch.connect(self.scr.move)
         self.zoom.scratch_end.connect(self.scr.end)
+        self.zoom.setMinimumHeight(48)
         outer.addWidget(self.zoom, 1)
         outer.addWidget(self.over)
         self.phase = PhaseMeter()
@@ -1016,13 +1037,14 @@ class DeckPanel(QFrame):
         for i in range(8):
             b = QPushButton(str(i + 1))
             b.setObjectName("pad")
-            b.setMinimumHeight(30)
+            b.setMinimumHeight(26)
+            b.setMinimumWidth(24)
             b.setToolTip("Hot cue: click = set / jump · right-click = delete")
             b.clicked.connect(lambda _=False, i=i: self._hotcue(i))
             b.setContextMenuPolicy(Qt.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda _p, i=i: self._hotcue_delete(i))
             self.hc.append(b)
-            pads.addWidget(b, i // 4, i % 4)
+            pads.addWidget(b, 0, i)              # one strip of 8, Traktor style
         # loops
         lrow = QHBoxLayout()
         lrow.setSpacing(3)
@@ -1080,12 +1102,16 @@ class DeckPanel(QFrame):
         b_mk = _btn("✎ MARKERS", tip="Zoom in and place the IN / OUT / OUT END mix markers precisely", h=26)
         b_mk.clicked.connect(lambda: self.dj.edit_markers(name))
         krow.addWidget(b_mk)
+        def wrap(layout):
+            w = QWidget()
+            layout.setContentsMargins(0, 0, 0, 0)
+            w.setLayout(layout)
+            return w
+        self.w_pads, self.w_loop, self.w_jump, self.w_key = wrap(pads), wrap(lrow), wrap(jrow), wrap(krow)
         mid = QVBoxLayout()
         mid.setSpacing(4)
-        mid.addLayout(pads)
-        mid.addLayout(lrow)
-        mid.addLayout(jrow)
-        mid.addLayout(krow)
+        for w_ in (self.w_pads, self.w_loop, self.w_jump, self.w_key):
+            mid.addWidget(w_)
 
         tb = QVBoxLayout()
         tb.setSpacing(2)
@@ -1108,15 +1134,17 @@ class DeckPanel(QFrame):
         b0.clicked.connect(lambda: self.tempo.setValue(0))
         tb.addWidget(b0, 0, Qt.AlignHCenter)
 
-        parts = [self.platter, mid, tb]
+        self.w_tempo = wrap(tb)
+        parts = [self.platter, mid, self.w_tempo]
         if mirrored:
-            parts = [tb, mid, self.platter]
+            parts = [self.w_tempo, mid, self.platter]
         for p_ in parts:
             if isinstance(p_, QWidget):
                 body.addWidget(p_, 0, Qt.AlignVCenter)
             else:
                 body.addLayout(p_, 1)
-        outer.addLayout(body)
+        self.w_body = wrap(body)
+        outer.addWidget(self.w_body)
 
         # ---- transport ---------------------------------------------------------------
         row = QHBoxLayout()
@@ -1147,10 +1175,78 @@ class DeckPanel(QFrame):
         self.b_key.setToolTip("Key lock: tempo changes keep the original key")
         self.b_key.clicked.connect(lambda on: self.eng.set(name, keylock=on))
         for b in (self.b_cue, self.b_play, self.b_sync, self.b_master, self.b_key):
-            b.setMinimumHeight(38)
+            b.setMinimumHeight(32)
+            b.setMinimumWidth(40)
             row.addWidget(b)
         outer.addLayout(row)
         self._loaded_path = None
+        self.view = None
+        self.apply_view()
+
+    # ---- deck views (Traktor style): full / essential / micro -----------------------------------
+    VIEWS = ("full", "essential", "micro")
+
+    def _needs(self) -> dict:
+        """Height each view really needs (measured with the current fonts and settings)."""
+        key = (self.dj.show_platter(), self.font().pointSizeF())
+        if getattr(self, "_need_key", None) != key:
+            cur = self.view
+            need = {}
+            self._measuring = True              # showing/hiding rows must not re-enter resizeEvent
+            try:
+                for v in self.VIEWS:
+                    self._show(v)
+                    need[v] = _relayout(self)
+                if cur:
+                    self._show(cur)
+            finally:
+                self._measuring = False
+            self._need, self._need_key = need, key
+        return self._need
+
+    def minimumSizeHint(self):
+        # the smallest view: the splitter may shrink the deck that far, the view follows
+        from PySide6.QtCore import QSize
+
+        return QSize(super().minimumSizeHint().width(), self._needs()["micro"])
+
+    def wanted_view(self) -> str:
+        pref = self.dj.deck_view_pref()
+        if pref in self.VIEWS:
+            return pref
+        need, h = self._needs(), self.height()
+        for v in self.VIEWS:                     # the richest view that fits
+            if h >= need[v]:
+                return v
+        return "micro"
+
+    def apply_view(self, force: bool = False):
+        if force:
+            self._need_key = None
+        v = self.wanted_view()
+        if v == self.view and not force:
+            return
+        self.view = v
+        self._show(v)
+        self.updateGeometry()
+
+    def _show(self, v: str):
+        full, ess = v == "full", v == "essential"
+        self.zoom.setVisible(v != "micro")
+        self.w_body.setVisible(v != "micro")
+        self.platter.setVisible(full and self.dj.show_platter())
+        self.w_jump.setVisible(full)
+        self.w_key.setVisible(full)
+        self.w_tempo.setVisible(full or ess)
+        self.w_loop.setVisible(full or ess)
+        self.w_pads.setVisible(full or ess)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if getattr(self, "_measuring", False):
+            return
+        if self.dj.deck_view_pref() == "auto":
+            QTimer.singleShot(0, self.apply_view)
 
     def _toggle_loop(self, on):
         self.eng.loop_beats(self.name, int(self.loop_size.currentText()) if on else None)
@@ -1301,6 +1397,7 @@ class ChannelStrip(QWidget):
         head.setStyleSheet(f"color: {DECK_COLORS[name].name()}; font-weight: bold; font-size: 14px;")
         lay.addWidget(head)
         self.knobs = {}
+        self.labels = {}
         for key, lab, tip in (("trim", "GAIN", "Channel gain"), ("high", "HI", "EQ high (left = kill)"),
                               ("mid", "MID", "EQ mid (left = kill)"), ("low", "LOW", "EQ low (left = kill)"),
                               ("filter", "FILTER", "Left = low-pass, right = high-pass")):
@@ -1310,6 +1407,7 @@ class ChannelStrip(QWidget):
             lbl = QLabel(lab)
             lbl.setAlignment(Qt.AlignCenter)
             lbl.setStyleSheet("font-size: 9px; color: #aaa;")
+            self.labels[key] = lbl
             lay.addWidget(lbl)
             lay.addWidget(k, 0, Qt.AlignHCenter)
         fxrow = QHBoxLayout()
@@ -1334,6 +1432,15 @@ class ChannelStrip(QWidget):
         frow.addWidget(self.meter)
         frow.addWidget(self.fader)
         lay.addLayout(frow, 1)
+
+    def set_level(self, level: int):
+        """0: everything · 1: no GAIN / FILTER · 2: fader only (small screens)."""
+        for key in self.knobs:
+            show = level == 0 or (level == 1 and key in ("high", "mid", "low"))
+            self.knobs[key].setVisible(show)
+            self.labels[key].setVisible(show)
+        self.fader.setMinimumHeight(110 if level < 2 else 36)
+        self.meter.setMinimumHeight(60 if level < 2 else 30)
 
     def _knobs_changed(self, *_):
         self.dj.manual_touch(self.name)
@@ -1375,6 +1482,7 @@ class MixerPanel(QGroupBox):
         eng = dj.engine
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 10, 4, 4)
+        lay.setSizeConstraint(QLayout.SetNoConstraint)
         strips = QHBoxLayout()
         self.strips = {n: ChannelStrip(n, dj) for n in "CABD"}
         for n in "CABD":
@@ -1383,7 +1491,10 @@ class MixerPanel(QGroupBox):
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         lay.addWidget(line)
-        g = QGridLayout()
+        self.level = 0
+        self.w_master = QWidget()
+        g = QGridLayout(self.w_master)
+        g.setContentsMargins(0, 0, 0, 0)
         g.addWidget(QLabel("Master"), 0, 0, Qt.AlignHCenter)
         self.master = Knob(90, 34, "Master volume")
         self.master.valueChanged.connect(lambda v: setattr(eng, "master_volume", v / 100))
@@ -1399,8 +1510,9 @@ class MixerPanel(QGroupBox):
         self.phones = Knob(80, 34, "Headphone volume")
         self.phones.valueChanged.connect(lambda v: setattr(eng, "phones_volume", v / 100))
         g.addWidget(self.phones, 1, 3, Qt.AlignHCenter)
-        lay.addLayout(g)
-        lay.addWidget(QLabel("Crossfader"), 0, Qt.AlignHCenter)
+        lay.addWidget(self.w_master)
+        self.xf_lbl = QLabel("Crossfader")
+        lay.addWidget(self.xf_lbl, 0, Qt.AlignHCenter)
         self.xf = QSlider(Qt.Horizontal)
         self.xf.setRange(-100, 100)
         self.xf.valueChanged.connect(self._xf)
@@ -1416,7 +1528,43 @@ class MixerPanel(QGroupBox):
         lay.addLayout(row)
         self.rec_lbl = QLabel("")
         self.rec_lbl.setAlignment(Qt.AlignCenter)
+        self.rec_lbl.hide()
         lay.addWidget(self.rec_lbl)
+
+    def _set_level(self, lvl: int):
+        self.level = lvl
+        for st in self.strips.values():
+            st.set_level(lvl)
+        self.w_master.setVisible(lvl < 2)
+        self.xf_lbl.setVisible(lvl < 2)
+
+    def _needs(self) -> list[int]:
+        if getattr(self, "_need", None) is None:
+            cur, need = self.level, []
+            self._measuring = True
+            try:
+                for lvl in (0, 1, 2):
+                    self._set_level(lvl)
+                    need.append(_relayout(self))
+                self._set_level(cur)
+            finally:
+                self._measuring = False
+            self._need = need
+        return self._need
+
+    def minimumSizeHint(self):
+        from PySide6.QtCore import QSize
+
+        return QSize(super().minimumSizeHint().width(), self._needs()[2])
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if getattr(self, "_measuring", False):
+            return
+        need, h = self._needs(), self.height()      # shed knobs as the decks get shorter
+        lvl = next((i for i in (0, 1, 2) if h >= need[i]), 2)
+        if lvl != self.level:
+            self._set_level(lvl)
 
     def _xf(self, v):
         am = self.dj.automix
@@ -1436,6 +1584,7 @@ class MixerPanel(QGroupBox):
         r = eng.recorder
         _sync_check(self.rec, r is not None)
         self.rec_lbl.setText(f"REC {fmt_time(r.seconds)}" if r is not None else "")
+        self.rec_lbl.setVisible(r is not None)
 
 
 class FXPanel(QGroupBox):
@@ -1823,6 +1972,19 @@ class DJPanel(QWidget):
         self.show_cd.toggled.connect(self._toggle_cd)
         b_hist = QPushButton("History…")
         b_hist.clicked.connect(lambda: HistoryDialog(self).exec())
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(["Auto", "Full", "Essential", "Micro"])
+        self.view_combo.setToolTip("Deck view (Traktor style). Auto picks what fits: drag the bar under the decks "
+                                   "to give them more or less room.")
+        self.view_combo.setCurrentText(str(self.settings.value("dj_view", "Auto")))
+        self.view_combo.currentTextChanged.connect(self._view_changed)
+        self.platter_chk = QCheckBox("Platter")
+        self.platter_chk.setToolTip("Show the jog platters (Full view). You can always scratch on the waveform.")
+        self.platter_chk.setChecked(self.settings.value("dj_platter", "true") == "true")
+        self.platter_chk.toggled.connect(self._view_changed)
+        self.tools_chk = QCheckBox("FX / Auto-mix")
+        self.tools_chk.setToolTip("Show the FX units and the auto-mix panel under the decks")
+        self.tools_chk.setChecked(self.settings.value("dj_tools", "true") == "true")
         self.b_stream = QPushButton("📱 Phone remote")
         self.b_stream.setCheckable(True)
         self.b_stream.setToolTip("Mix server: control the mix and listen to it from your phone (same Wi-Fi)")
@@ -1835,7 +1997,27 @@ class DJPanel(QWidget):
         for w in (self.audio_lbl, b_audio, QLabel("  MIDI:"), self.midi_combo, b_midi, b_learn):
             bar.addWidget(w)
         bar.addStretch()
-        for w in (self.stream_lbl, self.b_stream, self.quant, self.show_cd, b_hist):
+        # less-used switches live in one menu so the bar fits a laptop screen
+        from PySide6.QtWidgets import QToolButton, QWidgetAction
+
+        b_opts = QToolButton()
+        b_opts.setText("Options ▾")
+        b_opts.setPopupMode(QToolButton.InstantPopup)
+        menu = QMenu(b_opts)
+        for chk in (self.platter_chk, self.tools_chk, self.quant, self.show_cd):
+            act = QWidgetAction(menu)
+            holder = QWidget()
+            hl = QHBoxLayout(holder)
+            hl.setContentsMargins(10, 3, 10, 3)
+            hl.addWidget(chk)
+            act.setDefaultWidget(holder)
+            menu.addAction(act)
+        b_opts.setMenu(menu)
+        self.audio_lbl.setMaximumWidth(260)
+        self.stream_lbl.setMaximumWidth(230)
+        self.midi_combo.setMinimumWidth(130)
+        self.midi_combo.setMaximumWidth(220)
+        for w in (self.stream_lbl, self.b_stream, QLabel("View:"), self.view_combo, b_opts, b_hist):
             bar.addWidget(w)
         outer.addLayout(bar)
 
@@ -1850,14 +2032,40 @@ class DJPanel(QWidget):
         grid.addWidget(self.decks["B"], 1, 2)
         grid.setColumnStretch(0, 5)
         grid.setColumnStretch(2, 5)
-        outer.addLayout(grid, 1)
+        grid.setContentsMargins(0, 0, 0, 0)
+        decks_w = QWidget()
+        decks_w.setLayout(grid)
 
         bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
         self.fx = [FXPanel(self, 0), FXPanel(self, 1)]
+        fxcol = QVBoxLayout()                # FX 1 over FX 2: narrow enough for a laptop
+        fxcol.setSpacing(2)
         for f in self.fx:
-            bottom.addWidget(f)
+            fxcol.addWidget(f)
+        bottom.addLayout(fxcol)
         bottom.addWidget(self._automix_panel(), 1)
-        outer.addLayout(bottom)
+        self.tools_w = QWidget()
+        self.tools_w.setLayout(bottom)
+        # decks and tools share the height; drag the handle to give the decks more room
+        from PySide6.QtWidgets import QSplitter
+
+        self.inner = QSplitter(Qt.Vertical)
+        self.inner.setChildrenCollapsible(False)
+        self.inner.setHandleWidth(7)
+        self.inner.addWidget(decks_w)
+        self.inner.addWidget(self.tools_w)
+        self.inner.setStretchFactor(0, 1)
+        self.inner.setStretchFactor(1, 0)
+        st = self.settings.value("dj_inner")
+        if st is None or not self.inner.restoreState(st):
+            # first run: the decks get every spare pixel, the tools only what they need
+            QTimer.singleShot(0, lambda: self.inner.setSizes(
+                [max(self.inner.height() - self.tools_w.minimumSizeHint().height(), 1),
+                 self.tools_w.minimumSizeHint().height()]))
+        outer.addWidget(self.inner, 1)
+        self.tools_w.setVisible(self.tools_chk.isChecked())
+        self.tools_chk.toggled.connect(self._tools_toggled)
         self._toggle_cd(False)
 
         self.timer = QTimer(self)
@@ -1947,6 +2155,24 @@ class DJPanel(QWidget):
         col.addWidget(self.queue_list)
         lay.addLayout(col, 1)
         return box
+
+    def deck_view_pref(self) -> str:
+        v = getattr(self, "view_combo", None)
+        return v.currentText().lower() if v is not None else "auto"
+
+    def show_platter(self) -> bool:
+        c = getattr(self, "platter_chk", None)
+        return c is None or c.isChecked()
+
+    def _view_changed(self, *_):
+        self.settings.setValue("dj_view", self.view_combo.currentText())
+        self.settings.setValue("dj_platter", "true" if self.platter_chk.isChecked() else "false")
+        for p in self.decks.values():
+            p.apply_view(force=True)
+
+    def _tools_toggled(self, on):
+        self.settings.setValue("dj_tools", "true" if on else "false")
+        self.tools_w.setVisible(on)
 
     def _toggle_cd(self, on):
         self.decks["C"].setVisible(on)
@@ -2504,6 +2730,7 @@ class DJPanel(QWidget):
             self.controller.update_leds()
 
     def shutdown(self):
+        self.settings.setValue("dj_inner", self.inner.saveState())
         self.timer.stop()
         if self.stream is not None:
             self.stream.stop()

@@ -124,6 +124,16 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
     from ..db import Database
     from .main_window import MainWindow
 
+    if QApplication.instance() is None and "QT_SCALE_FACTOR" not in os.environ:
+        # Settings -> Interface size (small laptop screens); must be set before Qt starts
+        from PySide6.QtCore import QSettings
+
+        try:
+            pct = int(QSettings("CTA", "CTA").value("ui_scale", 100))
+        except (TypeError, ValueError):
+            pct = 100
+        if pct != 100 and 50 <= pct <= 200:
+            os.environ["QT_SCALE_FACTOR"] = f"{pct / 100:.2f}"
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("CTA")
     app.setOrganizationName("CTA")

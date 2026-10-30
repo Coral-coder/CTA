@@ -59,8 +59,24 @@ Your corrections are kept across re-scans.
 
 ## DJ Mode (Ctrl+D)
 
-The decks dock above the library, Traktor-style. You can pull them out
-into their own window.
+The decks sit above the library, Traktor-style. Drag the bar between them
+to give the decks more or less room. A second bar sets the height of the
+FX / auto-mix strip, which you can hide under **Options**.
+
+- **Scalable decks:** each deck shows what fits its height, like Traktor's
+  deck views:
+  - **Full:** waveform, hot cues, loops, beat jump, key and grid tools,
+    tempo fader and jog platter.
+  - **Essential:** waveform, hot cues, loops, tempo and transport.
+  - **Micro:** track header, overview waveform and transport.
+
+  **View: Auto** switches by itself; you can also pin one view. The mixer
+  sheds its GAIN and FILTER knobs, then the EQ, as it gets shorter. The jog
+  platter can be switched off under **Options**; you can always scratch on
+  the waveform.
+- **Small screens (13-inch laptops):** CTA fits a 1280-pixel-wide screen.
+  For even more room, **Settings → Interface size** (70–150 %) scales the
+  whole app after a restart.
 
 - **Loading tracks:**
   - Right-click any track (library, Next Track suggestions or setlist) and

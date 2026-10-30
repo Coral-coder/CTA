@@ -278,3 +278,63 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     t.hide()
     app.processEvents()
     w.quit_app()
+
+
+def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
+    """13-inch MacBook: the window fits, the decks switch view as they get
+    shorter (Full -> Essential -> Micro) and nothing is drawn on top of anything."""
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    write_audio(str(music / "a.flac"), synth_track(124.0, 20))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def wait(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.resize(1280, 760)
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        wait(50)
+    w.open_dj()
+    wait(200)
+    assert w.minimumSizeHint().width() <= 1280 and w.width() <= 1280
+    dj = w.dj
+    deck = dj.decks["A"]
+    seen = set()
+    for frac in (0.95, 0.7, 0.45, 0.3):
+        hh = w.vsplit.height()
+        w.vsplit.setSizes([int(hh * frac), hh - int(hh * frac)])
+        wait(150)
+        seen.add(deck.view)
+        need = deck._needs()
+        # the richest view that fits the deck's height
+        assert deck.view == next((v for v in deck.VIEWS if deck.height() >= need[v]), "micro"), (deck.height(), need)
+        # nothing inside the deck or the mixer spills past its frame
+        for panel in (deck, dj.mixer):
+            for child in panel.findChildren(QtWidgets.QWidget):
+                if child.isVisible() and child.parentWidget() is panel:
+                    assert child.geometry().bottom() <= panel.height() + 1, (panel, child, deck.view)
+    assert {"full", "micro"} <= seen
+    dj.view_combo.setCurrentText("Full")
+    assert deck.view == "full"
+    dj.view_combo.setCurrentText("Auto")
+    dj.shutdown()
+    w.close()

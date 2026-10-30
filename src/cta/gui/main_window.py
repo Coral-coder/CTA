@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -161,6 +162,13 @@ class SettingsDialog(QDialog):
         self.device.addItems(["auto", "cpu"])
         self.device.setCurrentText(settings.value("ai_device", "auto"))
         form.addRow("AI device", self.device)
+        self.ui_scale = QComboBox()
+        for pct in (70, 80, 90, 100, 110, 125, 150):
+            self.ui_scale.addItem(f"{pct} %", pct)
+        cur = int(settings.value("ui_scale", 100))
+        self.ui_scale.setCurrentIndex(max(0, self.ui_scale.findData(cur)))
+        self.ui_scale.setToolTip("Make everything smaller to fit a laptop screen (or bigger). Applies after a restart.")
+        form.addRow("Interface size (restart)", self.ui_scale)
         self.auto_update = QCheckBox("Check for updates automatically")
         self.auto_update.setChecked(settings.value("auto_update_check", "true") == "true")
         form.addRow(self.auto_update)
@@ -207,6 +215,9 @@ class SettingsDialog(QDialog):
         self.s.setValue("ai_device", self.device.currentText())
         self.s.setValue("auto_update_check", "true" if self.auto_update.isChecked() else "false")
         self.s.setValue("server_mode", "true" if self.server_mode.isChecked() else "false")
+        if int(self.s.value("ui_scale", 100)) != self.ui_scale.currentData():
+            self.s.setValue("ui_scale", self.ui_scale.currentData())
+            QMessageBox.information(self, "Interface size", "The new interface size applies when CTA restarts.")
         from .. import autostart
 
         if self.login.isChecked() != autostart.is_enabled():
@@ -333,15 +344,29 @@ class MainWindow(QMainWindow):
 
         # right side tabs
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_next_tab(), "Next Track")
-        self.tabs.addTab(self._build_setlist_tab(), "Setlist Builder")
+        def scrolled(w):
+            # tab pages scroll instead of forcing a minimum height (small screens)
+            from PySide6.QtWidgets import QScrollArea
+
+            sa = QScrollArea()
+            sa.setWidget(w)
+            sa.setWidgetResizable(True)
+            sa.setFrameShape(QFrame.NoFrame)
+            return sa
+        self.tabs.addTab(scrolled(self._build_next_tab()), "Next Track")
+        self.tabs.addTab(scrolled(self._build_setlist_tab()), "Setlist Builder")
 
         split = QSplitter(Qt.Horizontal)
         split.addWidget(self.lib_view)
         split.addWidget(self.tabs)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
-        self.setCentralWidget(split)
+        # decks above, library below, with a handle to give either more room
+        self.vsplit = QSplitter(Qt.Vertical)
+        self.vsplit.setChildrenCollapsible(False)
+        self.vsplit.setHandleWidth(7)
+        self.vsplit.addWidget(split)
+        self.setCentralWidget(self.vsplit)
 
         # status bar
         self.status_label = QLabel("Ready")
@@ -882,19 +907,17 @@ class MainWindow(QMainWindow):
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
                 return
-            from PySide6.QtWidgets import QDockWidget
-
             self.dj = DJPanel(self)
-            self.dj_dock = QDockWidget("DJ Decks", self)
-            self.dj_dock.setObjectName("dj_dock")
-            self.dj_dock.setWidget(self.dj)
-            self.dj_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
-                                     | QDockWidget.DockWidgetClosable)
-            self.addDockWidget(Qt.TopDockWidgetArea, self.dj_dock)
-            self.resize(max(self.width(), 1600), max(self.height(), 1000))
+            self.dj_dock = self.dj                # the decks live in the top half of the splitter
+            self.vsplit.insertWidget(0, self.dj)
+            st = self.settings.value("dj_split")
+            if st is None or not self.vsplit.restoreState(st):
+                h = max(self.vsplit.height(), 600)
+                self.vsplit.setSizes([int(h * 0.62), int(h * 0.38)])
+            if not show:
+                self.dj.hide()
         if show:
-            self.dj_dock.show()
-            self.dj_dock.raise_()
+            self.dj.show()
 
     def toggle_dj(self):
         if getattr(self, "dj", None) is not None and self.dj_dock.isVisible():
@@ -1053,6 +1076,8 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, ev):
+        if getattr(self, "dj", None) is not None:
+            self.settings.setValue("dj_split", self.vsplit.saveState())
         if self.tray is not None and not self._quitting and self.server_running():
             # keep serving the phone remote from the tray
             ev.ignore()
