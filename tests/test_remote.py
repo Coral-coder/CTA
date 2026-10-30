@@ -451,6 +451,9 @@ def test_radio_stream_is_continuous_alongside_live():
     finally:
         eng.stop()
         srv.stop()
+        for t in ts:
+            t.join(5)
+    assert not any(t.is_alive() for t in ts)       # the server closed the streams when it stopped
     assert srv.mp3_dropped == 0
     frames = 0
     with av.open(io.BytesIO(bytes(mp3[n0 - n0 % 1:])), format="mp3") as c:

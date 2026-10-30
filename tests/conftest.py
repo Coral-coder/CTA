@@ -173,6 +173,12 @@ def pytest_unconfigure(config):
     import sys
     import threading
 
+    try:                                # audio threads left running by a test must end first:
+        from cta.dj.engine import Engine  # exiting under them crashes the process on Windows
+
+        Engine.stop_all()
+    except Exception:  # noqa: BLE001
+        pass
     alive = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
     sys.stdout.write(f"\n[cta] pytest exit status {_EXIT_STATUS['code']}; threads still running: {alive}\n")
     sys.stdout.flush()

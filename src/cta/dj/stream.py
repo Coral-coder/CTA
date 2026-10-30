@@ -301,6 +301,8 @@ class StreamServer:
                             data = q.get(timeout=5)
                         except queue.Empty:
                             continue
+                        if data is None:          # server stopping: end the stream now
+                            break
                         self.wfile.write(data)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
@@ -325,6 +327,16 @@ class StreamServer:
         self._running = False
         if self in self.engine.taps:
             self.engine.taps.remove(self)
+        with self._lock:                         # wake every listener so its connection closes at once
+            for q in self._clients + self._pcm_clients:
+                try:
+                    q.put_nowait(None)
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(None)
+                    except (queue.Empty, queue.Full):
+                        pass
         if self._httpd is not None:
             self._httpd.shutdown()
             self._httpd.server_close()

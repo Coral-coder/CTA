@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import weakref
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -208,6 +209,8 @@ def _rb_new(rate: float):
 
 
 class Engine:
+    _instances = weakref.WeakSet()          # every engine, so all can be stopped at exit
+
     def __init__(self, block: int = 512):
         self.decks = {n: Deck(n) for n in DECKS}
         for d in self.decks.values():
@@ -225,6 +228,7 @@ class Engine:
         self.master_chans = (0, 1)
         self.phones_chans: tuple[int, int] | None = None
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
+        Engine._instances.add(self)
         self._stream = None
         self._error_logged = False
         self.hooks: list = []          # callables(engine, n) run before each block (automix)
@@ -1152,6 +1156,15 @@ class Engine:
             o.close()
         self.extra_outputs = []
 
+    @classmethod
+    def stop_all(cls):
+        """Stop every engine's audio (used when the process is about to exit)."""
+        for e in list(cls._instances):
+            try:
+                e.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
     def stop(self):
         if self._pstream is not None:
             try:
@@ -1181,6 +1194,7 @@ class Engine:
             return float(self._stream.latency) * 1000
         except Exception:  # noqa: BLE001
             return 0.0
+
 
 
 class _VirtualOutput:
@@ -1220,6 +1234,8 @@ class _VirtualOutput:
         self._run = False
         if self._t is not None and self._t is not threading.current_thread():
             self._t.join(2)
+
+    abort = stop          # Engine.stop() aborts outputs: the render thread must end too
 
     def close(self):
         pass
