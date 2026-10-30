@@ -1672,16 +1672,29 @@ def _pair_tuple(txt: str):
 
 
 class AudioSettings(QDialog):
-    """Outputs: every connected device (rescanned when this opens), master
-    and headphones on the same or different cards, and each output's delay
-    (driver, Bluetooth guess or measured with the tap test)."""
+    """Outputs: every connected device (scanned live by a helper process, the
+    music keeps playing), master and headphones on the same or different
+    cards, extra master outputs (more speakers, kept in sync) and each
+    output's delay (driver, Bluetooth guess or measured with the tap test)."""
+
+    _scanned = Signal(object)
 
     def __init__(self, settings: QSettings, parent=None, dj=None):
         super().__init__(parent)
         self.setWindowTitle("Audio output")
         self.s = settings
         self.dj = dj
-        self.restart_needed = False
+        self.restart_needed = False      # main sound card / buffer changed
+        self.reinit_needed = False       # ... to a device this process has not seen yet
+        self.records: list[dict] = []
+        self._scanned.connect(self._fill)
+        import json as _json
+
+        try:
+            self.extras = list(_json.loads(settings.value("dj_extra_outputs", "[]") or "[]"))
+        except ValueError:
+            self.extras = []
+        self._before = self._snapshot()
         lay = QVBoxLayout(self)
         form = QFormLayout()
         lay.addLayout(form)
@@ -1690,7 +1703,7 @@ class AudioSettings(QDialog):
         self.dev.setMinimumWidth(320)
         row.addWidget(self.dev, 1)
         b_rescan = _btn("↻ Rescan", tip="Look for devices plugged in or paired since CTA started "
-                        "(restarts the audio for a moment)")
+                        "(the music keeps playing)")
         b_rescan.clicked.connect(lambda: self.rescan(force=True))
         row.addWidget(b_rescan)
         form.addRow("Master device", row)
@@ -1706,6 +1719,41 @@ class AudioSettings(QDialog):
         form.addRow("Buffer (samples)", self.block)
         self.mdelay, self.m_auto, self.m_info = self._delay_row(form, "Master delay", "master")
         self.pdelay, self.p_auto, self.p_info = self._delay_row(form, "Headphones delay", "phones")
+        # more speakers on the master (Bluetooth...), each in its own helper: they can come
+        # and go while the music plays, and are delayed so every speaker plays in time
+        self.extra_list = QListWidget()
+        self.extra_list.setMaximumHeight(90)
+        self.extra_list.currentRowChanged.connect(self._extra_selected)
+        erow = QHBoxLayout()
+        self.extra_add = QComboBox()
+        self.extra_add.setMinimumWidth(240)
+        b_add = _btn("＋ Add", tip="Play the master on this device too, in sync")
+        b_add.clicked.connect(self._extra_add)
+        b_rm = _btn("Remove")
+        b_rm.clicked.connect(self._extra_remove)
+        for w_ in (self.extra_add, b_add, b_rm):
+            erow.addWidget(w_)
+        drow = QHBoxLayout()
+        self.edelay = QSpinBox()
+        self.edelay.setRange(0, 1000)
+        self.edelay.setSuffix(" ms")
+        self.e_auto = QCheckBox("Auto")
+        self.e_auto.setToolTip("Driver latency, about 200 ms for Bluetooth")
+        b_em = _btn("Measure…", tip="Tap along with clicks on this speaker")
+        b_em.clicked.connect(lambda: self._measure("extra"))
+        self.edelay.valueChanged.connect(self._extra_delay)
+        self.e_auto.toggled.connect(self._extra_delay)
+        for w_ in (QLabel("Delay"), self.edelay, self.e_auto, b_em):
+            drow.addWidget(w_)
+        drow.addStretch()
+        ebox = QVBoxLayout()
+        ebox.addWidget(self.extra_list)
+        ebox.addLayout(erow)
+        ebox.addLayout(drow)
+        form.addRow("More master outputs", ebox)
+        self.scan_lbl = QLabel("")
+        self.scan_lbl.setStyleSheet("color: #9a9ba3;")
+        form.addRow("", self.scan_lbl)
         self.rec_dir = QPushButton(settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music",
                                                                           "CTA Recordings")))
         self.rec_dir.clicked.connect(self._pick_dir)
@@ -1750,40 +1798,97 @@ class AudioSettings(QDialog):
         return sp, auto, info
 
     # ---- devices ------------------------------------------------------------------------
-    def rescan(self, force: bool):
-        """Re-read the connected devices. Without force it only restarts the
-        audio when nothing is playing."""
-        eng = self.dj.engine if self.dj is not None else None
-        idle = eng is None or not any(d.playing for d in eng.decks.values())
-        if eng is not None and (force or idle):
-            if force and not idle and QMessageBox.question(
-                    self, "Rescan", "Audio stops for a moment while CTA looks for devices. Go ahead?") \
-                    != QMessageBox.Yes:
-                return
-            try:
-                eng.stop()
-                from ..dj.outputs import rescan_devices
-
-                rescan_devices()
+    def rescan(self, force: bool = False):
+        """Look for devices with a helper process: nothing that is playing stops."""
+        if not self.records:
+            try:                                      # what this process already knows, at once
+                self._fill([{"label": lb, "name": lb.rsplit(" (", 1)[0], "channels": ch}
+                            for _i, lb, ch in list_output_devices()], final=False)
             except Exception:  # noqa: BLE001
-                log.exception("device rescan failed")
-            self.restart_needed = True
-        try:
-            self.devices = list_output_devices()
-        except Exception:  # noqa: BLE001
-            self.devices = []
+                self._fill([], final=False)
+        self.scan_lbl.setText("Looking for devices…")
+
+        def job():
+            from ..dj import outputs
+
+            self._scanned.emit(outputs.scan_devices())
+        threading.Thread(target=job, daemon=True, name="device-scan").start()
+
+    def _fill(self, records, final: bool = True):
+        if final and not records and self.records:
+            self.scan_lbl.setText("Could not look for new devices - showing the known ones")
+            return
+        self.records = list(records)
+        if final:
+            self.scan_lbl.setText(f"{len(self.records)} output devices connected")
         for combo, key, first in ((self.dev, "dj_device_name", "System default"),
                                   (self.pdev, "dj_phones_device_name", "Same as master")):
-            cur = combo.currentText() or str(self.s.value(key, ""))
+            cur = combo.currentText() if combo.count() else str(self.s.value(key, "") or "")
             combo.blockSignals(True)
             combo.clear()
             combo.addItem(first, None)
-            for i, name, ch in self.devices:
-                combo.addItem(name, (i, ch))
+            for r in self.records:
+                combo.addItem(r["label"], (r["label"], r["channels"]))
             ix = combo.findText(cur)
             combo.setCurrentIndex(ix if ix >= 0 else 0)
             combo.blockSignals(False)
+        self.extra_add.clear()
+        for r in self.records:
+            self.extra_add.addItem(("🔵 " if r.get("bluetooth") else "") + r["label"], r["label"])
+        self._extras_refresh()
         self._dev_changed()
+
+    # ---- extra master outputs ------------------------------------------------------------------------
+    def _extras_refresh(self):
+        row = self.extra_list.currentRow()
+        self.extra_list.clear()
+        present = {r["label"] for r in self.records}
+        for e in self.extras:
+            d = "auto" if e.get("delay_ms") is None else f"{e['delay_ms']} ms"
+            here = "" if e["label"] in present or not self.records else "  (not connected - added when it is)"
+            self.extra_list.addItem(f"{e['label']} · {d}{here}")
+        if self.extras:
+            self.extra_list.setCurrentRow(min(max(row, 0), len(self.extras) - 1))
+
+    def _extra_add(self):
+        lb = self.extra_add.currentData()
+        if not lb or any(e["label"] == lb for e in self.extras):
+            return
+        from ..dj.outputs import is_bluetooth
+
+        self.extras.append({"label": lb, "delay_ms": None if not is_bluetooth(lb) else None})
+        self._extras_refresh()
+        self.extra_list.setCurrentRow(len(self.extras) - 1)
+
+    def _extra_remove(self):
+        r = self.extra_list.currentRow()
+        if 0 <= r < len(self.extras):
+            self.extras.pop(r)
+            self._extras_refresh()
+
+    def _extra_selected(self, r):
+        if not 0 <= r < len(self.extras):
+            return
+        e = self.extras[r]
+        for w_ in (self.edelay, self.e_auto):
+            w_.blockSignals(True)
+        self.e_auto.setChecked(e.get("delay_ms") is None)
+        self.edelay.setEnabled(e.get("delay_ms") is not None)
+        from ..dj.outputs import BLUETOOTH_GUESS_MS, is_bluetooth
+
+        self.edelay.setValue(int(e["delay_ms"]) if e.get("delay_ms") is not None
+                             else int(BLUETOOTH_GUESS_MS if is_bluetooth(e["label"]) else 30))
+        for w_ in (self.edelay, self.e_auto):
+            w_.blockSignals(False)
+
+    def _extra_delay(self, *_):
+        r = self.extra_list.currentRow()
+        if not 0 <= r < len(self.extras):
+            return
+        self.extras[r]["delay_ms"] = None if self.e_auto.isChecked() else self.edelay.value()
+        self.edelay.setEnabled(not self.e_auto.isChecked())
+        self.extra_list.item(r).setText(self.extra_list.item(r).text().split(" · ")[0] + " · "
+                                        + ("auto" if self.e_auto.isChecked() else f"{self.edelay.value()} ms"))
 
     def _channels(self, combo) -> int:
         d = combo.currentData()
@@ -1817,13 +1922,29 @@ class AudioSettings(QDialog):
         if self.dj is None:
             return
         self.save()                                   # measure on the outputs chosen here
-        self.dj.start_audio(quiet=True)
-        self.restart_needed = False
+        self.dj.apply_audio_settings(self)
+        self._before = self._snapshot()
+        self.restart_needed = self.reinit_needed = False
+        target = which
+        if which == "extra":
+            r = self.extra_list.currentRow()
+            if not 0 <= r < len(self.extras):
+                QMessageBox.information(self, "Measure", "Add and select a speaker first.")
+                return
+            label = self.extras[r]["label"]
+            if not any(o.label == label and o.alive for o in self.dj.engine.extra_outputs):
+                QMessageBox.information(self, "Measure", f"{label} is not playing yet - is it connected?")
+                return
+            target = "extra:" + label
         if which == "phones" and self.dj.engine.phones_chans is None:
             QMessageBox.information(self, "Measure", "Choose headphone outputs first.")
             return
-        dlg = TapCalibration(self.dj.engine, which, self)
+        dlg = TapCalibration(self.dj.engine, target, self)
         if dlg.exec() and dlg.result_ms is not None:
+            if which == "extra":
+                self.e_auto.setChecked(False)
+                self.edelay.setValue(int(round(dlg.result_ms)))
+                return
             sp, auto = (self.mdelay, self.m_auto) if which == "master" else (self.pdelay, self.p_auto)
             auto.setChecked(False)
             sp.setValue(int(round(dlg.result_ms)))
@@ -1833,7 +1954,15 @@ class AudioSettings(QDialog):
         if d:
             self.rec_dir.setText(d)
 
+    def _snapshot(self):
+        g = lambda k, d="": str(self.s.value(k, d) or "")  # noqa: E731
+        return (g("dj_device_name"), g("dj_phones_device_name"), g("dj_master", "1-2"), g("dj_phones", "3-4"),
+                g("dj_block", "512"))
+
     def save(self):
+        import json as _json
+
+        self.s.setValue("dj_extra_outputs", _json.dumps(self.extras))
         self.s.setValue("dj_device_name", self.dev.currentText() if self.dev.currentData() is not None else "")
         self.s.setValue("dj_phones_device_name", self.pdev.currentText() if self.pdev.currentData() else "")
         self.s.setValue("dj_master", self.master.currentText())
@@ -1846,6 +1975,16 @@ class AudioSettings(QDialog):
 
     def accept(self):
         self.save()
+        # only the main sound card, its channels or the buffer need an audio restart;
+        # delays and extra speakers are changed live
+        self.restart_needed = self._snapshot() != self._before
+        if self.restart_needed:
+            try:
+                known = {lb for _i, lb, _c in list_output_devices()}
+            except Exception:  # noqa: BLE001
+                known = set()
+            chosen = [x for x in (self.dev.currentData(), self.pdev.currentData()) if x]
+            self.reinit_needed = any(c[0] not in known for c in chosen)
         super().accept()
 
 
@@ -1864,7 +2003,8 @@ class TapCalibration(QDialog):
         self._t = _t
         self.setWindowTitle("Measure the output delay")
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(f"Listen on the <b>{'master' if which == 'master' else 'headphone'}</b> output and "
+        where = {"master": "master", "phones": "headphone"}.get(which, which[6:])
+        lay.addWidget(QLabel(f"Listen on the <b>{where}</b> output and "
                              "tap (button or space bar) <b>exactly when you hear each click</b>.<br>"
                              "About 20 taps. Keep steady - it is the average that counts."))
         self.b = QPushButton("TAP")
@@ -2157,6 +2297,7 @@ class DJPanel(QWidget):
     _error = Signal(str)
     _browse_sig = Signal(int)
     _load_sig = Signal(str)
+    _devices_sig = Signal(object)
 
     def __init__(self, main_window):
         super().__init__()
@@ -2312,6 +2453,19 @@ class DJPanel(QWidget):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(33)
+        # speakers coming and going (Bluetooth): checked in a helper process, music untouched
+        self._devices_sig.connect(self._on_devices)
+        self.offer_btn = QPushButton("")
+        self.offer_btn.hide()
+        self.offer_btn.clicked.connect(self._accept_offer)
+        try:
+            self.main.statusBar().addPermanentWidget(self.offer_btn)
+        except Exception:  # noqa: BLE001
+            pass
+        self.dev_timer = QTimer(self)
+        self.dev_timer.timeout.connect(self._scan_devices_bg)
+        self.dev_timer.start(10000)
+        QTimer.singleShot(3000, self._scan_devices_bg)
         self._refresh_midi_ports()
         QTimer.singleShot(200, self.start_audio)
         QTimer.singleShot(400, self._auto_connect_midi)
@@ -2445,6 +2599,8 @@ class DJPanel(QWidget):
                 v = s.value(key, "")
                 setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
             eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_device=pdev)
+            if not eng.extra_outputs:
+                self.apply_extras()
             if eng.phones_chans is None:
                 phones = "no separate headphones"
             elif eng._pstream is not None:
@@ -2467,11 +2623,128 @@ class DJPanel(QWidget):
 
     def audio_settings(self):
         dlg = AudioSettings(self.settings, self, dj=self)
-        ok = dlg.exec()
-        if ok or dlg.restart_needed or not self.engine.running:
-            self.engine.stop()
-            self.engine.block = int(self.settings.value("dj_block", 512))
+        if dlg.exec():
+            self.apply_audio_settings(dlg)
+        elif not self.engine.running:
             self.start_audio()
+
+    def apply_audio_settings(self, dlg=None):
+        """Apply the audio settings. Only a new main sound card, channels or
+        buffer restart the audio; delays and extra speakers change live."""
+        eng = self.engine
+        if dlg is None or dlg.restart_needed or not eng.running:
+            eng.stop()
+            if dlg is not None and dlg.reinit_needed:
+                from ..dj.outputs import rescan_devices
+
+                try:
+                    rescan_devices()          # the chosen card appeared after start-up
+                except Exception:  # noqa: BLE001
+                    log.exception("device rescan failed")
+            eng.block = int(self.settings.value("dj_block", 512))
+            self.start_audio()
+        else:
+            for attr, key in (("master_delay_s", "dj_master_delay_ms"), ("phones_delay_s", "dj_phones_delay_ms")):
+                v = self.settings.value(key, "")
+                setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
+            eng.update_alignment()
+        self.apply_extras()
+
+    # ---- extra master outputs (more speakers, in sync) -------------------------------------------
+    def wanted_extras(self) -> list[dict]:
+        import json as _json
+
+        try:
+            return list(_json.loads(self.settings.value("dj_extra_outputs", "[]") or "[]"))
+        except ValueError:
+            return []
+
+    def apply_extras(self, available: set | None = None):
+        """Start / stop / re-time the extra speakers. available: labels (and
+        names) connected right now - unknown means "try them all"."""
+        from ..dj.outputs import ExtraOutput, base_name
+
+        eng = self.engine
+        wanted = {e["label"]: e for e in self.wanted_extras()}
+        for eo in tuple(eng.extra_outputs):
+            if eo.label not in wanted:
+                eng.remove_output(eo.label)
+        started = []
+        for label, e in wanted.items():
+            delay = None if e.get("delay_ms") is None else float(e["delay_ms"]) / 1000
+            cur = next((o for o in eng.extra_outputs if o.label == label), None)
+            if cur is not None:
+                cur.delay_s = delay
+                continue
+            if available is not None and label not in available and base_name(label) not in available:
+                continue
+            try:
+                eng.add_output(ExtraOutput(label, delay_s=delay, block=eng.block))
+                started.append(base_name(label))
+            except OSError as ex:
+                log.warning("could not start %s: %s", label, ex)
+        eng.update_alignment()
+        if started:
+            self.main.status_label.setText(f"Playing on {', '.join(started)} too - in sync "
+                                           f"({eng.display_latency * 1000:.0f} ms)")
+
+    def _scan_devices_bg(self):
+        if getattr(self, "_scanning", False):
+            return
+        self._scanning = True
+
+        def job():
+            from ..dj import outputs
+
+            try:
+                self._devices_sig.emit(outputs.scan_devices())
+            finally:
+                self._scanning = False
+        threading.Thread(target=job, daemon=True, name="device-watch").start()
+
+    def _on_devices(self, records):
+        """Every few seconds: speakers that left, came back, or are new."""
+        from ..dj.outputs import base_name
+
+        if not records:
+            return
+        eng = self.engine
+        labels = {r["label"] for r in records}
+        avail = labels | {base_name(lb) for lb in labels}
+        for eo in tuple(eng.extra_outputs):
+            if not eo.alive:
+                eng.remove_output(eo.label)
+                if eo.label not in avail and base_name(eo.label) not in avail:
+                    self.main.status_label.setText(f"{base_name(eo.label)} disconnected - it rejoins in sync "
+                                                   "when it is back")
+        self.apply_extras(available=avail)
+        # a Bluetooth speaker that just appeared: offer it for the master
+        used = {e["label"] for e in self.wanted_extras()} | {
+            str(self.settings.value("dj_device_name", "") or ""), str(self.settings.value("dj_phones_device_name", "")
+                                                                     or "")}
+        seen = getattr(self, "_seen", None)
+        new = [r for r in records if r.get("bluetooth") and r["label"] not in used
+               and (seen is not None and r["label"] not in seen)]
+        self._seen = labels
+        if new:
+            self._offer = new[0]["label"]
+            self.offer_btn.setText(f"＋ Play the master on {base_name(self._offer)} too")
+            self.offer_btn.show()
+        elif getattr(self, "_offer", None) and self._offer not in labels:
+            self.offer_btn.hide()
+
+    def _accept_offer(self):
+        import json as _json
+
+        lb = getattr(self, "_offer", None)
+        self.offer_btn.hide()
+        if not lb:
+            return
+        ex = self.wanted_extras()
+        if not any(e["label"] == lb for e in ex):
+            ex.append({"label": lb, "delay_ms": None})
+            self.settings.setValue("dj_extra_outputs", _json.dumps(ex))
+        self.apply_extras()
 
     def toggle_record(self):
         eng = self.engine
@@ -2988,6 +3261,8 @@ class DJPanel(QWidget):
     def shutdown(self):
         self.settings.setValue("dj_inner", self.inner.saveState())
         self.timer.stop()
+        self.dev_timer.stop()
+        self.engine.close_outputs()
         if self.stream is not None:
             self.stream.stop()
             self.stream = None

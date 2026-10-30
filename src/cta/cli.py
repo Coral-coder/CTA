@@ -286,6 +286,32 @@ def cmd_selftest(args):
     return 0 if ok else 1
 
 
+def cmd_devices(args):
+    import json
+
+    from .dj.outputs import device_records
+
+    try:
+        recs = device_records()
+    except Exception as e:  # noqa: BLE001 - no audio system at all
+        logging.getLogger(__name__).warning("device scan failed: %s", e)
+        recs = []
+    text = json.dumps(recs, indent=1)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    else:
+        print(text)
+    return 0
+
+
+def cmd_output_helper(args):
+    from .dj.outputs import run_output_helper
+
+    a, b = (int(x) for x in args.chans.split(","))
+    return run_output_helper(args.device, (a, b), args.block, null=args.null, stats=args.stats)
+
+
 def cmd_update(args):
     from . import updater
 
@@ -378,6 +404,18 @@ def build_parser():
     s.add_argument("--from-zip", help=argparse.SUPPRESS)
     s.add_argument("--expect-version", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_update)
+
+    s = sub.add_parser("devices", help="list the audio output devices connected right now (JSON)")
+    s.add_argument("--out", help="write the list to this file (default: print it)")
+    s.set_defaults(fn=cmd_devices)
+
+    s = sub.add_parser("output-helper", help=argparse.SUPPRESS)       # extra output device, fed by CTA
+    s.add_argument("--device", required=True)
+    s.add_argument("--chans", default="0,1")
+    s.add_argument("--block", type=int, default=512)
+    s.add_argument("--null", action="store_true")
+    s.add_argument("--stats")
+    s.set_defaults(fn=cmd_output_helper)
 
     s = sub.add_parser("gui", help="start the desktop app (default)")
     s.set_defaults(fn=None)

@@ -142,3 +142,222 @@ def estimate_latency(taps: list[float], clicks: list[float], min_taps: int = 8) 
     if float(np.median(np.abs(offs - med))) > 0.06:        # all over the place: try again
         return None
     return max(0.0, med + TAP_ANTICIPATION_S)
+
+
+# --------------------------------------------------------------------------
+# Live device scans and extra outputs in helper processes
+# --------------------------------------------------------------------------
+# PortAudio only sees the devices that existed when it started, and re-reading
+# them means closing every stream. So a scan runs in a short-lived helper
+# process, and every extra output (a second / third Bluetooth speaker...) is
+# played by its own helper process that has a fresh PortAudio: devices come and
+# go without the music in the main process ever stopping.
+
+def cli_command() -> list[str]:
+    """How to run CTA's command line (frozen builds or from source)."""
+    import os
+    import sys
+
+    if getattr(sys, "frozen", False):
+        if sys.platform == "win32":
+            cli = os.path.join(os.path.dirname(sys.executable), "cta-cli.exe")
+            if os.path.exists(cli):
+                return [cli]
+        return [sys.executable]
+    return [sys.executable, "-m", "cta"]
+
+
+def _popen_flags() -> dict:
+    import subprocess
+    import sys
+
+    if sys.platform == "win32":
+        return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    return {}
+
+
+def scan_devices(timeout: float = 15.0) -> list[dict]:
+    """Every output device connected right now, read by a helper process so
+    the running audio is untouched. [{label, name, channels, bluetooth}]."""
+    import json
+    import os
+    import subprocess
+    import tempfile
+
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="cta-devices-")
+    os.close(fd)
+    try:
+        subprocess.run(cli_command() + ["devices", "--out", path], timeout=timeout, check=False,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **_popen_flags())
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def device_records() -> list[dict]:
+    """The device list as the helper writes it (runs inside the helper)."""
+    from .engine import list_output_devices
+
+    out = []
+    for _i, label, ch in list_output_devices():
+        name = label.rsplit(" (", 1)[0]
+        out.append({"label": label, "name": name, "channels": ch, "bluetooth": is_bluetooth(label)})
+    return out
+
+
+def base_name(label: str) -> str:
+    """'JBL Flip 6 (Windows WASAPI, 2 ch)' -> 'JBL Flip 6' (one device, several driver APIs)."""
+    return (label or "").rsplit(" (", 1)[0].strip()
+
+
+class ExtraOutput:
+    """One extra output device played by a helper process. The main audio
+    callback hands it blocks (never waiting); a writer thread pipes them on."""
+
+    def __init__(self, label: str, chans=(0, 1), delay_s: float | None = None, block: int = 512,
+                 sr: int = 44100, cmd: list[str] | None = None, null: bool = False, stats: str | None = None):
+        import queue as _q
+        import subprocess
+
+        self.label = label
+        self.chans = chans
+        self.delay_s = delay_s                 # None: driver latency + Bluetooth guess
+        self.align = Delay(sr)                 # holds this output back to line up with the slowest
+        self.q: _q.Queue = _q.Queue(maxsize=64)
+        self.alive = True
+        args = (cmd or cli_command()) + ["output-helper", "--device", label, "--chans", f"{chans[0]},{chans[1]}",
+                                         "--block", str(block)]
+        if null:
+            args.append("--null")
+        if stats:
+            args += ["--stats", stats]
+        self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, **_popen_flags())
+        self.t = threading.Thread(target=self._pump, daemon=True, name=f"out-{base_name(label)}")
+        self.t.start()
+
+    @property
+    def effective_delay(self) -> float:
+        if self.delay_s is not None:
+            return self.delay_s
+        return (BLUETOOTH_GUESS_MS / 1000.0) if is_bluetooth(self.label) else 0.03
+
+    def feed(self, block: np.ndarray):
+        """block: (2, n) float32 from the audio thread - never blocks."""
+        if not self.alive:
+            return
+        try:
+            self.q.put_nowait(np.ascontiguousarray(self.align.process(block).T, dtype=np.float32).tobytes())
+        except Exception:  # noqa: BLE001 - full: the helper fell behind, drop
+            pass
+
+    def _pump(self):
+        import queue as _q
+
+        try:
+            while self.proc.poll() is None:
+                try:
+                    data = self.q.get(timeout=0.5)
+                except _q.Empty:
+                    continue
+                if data is None:
+                    break
+                self.proc.stdin.write(data)
+                self.proc.stdin.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        self.alive = False
+
+    def close(self):
+        """Stop after sending what is already queued (a second at most)."""
+        try:
+            self.q.put(None, timeout=1)
+        except Exception:  # noqa: BLE001
+            pass
+        self.t.join(timeout=2)
+        self.alive = False
+        try:
+            if self.proc.stdin:
+                self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            self.proc.kill()
+
+
+def run_output_helper(device: str, chans=(0, 1), block: int = 512, null: bool = False,
+                      stats: str | None = None, sr: int = 44100) -> int:
+    """Body of `cta output-helper`: play raw float32 stereo from stdin on a
+    device until stdin closes (null: just consume, for tests)."""
+    import json
+    import os
+    import time
+
+    ring = Ring(target=max(2 * block, 2048), capacity=65536)
+    got = {"frames": 0}
+    done = threading.Event()
+
+    def reader():
+        pending = b""
+        while True:
+            try:
+                chunk = os.read(0, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            pending += chunk
+            n = len(pending) // 8 * 8
+            if n:
+                x = np.frombuffer(pending[:n], dtype=np.float32).reshape(-1, 2)
+                pending = pending[n:]
+                got["frames"] += len(x)
+                if not null:
+                    ring.write(x)
+        done.set()
+
+    threading.Thread(target=reader, daemon=True).start()
+    stream = None
+    if not null:
+        import sounddevice as sd
+
+        from .engine import list_output_devices
+
+        idx = next((i for i, label, _c in list_output_devices() if label == device), None)
+        if idx is None:
+            idx = next((i for i, label, _c in list_output_devices() if base_name(label) == base_name(device)), None)
+        if idx is None:
+            return 2
+        info = sd.query_devices(idx, "output")
+        n = int(min(info["max_output_channels"], max(2, max(chans) + 1)))
+        c = chans if max(chans) < n else (0, 1)
+
+        def cb(outdata, frames, _ti, _st):
+            x = ring.read(frames)
+            outdata.fill(0)
+            outdata[:, c[0]] = x[:, 0]
+            outdata[:, c[1]] = x[:, 1]
+        extra = None
+        if "WASAPI" in sd.query_hostapis(info["hostapi"])["name"]:
+            extra = sd.WasapiSettings(auto_convert=True)
+        stream = sd.OutputStream(samplerate=sr, blocksize=block, channels=n, dtype="float32", device=idx,
+                                 latency="low", callback=cb, extra_settings=extra)
+        stream.start()
+    done.wait()
+    if stream is not None:
+        time.sleep(0.2)
+        stream.stop()
+        stream.close()
+    if stats:
+        with open(stats, "w", encoding="utf-8") as fh:
+            json.dump(got, fh)
+    return 0

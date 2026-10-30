@@ -154,3 +154,22 @@ def structured_track(bpm=126.0, layout=(("intro", 16), ("drop", 32), ("breakdown
             x[s0:s1] += 0.25 * np.sign(np.sin(2 * np.pi * f * seg_t)) * 0.6
         bar += bars
     return (x / np.abs(x).max() * 0.9).astype(np.float32)
+
+
+# Qt and native extensions (PySide6, Rubber Band) can crash while Python tears
+# them down at interpreter exit ("shared QObject was deleted directly") - after
+# every test has passed. Once pytest has reported, leave without that teardown.
+_EXIT_STATUS = {"code": 0}
+
+
+def pytest_sessionfinish(session, exitstatus):
+    _EXIT_STATUS["code"] = int(exitstatus)
+
+
+def pytest_unconfigure(config):
+    import os
+    import sys
+
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_EXIT_STATUS["code"])

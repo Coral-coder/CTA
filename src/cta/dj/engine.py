@@ -249,6 +249,7 @@ class Engine:
         self._mdelay = Delay(SR)
         self._pdelay = Delay(SR)
         self.display_latency = 0.0     # seconds: draw positions this late so they match the sound
+        self.extra_outputs: list = []  # more master outputs (Bluetooth speakers...), each in a helper process
         # tap calibration clicks
         self.click_target: str | None = None     # "master" | "phones"
         self.click_period = 0.6
@@ -924,7 +925,7 @@ class Engine:
         now = t0 if t0 else _t.monotonic()
         if self._next_click < now:
             self._next_click = now + 0.3
-        target = master if self.click_target == "master" else phones
+        target = phones if self.click_target == "phones" else master
         while self._next_click < now + n / SR:
             k = int((self._next_click - now) * SR)
             m = min(int(0.03 * SR), n - k)
@@ -941,8 +942,15 @@ class Engine:
         to their own sound card when they have one."""
         import time as _t
 
-        if self.click_target:
+        extra_click = None
+        if self.click_target and self.click_target.startswith("extra:"):
+            extra_click = self.click_target[6:]          # clicks only on that speaker
+            clicked = master.copy()
+            self._clicks(clicked, phones.copy(), frames, _t.monotonic())
+        elif self.click_target:
             self._clicks(master, phones, frames, _t.monotonic())
+        for eo in tuple(self.extra_outputs):
+            eo.feed(clicked if extra_click == eo.label else master)
         master = self._mdelay.process(master)
         phones = self._pdelay.process(phones)
         if self._pring is not None:
@@ -1038,6 +1046,20 @@ class Engine:
         except Exception:  # noqa: BLE001
             return 0.0
 
+    def add_output(self, eo) -> None:
+        """Another master output (an ExtraOutput); everything is re-lined up."""
+        self.extra_outputs = [o for o in self.extra_outputs if o.label != eo.label] + [eo]
+        self.update_alignment()
+
+    def remove_output(self, label: str) -> None:
+        keep, gone = [], []
+        for o in self.extra_outputs:
+            (gone if o.label == label else keep).append(o)
+        self.extra_outputs = keep
+        for o in gone:
+            o.close()
+        self.update_alignment()
+
     def output_delays(self) -> tuple[float, float]:
         """(master, headphones) delay in seconds: measured/entered, else reported."""
         m = self.master_delay_s if self.master_delay_s is not None else self.reported_latency()
@@ -1051,10 +1073,15 @@ class Engine:
         set how late positions are drawn."""
         m, p = self.output_delays()
         phones_used = self.phones_chans is not None
-        diff = (m - p) if phones_used else 0.0
-        self._pdelay.frames = int(round(diff * SR)) if diff > 0 else 0
-        self._mdelay.frames = int(round(-diff * SR)) if diff < 0 else 0
-        self.display_latency = max(m, p) if phones_used else m
+        extras = tuple(self.extra_outputs)
+        # everything waits for the slowest output, so all speakers (and the
+        # headphones) play the same beat at the same moment
+        target = max([m] + ([p] if phones_used else []) + [o.effective_delay for o in extras])
+        self._mdelay.frames = int(round((target - m) * SR))
+        self._pdelay.frames = int(round((target - p) * SR)) if phones_used else 0
+        for o in extras:
+            o.align.frames = int(round((target - o.effective_delay) * SR))
+        self.display_latency = target
 
     def _open(self, sd, device, block, master_chans, phones_chans):
         info = sd.query_devices(device, "output")
@@ -1094,6 +1121,11 @@ class Engine:
     @property
     def virtual(self) -> bool:
         return isinstance(self._stream, _VirtualOutput)
+
+    def close_outputs(self):
+        for o in tuple(self.extra_outputs):
+            o.close()
+        self.extra_outputs = []
 
     def stop(self):
         if self._pstream is not None:
