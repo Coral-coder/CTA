@@ -74,6 +74,11 @@ FX / auto-mix strip, which you can hide under **Options**.
   sheds its GAIN and FILTER knobs, then the EQ, as it gets shorter. The jog
   platter can be switched off under **Options**; you can always scratch on
   the waveform.
+- **Drag tracks into Traktor (or rekordbox, Serato, Finder / Explorer):**
+  tracks dragged out of the library, the Next Track list or the setlist
+  carry their audio files, so you can drop them on a Traktor deck or
+  playlist. Select several (Shift / Ctrl / Cmd-click) to drag a batch, or
+  a whole setlist.
 - **Audio outputs (Audio… button):**
   - The device list is re-read when you open it; **Rescan** finds devices
     plugged in or paired while CTA runs (the audio restarts for a moment).

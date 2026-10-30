@@ -7,7 +7,7 @@ Sorting and filtering happen in numpy (not QSortFilterProxyModel) so a
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt
+from PySide6.QtCore import QAbstractTableModel, QMimeData, QModelIndex, Qt, QUrl
 from PySide6.QtGui import QColor
 
 from ..keys import camelot_str, key_name
@@ -23,19 +23,26 @@ def _track_mime(lib_index: int) -> QMimeData:
 
 
 class _DragMixin:
-    """Rows can be dragged onto a DJ deck."""
+    """Rows can be dragged onto a CTA deck - and, as audio files, onto other
+    apps: Traktor decks and playlists, rekordbox, Serato, Finder / Explorer."""
 
     def flags(self, index):
         f = super().flags(index)
         return f | Qt.ItemIsDragEnabled if index.isValid() else f
 
     def mimeTypes(self):
-        return [TRACK_MIME]
+        return [TRACK_MIME, "text/uri-list"]
 
     def mimeData(self, indexes):
         if not indexes:
             return None
-        return _track_mime(self._lib_index_for_row(indexes[0].row()))
+        rows = sorted({ix.row() for ix in indexes})
+        idx = [self._lib_index_for_row(r) for r in rows]
+        m = _track_mime(idx[0])                     # CTA decks: the first track
+        lib = getattr(self, "lib", None)
+        if lib is not None:
+            m.setUrls([QUrl.fromLocalFile(lib.paths[i]) for i in idx if 0 <= i < lib.n])
+        return m
 
     def supportedDragActions(self):
         return Qt.CopyAction

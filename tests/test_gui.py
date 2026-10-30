@@ -46,3 +46,28 @@ def test_main_window(tmp_data_dir):
     w.apply_filter()
     assert w.lib_model.rowCount() == 1
     w.close()
+
+
+def test_drag_out_carries_audio_files_for_other_apps(tmp_path):
+    """Dragging rows out of CTA gives file URLs (what Traktor, rekordbox and
+    Finder / Explorer accept) as well as CTA's own deck format."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from cta.gui.models import TRACK_MIME, TrackListModel
+
+    QApplication.instance() or QApplication([])
+
+    class Lib:
+        n = 3
+        paths = [str(tmp_path / f"t{i}.mp3") for i in range(3)]
+
+    m = TrackListModel([])
+    m.lib = Lib()
+    m.items = [2, 0, 1]
+    data = m.mimeData([m.index(0, 0), m.index(0, 3), m.index(1, 0)])
+    assert "text/uri-list" in m.mimeTypes()
+    assert [u.toLocalFile() for u in data.urls()] == [Lib.paths[2], Lib.paths[0]]
+    assert bytes(data.data(TRACK_MIME)).decode() == "2"

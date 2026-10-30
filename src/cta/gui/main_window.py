@@ -104,7 +104,7 @@ def _table(model) -> QTableView:
     t = QTableView()
     t.setModel(model)
     t.setSelectionBehavior(QAbstractItemView.SelectRows)
-    t.setSelectionMode(QAbstractItemView.SingleSelection)
+    t.setSelectionMode(QAbstractItemView.ExtendedSelection)   # several rows can be dragged out at once
     t.setAlternatingRowColors(True)
     t.setShowGrid(False)
     t.setWordWrap(False)
