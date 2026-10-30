@@ -220,6 +220,26 @@ class AutoMix:
         self.status = "Auto-mix off"
         self._changed()
 
+    def reset(self):
+        """A fresh start for the next set: stopped, empty queue, no plan, no
+        seed of its own, nothing remembered from this run. (What you taught it
+        and the mixes you recorded ahead are kept.)"""
+        self.stop()
+        with self._lock:
+            self.queue.clear()
+        self.meta.clear()
+        for dn in list(self._loading):
+            self._load_gen[dn] = self._load_gen.get(dn, 0) + 1      # discard loads still running
+        self._loading.clear()
+        self._loading_item.clear()
+        self.history.clear()
+        self.used_items.clear()
+        self.aired.clear()
+        self.pending_skip = None
+        self.resume_after_manual = False
+        self.status = "Auto-mix reset"
+        self._changed()
+
     def user_took_over(self):
         """The DJ took over a transition: auto-mix lets go at once (no more
         fader / EQ moves), the learner keeps the blend as a lesson, and

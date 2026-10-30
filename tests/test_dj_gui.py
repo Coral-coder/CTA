@@ -669,3 +669,72 @@ def test_faders_and_crossfader_drag_from_where_they_are():
     tempo.resize(20, 216)
     drag(tempo, [(10, 100), (10, 110), (10, 110)])
     assert tempo.value() == 100
+
+
+def test_unload_decks_and_reset_auto_mix_for_the_next_set(tmp_data_dir, monkeypatch):
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    for n, bpm in enumerate((124.0, 125.0, 126.0)):
+        write_audio(str(music / f"t{n}.flac"), synth_track(bpm, 30, chord=(57, 60, 64)))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def wait(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        wait(50)
+    w.open_dj()
+    dj, eng = w.dj, w.dj.engine
+    dj.load_index("A", 0)
+    dj.load_index("B", 1)
+    for _ in range(200):
+        if eng.decks["A"].loaded and eng.decks["B"].loaded:
+            break
+        wait(50)
+    am = dj.automix
+    am.history[:] = ["t0"]
+    am.used_items[:] = [0, 1]
+    am.set_queue([2])
+    dj.set_seed = 0
+    eng.set_playing("A", True)
+    eng.render(512)
+    dj._tick()
+    assert not dj.unload_btn.isVisibleTo(w)            # the queue still holds a track
+    dj.clear_queue()
+    dj._tick()
+    assert dj.unload_btn.isVisibleTo(w)                # auto-mix off, queue empty: offered
+    dj.unload_decks(False)
+    eng.render(512)
+    assert eng.decks["A"].loaded and eng.decks["A"].playing     # the track playing is never cut
+    assert not eng.decks["B"].loaded
+    assert not am.history and not am.used_items and dj.set_seed is None and not am.queue
+    dj._tick()                                         # an emptied deck draws without errors
+    app = QtWidgets.QApplication.instance()
+    app.processEvents()
+    monkeypatch.setattr(DW.QMessageBox, "question", staticmethod(lambda *a, **k: DW.QMessageBox.Yes))
+    dj.unload_decks(True)                              # everything, after asking
+    eng.render(512)
+    assert not any(d.loaded for d in eng.decks.values())
+    dj._tick()
+    app.processEvents()
+    dj.shutdown()
+    w.close()

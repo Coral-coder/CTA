@@ -3430,8 +3430,14 @@ class DJPanel(QWidget):
         self.offer_btn = QPushButton("")
         self.offer_btn.hide()
         self.offer_btn.clicked.connect(self._accept_offer)
+        # auto-mix stopped and its queue empty: offer to clear the decks for the next set
+        self.unload_btn = QPushButton("⏏ Unload decks")
+        self.unload_btn.setToolTip("Empty every deck that is not playing and reset auto-mix, ready for the next set")
+        self.unload_btn.hide()
+        self.unload_btn.clicked.connect(lambda: self.unload_decks(False))
         try:
             self.main.statusBar().addPermanentWidget(self.offer_btn)
+            self.main.statusBar().addPermanentWidget(self.unload_btn)
         except Exception:  # noqa: BLE001
             pass
         self.dev_timer = QTimer(self)
@@ -3545,6 +3551,8 @@ class DJPanel(QWidget):
             menu.addAction(act)
         menu.addSeparator()
         menu.addAction("⏱ Mix ahead (Time-Shift)…\tCtrl+T", lambda: self.open_timeshift())
+        menu.addAction("⏏ Unload stopped decks", lambda: self.unload_decks(False))
+        menu.addAction("⏏ Unload all decks (stops the music)…", lambda: self.unload_decks(True))
         menu.addAction("Queue = setlist", self.queue_from_setlist)
         menu.addAction("Forget what was learned from my mixes", self._forget_learning)
         bm = menu.addMenu("Blend length")
@@ -4184,6 +4192,43 @@ class DJPanel(QWidget):
             self.automix.queue.clear()
             self.automix.queue.extend(int(i) for i in order if i is not None)
 
+    def unload_decks(self, all_decks: bool = False):
+        """Empty the decks in preparation for the next set (stopped ones only,
+        unless all_decks - which asks first, since it stops the music)."""
+        if all_decks:
+            if QMessageBox.question(self, "Unload decks", "Stop and empty every deck, including the one playing?") \
+                    != QMessageBox.Yes:
+                return
+            if self.automix.active:
+                self.automix.stop()
+        am = self.automix
+        n = 0
+        for name, d in self.engine.decks.items():
+            if not d.loaded or (d.playing and not all_decks):
+                continue
+            if am.active and (name in am.meta or name in am._loading):
+                continue                       # auto-mix is preparing this one: leave it
+            self.engine.unload(name, even_if_playing=all_decks)
+            am.meta.pop(name, None)
+            n += 1
+        reset = not am.active                  # (all_decks stopped it above)
+        if reset:
+            am.reset()
+            self.set_seed = None
+            self._show_queue()
+        self.unload_btn.hide()
+        msg = f"Unloaded {n} deck{'s' if n != 1 else ''}" if n else "No decks to unload"
+        self.main.status_label.setText(msg + (" · auto-mix reset, ready for the next set" if reset else ""))
+
+    def _offer_unload(self):
+        """Show ⏏ Unload decks while auto-mix is off, its queue is empty and a
+        stopped deck still holds a track."""
+        am = self.automix
+        want = (not am.active and not am.queue and not am._loading
+                and any(d.loaded and not d.playing for d in self.engine.decks.values()))
+        if want != self.unload_btn.isVisible():
+            self.unload_btn.setVisible(want)
+
     def toggle_automix(self, on):
         if on:
             if not self.automix.queue and not any(d.loaded for d in self.engine.decks.values()):
@@ -4351,6 +4396,7 @@ class DJPanel(QWidget):
                 f"(now {self.engine.block}) to stop any stutter")
 
     def _tick(self):
+        self._offer_unload()
         # with a controller attached its knobs set the levels: loading a track keeps them
         self.engine.reset_on_load = self.controller is None
         self._watchdog()

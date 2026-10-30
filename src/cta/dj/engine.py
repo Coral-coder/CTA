@@ -398,6 +398,27 @@ class Engine:
                 d.cue_point = d.mix_in
         self.cmd(f)
 
+    def unload(self, deck: str, even_if_playing: bool = False):
+        """Empty a deck (ready for the next set). A playing deck is left alone
+        unless even_if_playing."""
+        def f(e):
+            d = e.decks[deck]
+            if d.playing and not even_if_playing:
+                return
+            d.playing = False
+            d.cue_preview = False
+            d.audio, d.grid, d.peaks, d.bands = None, None, None, None
+            d.info = TrackInfo()
+            d.loop = None
+            d.hotcues = [None] * 8
+            d.mix_in = d.mix_out = d.mix_out_end = None
+            d.play_pos = d.feed_pos = d.cue_point = 0.0
+            d._rb = None
+            d.scope = None
+            if e.master_deck == deck:
+                e.master_deck = None
+        self.cmd(f)
+
     def set_cue(self, deck: str, seconds: float):
         def f(e):
             d = e.decks[deck]

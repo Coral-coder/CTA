@@ -90,6 +90,12 @@ the bar between them to give the decks more or less room.
   wheel no longer zooms). **⛓ Sync zoom** keeps both decks at the same zoom.
   Double-click the overview to open the whole track, zoomable, with its
   markers.
+- **⏏ Unload decks:** with auto-mix stopped and its queue empty, the status
+  bar offers to empty the decks that aren't playing and reset auto-mix (queue,
+  plan, seed, what it played in that run) for the next set. The auto-mix ▾
+  menu also has **Unload stopped decks** and **Unload all decks** (asks
+  first: it stops the music). What auto-mix learned from you and your Mix
+  Ahead recordings are kept.
 - **Every control drags from where it is:** knobs (up = more, down = less),
   channel faders, the crossfader and the tempo faders. A click never jumps a
   control to the mouse; hold Shift for fine moves.
