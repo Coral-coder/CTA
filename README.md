@@ -81,6 +81,10 @@ the bar between them to give the decks more or less room.
   point; drag off the button before letting go (or press PLAY while
   holding) and the track keeps playing. PLAY and CUP also act on press.
 - **Jog platter:** the album art turns on the record.
+- **Waveform colours (Options → Waveform colours):** **Spectrum** (default:
+  a deep, fully saturated rainbow; bass red, mids orange to green, highs
+  blue to violet), **Three-band** (blue lows, amber mids, white highs drawn
+  as layers), **Fire**, **Ice** and **Classic**.
 - **Keyboard (Traktor Pro's default keys):** deck A on the top letter row,
   deck B on the home row. **Options → Keyboard shortcuts…** lists them;
   they never fire while you type in a text box.

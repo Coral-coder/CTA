@@ -481,3 +481,26 @@ def test_zoomed_waveform_scrolls_without_flicker():
         b, frac = w._zoom_columns(600)
         assert abs(frac - 0.4) < 1e-6
         assert np.allclose(a[3:], b[:-3])
+
+
+def test_waveform_themes_render_saturated_colours():
+    import numpy as np
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui import dj_window as DW
+
+    bands = np.array([[1.0, 0.05, 0.02], [0.05, 1.0, 0.05], [0.02, 0.05, 1.0]], np.float32)
+    try:
+        for name in DW.WAVE_THEMES:
+            DW.set_wave_theme(name)
+            img = DW._wave_image(bands, 40)
+            assert img.width() == 3 and img.height() == 40
+        DW.set_wave_theme("Spectrum")
+        rgb = DW._band_colors(bands).astype(int)
+        # bass red, mids green-ish, highs blue: each a strong, pure colour
+        assert rgb[0, 0] > 200 and rgb[0, 2] < 40
+        assert rgb[1, 1] > 200 and rgb[1, 0] < 120
+        assert rgb[2, 2] > 200 and rgb[2, 1] < 60
+        assert all(c.max() - c.min() > 180 for c in rgb)          # saturated, not washed out
+    finally:
+        DW.set_wave_theme("Spectrum")

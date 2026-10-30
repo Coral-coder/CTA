@@ -122,14 +122,100 @@ class LevelMeter(QWidget):
 # waveforms (rendered with numpy into QImages: cheap at 30 fps)
 # --------------------------------------------------------------------------
 
+# Waveform colour themes (Options -> Waveform colours). Bands are (n, 3):
+# low, mid, high energy per pixel column.
+WAVE_THEMES = ["Spectrum", "Three-band", "Fire", "Ice", "Classic"]
+WAVE_THEME_TIPS = {
+    "Spectrum": "Deep, fully saturated rainbow: bass red, mids orange-yellow-green, highs blue-violet",
+    "Three-band": "Bass, mids and highs drawn as layers: blue lows, amber mids, white highs",
+    "Fire": "Loudness as heat: dark red to orange to yellow-white",
+    "Ice": "Loudness as cold: navy to cyan to white",
+    "Classic": "The original soft colours",
+}
+_theme = {"name": "Spectrum"}
+
+
+def set_wave_theme(name: str):
+    _theme["name"] = name if name in WAVE_THEMES else "Spectrum"
+
+
+def _hsv(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Vectorised HSV (0..1) -> RGB float (n, 3)."""
+    i = np.floor(h * 6.0).astype(np.int64) % 6
+    f = h * 6.0 - np.floor(h * 6.0)
+    p, q, t = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
+    r = np.choose(i, [v, q, p, p, t, v])
+    g = np.choose(i, [t, v, v, q, p, p])
+    b = np.choose(i, [p, p, t, v, v, q])
+    return np.stack([r, g, b], axis=1)
+
+
+def _ramp(x: np.ndarray, stops: list[tuple[float, tuple[int, int, int]]]) -> np.ndarray:
+    xs = [a for a, _ in stops]
+    cols = np.array([c for _, c in stops], np.float64) / 255.0
+    return np.stack([np.interp(x, xs, cols[:, k]) for k in range(3)], axis=1)
+
+
 def _band_colors(b: np.ndarray) -> np.ndarray:
-    """(n,3) band levels -> (n,3) uint8 RGB: red bass, green mids, blue highs."""
-    tot = b.sum(axis=1, keepdims=True) + 1e-9
-    mix = b / tot
-    rgb = np.stack([0.25 + 0.75 * mix[:, 0] + 0.2 * mix[:, 1],
-                    0.25 + 0.7 * mix[:, 1] + 0.15 * mix[:, 0],
-                    0.3 + 0.9 * mix[:, 2]], axis=1)
+    """(n,3) band levels -> (n,3) uint8 RGB in the chosen theme."""
+    name = _theme["name"]
+    b = np.asarray(b, np.float64)
+    tot = b.sum(axis=1) + 1e-9
+    level = np.clip(b.max(axis=1), 0, 1)
+    if name == "Classic":
+        mix = b / tot[:, None]
+        rgb = np.stack([0.25 + 0.75 * mix[:, 0] + 0.2 * mix[:, 1],
+                        0.25 + 0.7 * mix[:, 1] + 0.15 * mix[:, 0],
+                        0.3 + 0.9 * mix[:, 2]], axis=1)
+    elif name == "Fire":
+        rgb = _ramp(level, [(0.0, (70, 0, 10)), (0.35, (200, 20, 10)), (0.65, (255, 120, 0)),
+                            (0.85, (255, 210, 40)), (1.0, (255, 250, 210))])
+    elif name == "Ice":
+        rgb = _ramp(level, [(0.0, (8, 20, 90)), (0.4, (0, 90, 230)), (0.7, (0, 210, 255)),
+                            (0.9, (150, 245, 255)), (1.0, (245, 255, 255))])
+    elif name == "Three-band":
+        rgb = np.tile(np.array([[0.12, 0.42, 1.0]]), (len(b), 1))     # outline colour = bass layer
+    else:  # Spectrum: the "centre of mass" of the spectrum picks the hue
+        # emphasise the dominant band so colours stay vivid instead of muddy mixes
+        w = b ** 2
+        x = (w[:, 1] * 0.5 + w[:, 2] * 1.0) / (w.sum(axis=1) + 1e-12)
+        hue = 0.0 + 0.78 * x                     # 0 red -> 0.13 orange -> 0.33 green -> 0.66 blue -> 0.78 violet
+        sat = np.full_like(hue, 1.0)
+        val = 0.55 + 0.45 * np.sqrt(level)
+        rgb = _hsv(hue, sat, val)
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+
+
+THREE_BAND = ((31, 107, 255), (255, 154, 31), (245, 245, 245))   # lows, mids, highs
+
+
+def _wave_image(b: np.ndarray, h: int, past: int | None = None) -> QImage:
+    """Waveform picture for per-column bands in the current theme."""
+    b = np.asarray(b, np.float32)
+    if _theme["name"] == "Three-band":
+        return _render_layers(np.clip(b, 0, 1), h, past)
+    return _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), h, past)
+
+
+def _render_layers(b: np.ndarray, h: int, past: int | None = None) -> QImage:
+    """Three-band view: the bass outline with the mids and highs drawn over it."""
+    w = b.shape[0]
+    ys = _YS.get(h)
+    if ys is None:
+        ys = _YS[h] = np.abs(np.arange(h, dtype=np.float32)[:, None] + 0.5 - h / 2)
+    img = np.full((h, w), _BG32, np.uint32)
+    scale = [1.0, 0.85, 0.6]                 # highs are quieter: keep them visible but inside
+    for k, (r, g, bl) in enumerate(THREE_BAND):
+        c = np.full(w, (0xFF << 24) | (r << 16) | (g << 8) | bl, np.uint32)
+        if past is not None and past > 0:
+            c[:past] = (0xFF << 24) | ((r * 115 >> 8) << 16) | ((g * 115 >> 8) << 8) | (bl * 115 >> 8)
+        hk = np.clip(b[:, k] * scale[k] if k else b.max(axis=1), 0, 1)
+        mask = ys <= (hk * (h / 2 - 1))[None, :]
+        img = np.where(mask, c[None, :], img)
+    img = img.astype(np.uint32)
+    q = QImage(img.data, w, h, 4 * w, QImage.Format_RGB32)
+    q._buf = img
+    return q
 
 
 _BG32 = np.uint32(0xFF000000 | (18 << 16) | (19 << 8) | 22)
@@ -179,7 +265,7 @@ class Waveform(QWidget):
         self.mix_out = None
         self.mix_out_end = None    # seconds: the blend ends here when set
         self.mix_beats = 64.0      # blend length shown after the outro marker
-        self._over = None          # cached (width, heights, colours)
+        self._over = None          # cached (width, band levels per column)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
         self._drag_x = None
@@ -297,16 +383,16 @@ class Waveform(QWidget):
             return
         if self.zoom and self.bands is not None:
             b, frac = self._zoom_columns(w)
-            p.drawImage(QPointF(-frac, 0), _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), h))
+            p.drawImage(QPointF(-frac, 0), _wave_image(b, h))
         else:
             if self._over is None or self._over[0] != w:
                 n = self.peaks.shape[0]
                 b = self.peaks[np.linspace(0, n - 1, w).astype(int)]
-                self._over = (w, np.clip(b.max(axis=1), 0, 1), _band_colors(b))
+                self._over = (w, b)
             past = int(self.pos / self.duration * w)
-            key = (w, h, past)
+            key = (w, h, past, _theme["name"])
             if getattr(self, "_over_img", (None, None))[0] != key:
-                self._over_img = (key, _render(self._over[1], self._over[2], h, past))
+                self._over_img = (key, _wave_image(self._over[1], h, past))
             p.drawImage(0, 0, self._over_img[1])
         if self.loop:
             x0, x1 = self._x(self.loop[0] / SR, w), self._x(self.loop[1] / SR, w)
@@ -853,7 +939,7 @@ class MarkerWave(QWidget):
             b[valid] = self._coarse[1][idx[valid] // step]
         else:
             b[valid] = src[idx[valid]]
-        p.drawImage(0, 0, _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), wave_h))
+        p.drawImage(0, 0, _wave_image(b, wave_h))
         # bars (phrase lines every 8 bars, numbers), beats when close enough
         if self.grid is not None:
             g = self.grid
@@ -2633,6 +2719,18 @@ class DJPanel(QWidget):
         hl.addWidget(self.keys_chk)
         act.setDefaultWidget(holder)
         menu.addAction(act)
+        set_wave_theme(self.settings.value("dj_wave_theme", "Spectrum"))
+        wmenu = menu.addMenu("Waveform colours")
+        from PySide6.QtGui import QActionGroup
+
+        grp = QActionGroup(wmenu)
+        for name in WAVE_THEMES:
+            a = wmenu.addAction(name, lambda name=name: self.set_wave_theme(name))
+            a.setCheckable(True)
+            a.setChecked(name == _theme["name"])
+            a.setToolTip(WAVE_THEME_TIPS[name])
+            grp.addAction(a)
+        wmenu.setToolTipsVisible(True)
         menu.addAction("Keyboard shortcuts…", lambda: QMessageBox.information(
             self, "Keyboard shortcuts", f"<pre style='font-size:12px'>{HELP}</pre>"))
         b_opts.setMenu(menu)
@@ -3519,6 +3617,13 @@ class DJPanel(QWidget):
             self._wd = (fr, now)
             self.start_audio(quiet=True)
             self.main.status_label.setText("Audio device stopped responding - reconnected")
+
+    def set_wave_theme(self, name: str):
+        set_wave_theme(name)
+        self.settings.setValue("dj_wave_theme", _theme["name"])
+        for w in self.findChildren(QWidget):
+            if isinstance(w, (Waveform, MarkerWave)):
+                w.update()
 
     def _tick(self):
         self._watchdog()
