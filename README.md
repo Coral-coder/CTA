@@ -92,7 +92,8 @@ the bar between them to give the decks more or less room.
   markers.
 - **Double-click resets** any knob, fader, the crossfader (centre) and the
   tempo fader.
-- **⏱ Time-Shift (toolbar):** mix the next transition *now*, on your
+- **⏱ MIX AHEAD (Time-Shift):** the button next to ▶ AUTO-MIX (also
+  **Ctrl+T**, the auto-mix ▾ menu and the toolbar). Mix the next transition *now*, on your
   headphones, while the room keeps hearing the live decks; auto-mix plays
   your mix live later.
   - A separate preview player (not the live decks) with the outgoing and
@@ -127,7 +128,7 @@ the bar between them to give the decks more or less room.
   | Hot cues (Ctrl: delete; Shift: loop 1–16) | 1–5 | 6–0 |
   | Load selected track | Shift+← | Shift+→ |
 - **Mixer:** GAIN, HI, MID, LOW, FILTER, FX and headphones per channel.
-  **The gain, EQ, filter and key reset when a new track loads.** The
+  **The gain, EQ, filter and key reset when a new track loads** (with a controller attached the knobs keep their place). The
   crossfader, headphone mix and volume sit under the decks.
 
 - **Scalable decks:** each deck shows what fits its height, like Traktor's
@@ -383,8 +384,20 @@ Under the hood:
     (it is then used every time that controller connects). LEDs follow the
     deck state.
   - Jog wheel: touch the top to scratch, turn the outer ring to nudge, or
-    search when paused.
+    search when paused. **Options → Scratch** turns scratching off (jog top,
+    platter and waveform drag); the jog then only nudges or searches.
+  - **Reset to built-in** in Controller setup puts back CTA's full DDJ-T1
+    map; a saved mapping missing controls (jog touch, the mixer…) is
+    completed from it automatically.
   - Any other MIDI controller can be mapped with the same wizard.
+- **LOOP OUT** with no IN set loops the chosen loop length at once; after an
+  IN it loops from the IN point to where you are.
+- **Jog nudge on a synced deck stays put:** the sync lock keeps the phase
+  where your nudge left it (press SYNC again to snap back on the beat).
+- **CUE / PLAY start on the first sample** at the track's own tempo (no
+  time-stretcher warm-up), so fast cue taps are exact.
+- With a **controller attached**, loading a track keeps the gain / EQ /
+  filter where your knobs are (without one they reset to neutral).
 - Loops (1–32 beats), cue points snapped to beats, 3-band kill EQ with
   Linkwitz-Riley crossovers, trim, and auto-gain from each track's measured
   loudness.
@@ -433,6 +446,11 @@ CTA keeps itself up to date. At start-up (at most every 12 hours) it checks
 GitHub Releases. When a new version is out, you can **Update now**, **Later**
 or **Skip this version**. You can also click **Check for Updates** in the
 toolbar at any time, or turn automatic checks off in Settings.
+
+**Mac:** an app opened straight from Downloads runs from a hidden, read-only
+copy, which can't be updated in place. CTA then installs the update to
+**/Applications** (or **~/Applications**) and clears macOS's quarantine flag,
+so from then on it updates itself where it is.
 
 An update goes through these steps:
 

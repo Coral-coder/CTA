@@ -319,7 +319,10 @@ def run_output_helper(device: str, chans=(0, 1), block: int = 512, null: bool = 
     import os
     import time
 
-    ring = Ring(target=max(2 * block, 2048), capacity=65536)
+    # Bluetooth stacks pull audio in bursts: a deeper cushion than a wired card
+    # needs, so they never run dry (stutter). Its delay is part of the output's
+    # measured delay, which the clock lines up.
+    ring = Ring(target=max(4 * block, 4096), capacity=131072)
     got = {"frames": 0}
     done = threading.Event()
 

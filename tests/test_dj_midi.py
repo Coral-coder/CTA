@@ -197,3 +197,37 @@ def test_ddj_t1_performance_buttons_and_mixer():
     c.handle_raw([0x96, 92, 127])                     # MASTER A
     eng.render(256)
     assert eng.master_deck == "A"
+
+
+def test_saved_ddj_t1_mapping_is_completed_and_scratch_can_be_switched_off(tmp_path, monkeypatch):
+    import cta.dj.midi as M
+
+    monkeypatch.setattr(M.paths, "data_dir", lambda: str(tmp_path))
+    # an old saved map: jog without its touch sensor, play on a learned note
+    M.save_mapping("PIONEER DDJ-T1", [M.Binding("cc14", 0, 1, "jog", "A", relative=True),
+                                      M.Binding("note", 0, 11, "play", "A")])
+    bs, _ = M.load_mapping("PIONEER DDJ-T1")
+    have = {(b.type, b.ch, b.num, b.action, b.deck) for b in bs}
+    assert ("note", 0, 54, "jog_touch", "A") in have and ("cc", 6, 19, "volume", "A") in have
+    assert sum(1 for b in bs if (b.action, b.deck) == ("play", "A")) == 1
+
+    eng = Engine()
+    t = np.arange(SR * 20) / SR
+    y = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    eng.load("A", np.stack([y, y]), BeatGrid(120.0, 0.0, 20.0), TrackInfo(loudness=-10))
+    c = M.Controller(eng, device="PIONEER DDJ-T1")
+    eng.set_playing("A", True)
+    eng.render(256)
+    c.handle_raw([0x90, 54, 127])                 # touch the top
+    c.handle_raw([0xB0, 1, 127])
+    c.handle_raw([0xB0, 33, 107])                 # turn back
+    eng.render(256)
+    assert eng.decks["A"].scratching
+    c.handle_raw([0x90, 54, 0])
+    eng.render(256)
+    c.scratch_enabled = False                     # scratch switched off: the jog only nudges
+    c.handle_raw([0x90, 54, 127])
+    c.handle_raw([0xB0, 1, 127])
+    c.handle_raw([0xB0, 33, 107])
+    eng.render(256)
+    assert not eng.decks["A"].scratching and eng.decks["A"].playing

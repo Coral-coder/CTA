@@ -367,6 +367,11 @@ def test_levels_reset_when_a_track_loads():
     _load(eng, "A", 126.0)
     d = eng.decks["A"]
     assert d.trim == 1.0 and d.filter == 0.0 and d.key_shift == 0.0 and np.allclose(d.eq, 1.0)
+    eng.reset_on_load = False                     # a controller is attached: its knobs keep the say
+    eng.set("A", eq=(0.0, 1.5, 0.2), trim=2.0, filter=0.6)
+    _run(eng, 0.05)
+    _load(eng, "A", 124.0)
+    assert d.trim == 2.0 and d.filter == 0.6 and d.eq[0] == 0.0
 
 
 def test_taking_over_a_transition_hands_control_back_and_resumes():
@@ -405,3 +410,85 @@ def test_taking_over_a_transition_hands_control_back_and_resumes():
     am._resume_t = -100.0                  # pretend one track has played alone for a while
     am.maybe_resume()
     assert am.active and not am.resume_after_manual
+
+
+@pytest.mark.parametrize("keylock", [True, False])
+def test_loops_keep_playing_audio(keylock):
+    """A loop must sound every time round, with key lock (time-stretcher) too."""
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    d = eng.decks["A"]
+    eng.set("A", keylock=keylock)
+    eng.set_playing("A", True)
+    _run(eng, 3)
+    for beats in (4, 1, 8):
+        eng.loop_beats("A", beats)
+        _run(eng, 0.05)
+        out = _run(eng, 6)
+        blocks = out[0, : out.shape[1] // 512 * 512].reshape(-1, 512)
+        rms = np.sqrt((blocks ** 2).mean(axis=1))
+        assert (rms < 1e-4).mean() < 0.02, (beats, (rms < 1e-4).sum())   # no silence
+        assert d.loop[0] - 1 <= d.play_pos <= d.loop[1] + 1
+        eng.loop_beats("A", None)
+        _run(eng, 0.5)
+
+
+def test_scratching_back_past_the_start_never_stops_the_deck():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    d = eng.decks["A"]
+    eng.set("A", keylock=True)
+    eng.set_playing("A", True)
+    _run(eng, 0.3)
+    eng.scratch("A", -4.0, True)                  # pull the record back hard
+    _run(eng, 0.5)
+    assert d.play_pos == 0.0                      # held at the start, like a record
+    eng.jog_release("A")
+    _run(eng, 1.0)
+    assert d.playing and not eng.deck_errors and d.play_pos > 0
+
+
+def test_loop_out_without_in_loops_the_chosen_length_at_once():
+    eng = Engine()
+    _, g = _load(eng, "A", 124.0)
+    d = eng.decks["A"]
+    eng.set_playing("A", True)
+    _run(eng, 3)
+    eng.set("A", loop_size=8.0)
+    eng.loop_out("A")                              # no IN: an 8-beat loop right away
+    _run(eng, 0.05)
+    assert d.loop is not None and abs((d.loop[1] - d.loop[0]) / SR - 8 * g.beat_len) < 1e-3
+    eng.loop_beats("A", None)
+    eng.loop_in("A")                               # IN tagged earlier in the track ...
+    _run(eng, 2.0)
+    eng.loop_out("A")                              # ... OUT loops from it to here
+    _run(eng, 0.05)
+    assert abs((d.loop[1] - d.loop[0]) / SR - 2.0) < g.beat_len
+    eng.loop_beats("A", None)
+    _run(eng, 0.5)
+    eng.loop_out("A", 2)                           # the IN was used: the chosen length again
+    _run(eng, 0.05)
+    assert abs((d.loop[1] - d.loop[0]) / SR - 2 * g.beat_len) < 1e-3
+
+
+def test_jog_nudge_on_a_synced_deck_stays_where_the_dj_put_it():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    _load(eng, "B", 124.0, offset=0.1)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set("B", sync=True)
+    eng.set_playing("B", True)
+    _run(eng, 4)
+    assert abs(eng.phase_error("B")) < 0.02           # locked on the beat
+    for _ in range(40):                                # the DJ pushes it ahead with the jog
+        eng.jog("B", 40.0, False)
+        _run(eng, 0.02)
+    _run(eng, 1)
+    moved = eng.phase_error("B")
+    assert abs(moved) > 0.03
+    _run(eng, 5)                                       # the lock keeps the nudge, never pulls it back
+    assert abs(eng.phase_error("B") - moved) < 0.01
+    eng.set("B", sync=True)                            # pressing SYNC again: back on the beat
+    _run(eng, 4)
+    assert abs(eng.phase_error("B")) < 0.02

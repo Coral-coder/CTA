@@ -1294,10 +1294,12 @@ class DeckPanel(QFrame):
         for wv in (self.zoom, self.over):
             wv.seek.connect(lambda t, n=name: self.eng.seek(n, t))
             wv.marker.connect(lambda kind, t, n=name: self.dj.set_marker(n, kind, t))
-        self.zoom.scratch.connect(lambda secs: (self.dj.manual_touch(name, "scratch"), self.scr.move(secs)))
+        self.zoom.scratch.connect(lambda secs: self.dj.scratch_on() and (self.dj.manual_touch(name, "scratch"),
+                                                                          self.scr.move(secs)))
         self.zoom.scratch_end.connect(self.scr.end)
         self.platter = JogPlatter(col, 112)
-        self.platter.scratch.connect(lambda revs: (self.dj.manual_touch(name, "scratch"), self.scr.move(revs * 1.8)))
+        self.platter.scratch.connect(lambda revs: self.dj.scratch_on() and (self.dj.manual_touch(name, "scratch"),
+                                                                             self.scr.move(revs * 1.8)))
         self.platter.scratch_end.connect(self.scr.end)
         tb = QVBoxLayout()
         self.tempo = ResetSlider(Qt.Vertical, 0, "Tempo")
@@ -1412,7 +1414,7 @@ class DeckPanel(QFrame):
         b_in = _btn("IN", tip="Loop in", h=26)
         b_in.clicked.connect(lambda: self.eng.loop_in(name))
         b_out = _btn("OUT", tip="Loop out", h=26)
-        b_out.clicked.connect(lambda: self.eng.loop_out(name))
+        b_out.clicked.connect(lambda: self.eng.loop_out(name, self.loop_beats_sel))
         self.b_loop = _btn("LOOP", True, "Loop on / off (active)", h=26)
         self.b_loop.setObjectName("loop")
         self.b_loop.clicked.connect(self._toggle_loop)
@@ -1488,7 +1490,9 @@ class DeckPanel(QFrame):
             lb.setMinimumWidth(40)
         for w_ in (self.w_loop, self.w_pads):     # symbols / short labels: safe to narrow
             for b in w_.findChildren(QPushButton):
-                b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                pol = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                pol.setHorizontalStretch(len(b.text()) + 2)     # wordier labels get more of the row
+                b.setSizePolicy(pol)
                 b.setMinimumWidth(18)
         self.view = None
         self.apply_view()
@@ -1569,6 +1573,7 @@ class DeckPanel(QFrame):
     def _loop_size(self, n: int):
         """Loop-size buttons: start a loop of that size; the same size again ends it."""
         self.dj.manual_touch(self.name, "loop")
+        self.eng.set(self.name, loop_size=float(n))
         d = self.eng.decks[self.name]
         if d.loop is not None and self.loop_beats_sel == n:
             self.eng.loop_beats(self.name, None)
@@ -1581,6 +1586,7 @@ class DeckPanel(QFrame):
         self.loop_beats_sel = int(min(max(self.loop_beats_sel * f, 1), 32))
         if d.loop is not None:
             self.eng.loop_resize(self.name, f)
+        self.eng.set(self.name, loop_size=float(self.loop_beats_sel))     # after the resize: exact
 
     def _cup(self):
         self.dj.manual_touch(self.name, "play")
@@ -2607,7 +2613,8 @@ class LearnWizard(QDialog):
             b.setAutoDefault(False)
             row.addWidget(b)
         row.addStretch()
-        for txt, fn in (("Import Traktor (.tsi)…", self._import_tsi), ("Import…", self._import),
+        for txt, fn in (("Reset to built-in", self._reset_builtin), ("Import Traktor (.tsi)…", self._import_tsi),
+                        ("Import…", self._import),
                         ("Export…", self._export), ("Finish && save", self._finish)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
@@ -2763,6 +2770,22 @@ class LearnWizard(QDialog):
         self.result = {(b.action, b.deck): b for b in bs}
         self.ctl.set_bindings(bs, learned=True)        # used from now on, every time it connects
         self.heard.setText(f"Imported {len(bs)} controls from {path} - saved for this controller")
+        self._show()
+
+    def _reset_builtin(self):
+        from ..dj.midi import ddj_t1_default
+
+        if "DDJ-T1" not in (self.ctl.device or "").upper():
+            QMessageBox.information(self, "Controller setup", "CTA has a built-in map for the Pioneer DDJ-T1 only; "
+                                    "other controllers are set up with this guide.")
+            return
+        if QMessageBox.question(self, "Controller setup", "Replace this controller's mapping with CTA's built-in "
+                                "DDJ-T1 map (every control, from Pioneer's MIDI list)?") != QMessageBox.Yes:
+            return
+        bs = ddj_t1_default()
+        self.result = {(b.action, b.deck): b for b in bs}
+        self.ctl.set_bindings(bs, learned=True)
+        self.heard.setText(f"Built-in DDJ-T1 map restored: {len(bs)} controls")
         self._show()
 
     def _import_tsi(self):
@@ -2998,6 +3021,11 @@ class DJPanel(QWidget):
         self.platter_chk.setToolTip("Show the jog platters (Full view). You can always scratch on the waveform.")
         self.platter_chk.setChecked(self.settings.value("dj_platter", "true") == "true")
         self.platter_chk.toggled.connect(self._view_changed)
+        self.scratch_chk = QCheckBox("Scratch (jog wheel top, platter, waveform drag)")
+        self.scratch_chk.setToolTip("Off: pressing the jog top does not scratch (the jog only nudges, or searches "
+                                    "a stopped deck) and dragging the platter or waveform does nothing")
+        self.scratch_chk.setChecked(self.settings.value("dj_scratch", "true") == "true")
+        self.scratch_chk.toggled.connect(self._scratch_toggled)
         self.tools_chk = QCheckBox("Global section (FX, auto-mix, recorder)")
         self.tools_chk.setToolTip("Show the row above the decks: FX units, auto-mix, main level, recorder")
         self.tools_chk.setChecked(self.settings.value("dj_tools", "true") == "true")
@@ -3027,7 +3055,7 @@ class DJPanel(QWidget):
         b_opts.setText("Options ▾")
         b_opts.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(b_opts)
-        for chk in (self.platter_chk, self.tools_chk, self.quant, self.show_cd):
+        for chk in (self.platter_chk, self.scratch_chk, self.tools_chk, self.quant, self.show_cd):
             act = QWidgetAction(menu)
             holder = QWidget()
             hl = QHBoxLayout(holder)
@@ -3080,6 +3108,10 @@ class DJPanel(QWidget):
         menu.addAction("Keyboard shortcuts…", lambda: QMessageBox.information(
             self, "Keyboard shortcuts", f"<pre style='font-size:12px'>{HELP}</pre>"))
         b_opts.setMenu(menu)
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self.open_timeshift(),
+                  context=Qt.WindowShortcut)
         self.deck_keys = DeckKeys(self)
         self.deck_keys.enabled = self.keys_chk.isChecked()
         QApplication.instance().installEventFilter(self.deck_keys)
@@ -3221,6 +3253,14 @@ class DJPanel(QWidget):
         brow.addWidget(self.mix_bars)
         brow.addWidget(self.auto_len)
         grid.addLayout(brow, 1, 0, 1, 3)
+        # mix ahead of the play point: rehearse the next transition now, it plays live later
+        b_ahead = QPushButton("⏱\nMIX AHEAD")
+        b_ahead.setToolTip("Time-Shift (Ctrl+T): mix the next transition now on your headphones, ahead of the "
+                           "play point - auto-mix plays your mix to the room when the track gets there")
+        b_ahead.setStyleSheet("QPushButton { font-size: 9px; font-weight: 900; color: #ffb547; padding: 1px 4px; }")
+        b_ahead.setFixedWidth(64)
+        b_ahead.clicked.connect(lambda: self.open_timeshift())
+        grid.addWidget(b_ahead, 0, 3, 2, 1)
         lay.addLayout(grid)
         stc = QVBoxLayout()
         stc.setSpacing(0)
@@ -3260,6 +3300,7 @@ class DJPanel(QWidget):
             act.setDefaultWidget(holder)
             menu.addAction(act)
         menu.addSeparator()
+        menu.addAction("⏱ Mix ahead (Time-Shift)…\tCtrl+T", lambda: self.open_timeshift())
         menu.addAction("Queue = setlist", self.queue_from_setlist)
         menu.addAction("Forget what was learned from my mixes", self._forget_learning)
         bm = menu.addMenu("Blend length")
@@ -3598,6 +3639,7 @@ class DJPanel(QWidget):
         if self.controller:
             self.controller.close()
         self.controller = Controller(self.engine, self.automix, self, device=dev)
+        self.controller.scratch_enabled = self.scratch_on()
         try:
             if not self.controller.open(port):
                 raise RuntimeError("port not found")
@@ -4014,6 +4056,17 @@ class DJPanel(QWidget):
             if isinstance(w, (Waveform, MarkerWave)):
                 w.update()
 
+    def scratch_on(self) -> bool:
+        return self.scratch_chk.isChecked()
+
+    def _scratch_toggled(self, on: bool):
+        self.settings.setValue("dj_scratch", "true" if on else "false")
+        if self.controller is not None:
+            self.controller.scratch_enabled = bool(on)
+        if not on:
+            for n in self.engine.decks:
+                self.engine.jog_release(n)          # let go of anything held
+
     def zoom_waveforms(self, deck: str, factor: float):
         """- / + on a deck: zoom its waveform (both decks with sync zoom on)."""
         span = self.decks[deck].zoom.span * factor
@@ -4038,8 +4091,26 @@ class DJPanel(QWidget):
             if isinstance(w, (Waveform, MarkerWave)):
                 w.update()
 
+    def _audio_health(self):
+        """Blocks that nearly missed their deadline mean stutter is close: say how to fix it."""
+        import time as _t
+
+        now = _t.monotonic()
+        last_t, last_n = getattr(self, "_health", (now, self.engine.slow_blocks))
+        if now - last_t < 5.0:
+            return
+        n = self.engine.slow_blocks
+        self._health = (now, n)
+        if n - last_n >= 3 and self.engine.running:
+            self.main.status_label.setText(
+                f"Audio is near its limit ({n - last_n} late blocks) - raise the buffer in Audio… "
+                f"(now {self.engine.block}) to stop any stutter")
+
     def _tick(self):
+        # with a controller attached its knobs set the levels: loading a track keeps them
+        self.engine.reset_on_load = self.controller is None
         self._watchdog()
+        self._audio_health()
         self.automix.maybe_resume()
         show_cd = self.show_cd.isChecked()
         for p in self.decks.values():

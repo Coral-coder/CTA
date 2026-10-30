@@ -95,14 +95,44 @@ def install_root() -> str | None:
     return os.path.dirname(exe)
 
 
+def _writable(path: str) -> bool:
+    parent = os.path.dirname(path)
+    return os.access(parent, os.W_OK) and (not os.path.exists(path) or os.access(path, os.W_OK))
+
+
+def update_target() -> str | None:
+    """Where the new version goes. Normally where CTA runs from. On a Mac,
+    an app opened straight from Downloads runs from a hidden read-only copy
+    ("App Translocation") or a place the user can't write to: then the update
+    goes to /Applications (or ~/Applications) instead - and from there on
+    CTA updates itself in place."""
+    root = install_root()
+    if root is None:
+        return None
+    if sys.platform != "darwin":
+        return root
+    if "/AppTranslocation/" not in root and not root.startswith("/Volumes/") and _writable(root):
+        return root
+    for folder in ("/Applications", os.path.expanduser("~/Applications")):
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError:
+            continue
+        dest = os.path.join(folder, "CTA.app")
+        if _writable(dest):
+            return dest
+    return None
+
+
 def can_self_update(need_release_build: bool = True) -> tuple[bool, str]:
     root = install_root()
     if root is None:
         return False, "Running from source - update with git/pip instead."
     if need_release_build and platform_target() is None:
         return False, "No prebuilt update for this platform."
-    parent = os.path.dirname(root)
-    if not os.access(parent, os.W_OK) or not os.access(root, os.W_OK):
+    target = update_target()
+    if target is None or not _writable(target):
+        parent = os.path.dirname(target or root)
         return False, f"No write permission for {parent}. Move CTA to a folder you own, or update manually."
     return True, ""
 
@@ -348,6 +378,9 @@ if ($relaunch) {{ Start-Process -FilePath {_ps_quote(gui)} }}
 def posix_script(pid: int, target: str, new: str, stage: str, log_file: str, relaunch: bool) -> str:
     launch = (f"open {_sh_quote(target)}" if sys.platform == "darwin"
               else f"nohup {_sh_quote(os.path.join(target, 'CTA'))} >/dev/null 2>&1 &")
+    # macOS: a downloaded app is "quarantined" and run from a hidden read-only copy;
+    # clearing the flag lets the installed app run (and update) from where it is
+    unq = 'xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null' if sys.platform == "darwin" else ":"
     return f"""#!/bin/bash
 LOG={_sh_quote(log_file)}
 TARGET={_sh_quote(target)}
@@ -358,7 +391,16 @@ log "waiting for CTA (pid {pid}) to exit"
 for i in $(seq 1 360); do kill -0 {pid} 2>/dev/null || break; sleep 0.5; done
 sleep 0.5
 rm -rf "$TARGET.old"
-if mv "$TARGET" "$TARGET.old"; then
+if [ ! -e "$TARGET" ]; then
+    # first update from a read-only / downloaded copy: install to the new place
+    mkdir -p "$(dirname "$TARGET")"
+    if mv "$NEW" "$TARGET"; then
+        log "UPDATE OK (installed to $TARGET)"
+        rm -rf "$STAGE"
+    else
+        log "UPDATE FAILED: could not move the new version into place"
+    fi
+elif mv "$TARGET" "$TARGET.old"; then
     if mv "$NEW" "$TARGET"; then
         log "UPDATE OK"
         rm -rf "$TARGET.old" "$STAGE"
@@ -369,6 +411,7 @@ if mv "$TARGET" "$TARGET.old"; then
 else
     log "UPDATE FAILED: could not move the old version aside"
 fi
+{unq}
 {launch if relaunch else ":"}
 """
 
@@ -379,7 +422,7 @@ def update_log_path() -> str:
 
 def launch_swap(new_root: str, relaunch: bool = True, pid: int | None = None) -> None:
     """Start the helper; the caller must then exit the application."""
-    target = install_root()
+    target = update_target()
     if target is None:
         raise UpdateError("not running from an installed build")
     pid = pid or os.getpid()

@@ -154,6 +154,21 @@ def ddj_t1_default() -> list[Binding]:
     return out
 
 
+def complete_ddj_t1(saved: list[Binding]) -> list[Binding]:
+    """A saved DDJ-T1 mapping keeps what it has; every control it lacks (jog
+    touch, the mixer...) comes from the built-in map - unless the saved
+    mapping already uses that MIDI message for something else."""
+    have = {(b.action, b.deck) for b in saved}
+    used = {(b.type if b.type != "cc14" else "cc", b.ch, b.num) for b in saved}
+    out = list(saved)
+    for b in ddj_t1_default():
+        key = (b.type if b.type != "cc14" else "cc", b.ch, b.num)
+        if (b.action, b.deck) not in have and key not in used:
+            out.append(b)
+            used.add(key)
+    return out
+
+
 def mapping_path(device: str) -> str:
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in device)[:60] or "controller"
     d = os.path.join(paths.data_dir(), "controllers")
@@ -167,7 +182,10 @@ def load_mapping(device: str) -> tuple[list[Binding], bool]:
     if os.path.exists(p):
         try:
             data = json.load(open(p, encoding="utf-8"))
-            return [Binding(**b) for b in data["bindings"]], bool(data.get("learned"))
+            bs = [Binding(**b) for b in data["bindings"]]
+            if "DDJ-T1" in device.upper():
+                bs = complete_ddj_t1(bs)
+            return bs, bool(data.get("learned"))
         except Exception:  # noqa: BLE001
             log.exception("bad mapping file %s", p)
     if "DDJ-T1" in device.upper():
@@ -277,6 +295,7 @@ class Controller:
         self._led_state: dict[tuple[int, int], int] = {}
         self._lock = threading.Lock()
         self.jump_beats = 4
+        self.scratch_enabled = True              # off: pressing the jog top does not scratch
         self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
         self._delete_held: dict[str, bool] = {}
 
@@ -396,6 +415,8 @@ class Controller:
         elif a == "phones_cue" and pressed:
             e.set(deck, cue_phones=not e.decks[deck].cue_phones)
         elif a == "jog_touch":
+            if not self.scratch_enabled:
+                return                            # scratch off: the jog only nudges / searches
             self._touch[deck] = pressed
             if pressed:
                 e.scratch(deck, 0.0, True)

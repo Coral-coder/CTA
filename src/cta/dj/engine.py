@@ -123,6 +123,9 @@ class Deck:
     cue_point: float = 0.0
     cue_preview: bool = False
     loop: tuple[float, float] | None = None  # (start, end) source frames
+    phase_offset: float = 0.0                # beats: where the DJ's jog nudge left the sync lock
+    nudged: bool = False                     # the jog is (or was just) nudging this deck
+    loop_size: float = 4.0                   # the chosen loop length (beats): OUT with no IN uses it
     scratching: bool = False
     scratch_rate: float = 0.0
     phase_corr: float = 0.0
@@ -237,6 +240,9 @@ class Engine:
         self.sync_outputs: set[str] | None = None
         self.clock_adjust_s = 0.0
         self.output_delay_s: dict[str, float] = {}
+        self.reset_on_load = True              # gain / EQ / filter back to neutral when a track loads
+        self.cpu_load = 0.0                    # share of each block's time spent rendering (peak, decaying)
+        self.slow_blocks = 0                   # blocks that nearly missed their deadline
         self.preview: Engine | None = None
         self.preview_route = "phones"          # phones | master
         self.preview_level = 1.0
@@ -309,10 +315,14 @@ class Engine:
         d.loop = None
         d.hotcues = [None] * 8
         d.key_shift = 0.0
-        # a new track starts with the channel's levels back at neutral
-        d.trim = 1.0
-        d.eq = np.ones(3)
-        d.filter = 0.0
+        d._loop_in = None
+        d.phase_offset, d.nudged = 0.0, False
+        # a new track starts with the channel's levels back at neutral - unless a
+        # controller is attached: its knobs don't move, so they keep the say
+        if eng.reset_on_load:
+            d.trim = 1.0
+            d.eq = np.ones(3)
+            d.filter = 0.0
         d.end_reached = False
         d.mix_in = mix_in * SR if mix_in is not None else None
         d.mix_out = mix_out * SR if mix_out is not None else None
@@ -415,11 +425,8 @@ class Engine:
                 d.cue_preview = True
                 d.playing = True
             else:
-                # set cue at the nearest beat (quantised)
-                p = d.play_pos
-                if d.grid:
-                    b = round(d.grid.beat_at(p / SR))
-                    p = d.grid.time_of_beat(b) * SR
+                # set the cue where you are (snapped to the beat only with quantise on)
+                p = e._quant(d, d.play_pos)
                 d.cue_point = max(0.0, p)
                 e._seek(d, d.cue_point)
         self.cmd(f)
@@ -445,6 +452,7 @@ class Engine:
                     d.eq = np.asarray(v, dtype=np.float64)
                 elif k == "sync":
                     d.sync = bool(v)
+                    d.phase_offset, d.nudged = 0.0, False     # (re)pressing SYNC: on the beat again
                     if not v:
                         # keep the current tempo when leaving sync
                         if d.rate_override is not None and d.tempo_range > 0:
@@ -601,22 +609,31 @@ class Engine:
                 d.loop = None
         self.cmd(f)
 
-    def loop_out(self, deck: str):
+    def loop_out(self, deck: str, beats: float | None = None):
+        """OUT: loop from the IN point to here - or, with no IN point set, loop
+        the chosen loop length (beats) at once, from the current beat."""
         def f(e):
             d = e.decks[deck]
             start = getattr(d, "_loop_in", None)
-            if start is None:
-                return
             end = e._quant(d, d.play_pos)
-            if end - start > SR * 0.01:
+            if start is not None and end - start > SR * 0.01:
                 d.loop = (start, end)
-                if d.flux:
-                    d.flux_pos = d.play_pos
+                d._loop_in = None                 # used: the next OUT loops the chosen length again
+            elif d.grid is not None:
+                n = float(beats if beats else d.loop_size)
+                b = np.floor(d.grid.beat_at(d.time) + 1e-6)
+                s = d.grid.time_of_beat(b) * SR
+                d.loop = (s, s + n * d.grid.beat_len * SR)
+            else:
+                return
+            if d.flux:
+                d.flux_pos = d.play_pos
         self.cmd(f)
 
     def loop_resize(self, deck: str, factor: float):
         def f(e):
             d = e.decks[deck]
+            d.loop_size = float(np.clip(d.loop_size * factor, 0.25, 64.0))   # the chosen length follows
             if d.loop is None:
                 return
             s, t = d.loop
@@ -725,6 +742,7 @@ class Engine:
             m = e._master(exclude=deck)
             if d.loaded and m is not None:
                 e._align_phase(d, m)
+                d.phase_offset, d.nudged = 0.0, False
         self.cmd(f)
 
     def phase_error(self, deck: str) -> float | None:
@@ -756,7 +774,20 @@ class Engine:
             if not d.playing or d.scratching:
                 continue
             err = self.phase_error(d.name)
-            if err is None or abs(err) < 0.004:
+            if err is None:
+                d.phase_corr = 0.0
+                continue
+            if d.nudge != 0.0:
+                # the DJ is nudging with the jog: no pulling back while the hand moves
+                d.phase_corr = 0.0
+                d.nudged = True
+                continue
+            if d.nudged:
+                # ... and where the nudge leaves it is the new lock point
+                d.phase_offset = err
+                d.nudged = False
+            err = ((err - d.phase_offset) + 0.5) % 1.0 - 0.5
+            if abs(err) < 0.004:
                 d.phase_corr = 0.0
                 continue
             # close the gap over ~half a second, at most +-4 % of speed
@@ -770,9 +801,16 @@ class Engine:
         pos = int(d.feed_pos)
         got = 0
         while got < n:
-            if d.loop is not None and pos >= d.loop[1]:
+            if pos < 0:                      # scratched back past the start: silence there
+                k = min(n - got, -pos)
+                got += k
+                pos += k
+                continue
+            # whole samples on both sides: a fractional loop end must still wrap
+            # (comparing int pos to a float end left the stretcher starved - silence)
+            if d.loop is not None and int(d.loop[1]) - int(d.loop[0]) > 0 and pos >= int(d.loop[1]):
                 pos = int(d.loop[0])
-            end = int(d.loop[1]) if d.loop is not None else d.length
+            end = min(int(d.loop[1]), d.length) if d.loop is not None else d.length
             take = min(n - got, end - pos)
             if take <= 0 or pos >= d.length:
                 break
@@ -801,6 +839,7 @@ class Engine:
         newpos = float(idx[-1] + rate) if n else d.play_pos
         if d.loop is not None and newpos >= d.loop[1]:
             newpos = d.loop[0] + (newpos - d.loop[0]) % max(d.loop[1] - d.loop[0], 1)
+        newpos = max(newpos, 0.0)                    # the record stops at its start when pulled back
         d.play_pos = d.feed_pos = newpos
         return y
 
@@ -851,7 +890,10 @@ class Engine:
         rate = d.rate
         # with key lock on, always stay in the stretcher (even at 1.0x) so the
         # phase lock's tiny rate corrections never toggle modes and click
-        use_stretch = (d.keylock or abs(d.key_shift) > 1e-6) and not d.scratching and rate > 0.25
+        # the stretcher only when it changes something: at the original tempo (and
+        # key) the plain path starts on the very first sample - instant CUE taps
+        use_stretch = ((d.keylock and abs(d.base_rate - 1.0) > 1e-3) or abs(d.key_shift) > 1e-6) \
+            and not d.scratching and rate > 0.25
         if use_stretch:
             d._mode = "stretch"
             y = self._render_stretched(d, n, rate)
@@ -1011,8 +1053,11 @@ class Engine:
         return master, phones
 
     def _callback(self, outdata, frames, time_info, status):
+        import time as _t
+
         if status and status.output_underflow:
             self.underruns += 1
+        t0 = _t.perf_counter()
         try:
             master, phones = self.render(frames)
             master, phones = self._route(master, phones, frames)
@@ -1022,6 +1067,11 @@ class Engine:
             if self.phones_chans is not None and self._pring is None:
                 outdata[:, self.phones_chans[0]] = phones[0]
                 outdata[:, self.phones_chans[1]] = phones[1]
+            # how close each block came to its deadline (stutter warning)
+            load = (_t.perf_counter() - t0) / (frames / SR)
+            self.cpu_load = max(load, self.cpu_load * 0.98)
+            if load > 0.85:
+                self.slow_blocks += 1
         except Exception as ex:  # noqa: BLE001
             outdata.fill(0)
             self.callback_errors += 1

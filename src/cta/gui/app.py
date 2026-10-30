@@ -134,6 +134,10 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
             pct = 100
         if pct != 100 and 50 <= pct <= 200:
             os.environ["QT_SCALE_FACTOR"] = f"{pct / 100:.2f}"
+    # the audio callback needs Python's interpreter lock within a few ms of every
+    # block: make busy threads (drawing, analysis) hand it over 5x more often than
+    # the default 5 ms, so the music never stutters while the screen is busy
+    sys.setswitchinterval(0.001)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("CTA")
     app.setOrganizationName("CTA")

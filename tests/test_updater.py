@@ -74,3 +74,43 @@ def test_helper_scripts_have_rollback():
     assert "Wait-Process -Id 123" in ps and "UPDATE OK" in ps and "Move-Item -LiteralPath $old" in ps
     sh = updater.posix_script(123, "/a/CTA.app", "/a/.s/payload/CTA.app", "/a/.s", "/l", False)
     assert 'mv "$TARGET.old" "$TARGET"' in sh and "UPDATE OK" in sh
+
+
+def test_mac_update_target_escapes_translocation(tmp_path, monkeypatch):
+    """An app opened from Downloads runs from a read-only translocated copy:
+    the update installs to an Applications folder instead."""
+    apps = tmp_path / "Applications"
+    apps.mkdir()
+    monkeypatch.setattr(updater.sys, "platform", "darwin")
+    monkeypatch.setattr(updater, "install_root",
+                        lambda: "/private/var/folders/x/AppTranslocation/ABC/d/CTA.app")
+    real_makedirs = os.makedirs
+    monkeypatch.setattr(updater.os, "makedirs",
+                        lambda p, exist_ok=False: real_makedirs(str(apps) if p == "/Applications" else p,
+                                                                exist_ok=exist_ok))
+    monkeypatch.setattr(updater, "_writable", lambda p: p.startswith("/Applications/"))
+    assert updater.update_target() == "/Applications/CTA.app"
+    # a normal, writable install updates in place
+    monkeypatch.setattr(updater, "install_root", lambda: "/Applications/CTA.app")
+    assert updater.update_target() == "/Applications/CTA.app"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="bash helper")
+def test_posix_helper_installs_to_a_new_place(tmp_path):
+    import subprocess
+
+    new = tmp_path / "stage" / "payload" / "CTA"
+    new.mkdir(parents=True)
+    (new / "marker").write_text("v2")
+    target = tmp_path / "Apps" / "CTA"                 # not there yet (first update from a read-only copy)
+    log = tmp_path / "update.log"
+    sh = updater.posix_script(999999, str(target), str(new), str(tmp_path / "stage"), str(log), False)
+    script = tmp_path / "u.sh"
+    script.write_text(sh)
+    subprocess.run(["bash", str(script)], check=True, timeout=60)
+    assert (target / "marker").read_text() == "v2" and "UPDATE OK" in log.read_text()
+    # and the next update swaps in place
+    new.mkdir(parents=True)
+    (new / "marker").write_text("v3")
+    subprocess.run(["bash", str(script)], check=True, timeout=60)
+    assert (target / "marker").read_text() == "v3"
