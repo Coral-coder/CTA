@@ -3266,6 +3266,18 @@ class DJPanel(QWidget):
                                     "a stopped deck) and dragging the platter or waveform does nothing")
         self.scratch_chk.setChecked(self.settings.value("dj_scratch", "true") == "true")
         self.scratch_chk.toggled.connect(self._scratch_toggled)
+        self.phase_chk = QCheckBox("SYNC also locks the beat phase")
+        self.phase_chk.setToolTip("On: SYNC matches tempo and keeps the beats lined up.\n"
+                                  "Off: SYNC matches the tempo only - you line up the beats yourself "
+                                  "(jog / nudge) and they stay where you put them.\n"
+                                  "Auto-mix keeps its own blends on the beat either way.")
+        self.phase_chk.setChecked(self.settings.value("dj_phase_lock", "true") == "true")
+        self.engine.phase_lock = self.phase_chk.isChecked()
+
+        def phase_toggled(on):
+            self.engine.phase_lock = bool(on)
+            self.settings.setValue("dj_phase_lock", "true" if on else "false")
+        self.phase_chk.toggled.connect(phase_toggled)
         self.xy_chk = QCheckBox("XY scope on the platters")
         self.xy_chk.setToolTip("Show each deck's stereo image (a goniometer) over its jog platter")
         self.xy_chk.setChecked(self.settings.value("dj_xyscope", "false") == "true")
@@ -3299,7 +3311,8 @@ class DJPanel(QWidget):
         b_opts.setText("Options ▾")
         b_opts.setPopupMode(QToolButton.InstantPopup)
         menu = QMenu(b_opts)
-        for chk in (self.platter_chk, self.xy_chk, self.scratch_chk, self.tools_chk, self.quant, self.show_cd):
+        for chk in (self.phase_chk, self.platter_chk, self.xy_chk, self.scratch_chk, self.tools_chk, self.quant,
+                    self.show_cd):
             act = QWidgetAction(menu)
             holder = QWidget()
             hl = QHBoxLayout(holder)

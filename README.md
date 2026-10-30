@@ -413,6 +413,10 @@ Under the hood:
   - Any other MIDI controller can be mapped with the same wizard.
 - **LOOP OUT** with no IN set loops the chosen loop length at once; after an
   IN it loops from the IN point to where you are.
+- **Tempo sync or beat sync:** **Options → SYNC also locks the beat phase**.
+  Off: SYNC matches the tempo only and you line up the beats yourself (they
+  stay where you put them; nothing jumps when you press PLAY or SYNC). On:
+  tempo and beat. Auto-mix keeps its own blends on the beat either way.
 - **Jog nudge on a synced deck stays put:** the sync lock keeps the phase
   where your nudge left it (press SYNC again to snap back on the beat).
 - **CUE / PLAY start on the first sample** at the track's own tempo (no

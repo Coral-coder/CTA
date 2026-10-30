@@ -593,6 +593,7 @@ class AutoMix:
             target_beat = tr.in_start_beat + (mb - tr.start_beat)
             din.keylock = True
             din.sync = True
+            din.auto_phase = True                  # its blends stay on the beat whatever the SYNC mode
             din.rate_override = e.sync_ratio(m.bpm, din.grid.bpm)
             e._seek(din, din.grid.time_of_beat(target_beat) * SR)
             din.volume = 0.0
@@ -734,6 +735,8 @@ class AutoMix:
             din.eq = np.ones(3)
             din.filter = 0.0
         din.sync = False
+        din.auto_phase = False
+        dout.auto_phase = False
         din.phase_corr = 0.0
         e.master_deck = din.name
         self.meta.pop(tr.out_deck, None)

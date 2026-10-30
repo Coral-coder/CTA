@@ -112,7 +112,9 @@ def test_render_never_raises_on_empty():
     assert m.shape == (2, 512) and not np.any(m)
 
 
-def test_automix_plays_queue_beatmatched():
+@pytest.mark.parametrize("phase_lock", [True, False])
+def test_automix_plays_queue_beatmatched(phase_lock):
+    """Auto-mix blends stay on the beat - also when SYNC is set to tempo only."""
     from types import SimpleNamespace
 
     from cta.dj.automix import AutoMix, AutoMixSettings
@@ -124,6 +126,7 @@ def test_automix_plays_queue_beatmatched():
                                        info=TrackInfo(title=name, bpm=bpm, loudness=-10))
 
     eng = Engine()
+    eng.phase_lock = phase_lock
     am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4, phrase_bars=4, glide_bars=4),
                  synchronous_loads=True)
     am.set_queue(["t1", "t2", "t3"])
@@ -490,5 +493,26 @@ def test_jog_nudge_on_a_synced_deck_stays_where_the_dj_put_it():
     _run(eng, 5)                                       # the lock keeps the nudge, never pulls it back
     assert abs(eng.phase_error("B") - moved) < 0.01
     eng.set("B", sync=True)                            # pressing SYNC again: back on the beat
+    _run(eng, 4)
+    assert abs(eng.phase_error("B")) < 0.02
+
+
+def test_tempo_only_sync_leaves_the_phase_to_the_dj():
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 124.0, offset=0.21)
+    eng.phase_lock = False
+    eng.set_playing("A", True)
+    _run(eng, 2)
+    before = eng.phase_error("B")
+    eng.set("B", sync=True)
+    eng.set_playing("B", True)                    # no jump onto the beat when it starts
+    _run(eng, 0.02)
+    start = eng.phase_error("B")
+    assert abs(start - before) < 0.05 or abs(abs(start - before) - 1) < 0.05
+    _run(eng, 6)
+    assert abs(eng.decks["B"].bpm - 128.0) < 0.01  # the tempo is matched ...
+    assert abs(eng.phase_error("B") - start) < 0.01   # ... and the phase stays where it was
+    eng.phase_lock = True                          # beat sync again: it is pulled onto the beat
     _run(eng, 4)
     assert abs(eng.phase_error("B")) < 0.02

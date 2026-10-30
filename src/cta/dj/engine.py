@@ -153,6 +153,7 @@ class Deck:
     loop: tuple[float, float] | None = None  # (start, end) source frames
     phase_offset: float = 0.0                # beats: where the DJ's jog nudge left the sync lock
     nudged: bool = False                     # the jog is (or was just) nudging this deck
+    auto_phase: bool = False                 # auto-mix holds it on the beat even with tempo-only sync
     loop_size: float = 4.0                   # the chosen loop length (beats): OUT with no IN uses it
     scope: np.ndarray | None = None          # the deck's newest output block (XY scope)
     scratching: bool = False
@@ -272,6 +273,7 @@ class Engine:
         self.scope: np.ndarray | None = None
         self.scope_prev: np.ndarray | None = None
         self.reset_on_load = True              # gain / EQ / filter back to neutral when a track loads
+        self.phase_lock = True                 # SYNC = tempo + beat phase; False: tempo only (phase by hand)
         self.cpu_load = 0.0                    # share of each block's time spent rendering (peak, decaying)
         self.slow_blocks = 0                   # blocks that nearly missed their deadline
         self.preview: Engine | None = None
@@ -444,7 +446,7 @@ class Engine:
             d.cue_preview = False          # PLAY while holding CUE: keep playing
             return
         if on and not d.playing:
-            if quantize and d.sync and e._master(exclude=deck) is not None:
+            if quantize and d.sync and e.phase_lock and e._master(exclude=deck) is not None:
                 e._align_phase(d, e._master(exclude=deck))
             d.playing = True
             if e.master_deck is None:
@@ -513,7 +515,7 @@ class Engine:
                         d.phase_corr = 0.0
                     else:
                         m = e._master(exclude=deck)
-                        if m is not None and not d.playing:
+                        if m is not None and not d.playing and e.phase_lock:
                             e._align_phase(d, m)
                 else:
                     setattr(d, k, v)
@@ -818,6 +820,9 @@ class Engine:
                 continue
             d.rate_override = self.sync_ratio(m.bpm, d.grid.bpm)
             if not d.playing or d.scratching:
+                continue
+            if not (self.phase_lock or d.auto_phase):
+                d.phase_corr = 0.0                 # tempo sync only: the phase is the DJ's
                 continue
             err = self.phase_error(d.name)
             if err is None:
