@@ -339,6 +339,19 @@ def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
                 if child.isVisible() and child.parentWidget() is panel:
                     assert child.geometry().bottom() <= panel.height() + 1, (panel, child, deck.view)
     assert len(seen) >= 2 and "micro" in seen        # it really changes view as it shrinks
+    # Windows asks for size hints synchronously while rows are shown/hidden:
+    # measuring must not re-enter itself (it recursed forever on Windows CI)
+    orig_show = type(deck)._show
+
+    def eager_show(self, v):
+        orig_show(self, v)
+        self.minimumSizeHint()
+        dj.mixer.minimumSizeHint()
+    monkeypatch.setattr(type(deck), "_show", eager_show)
+    deck._need_key = None
+    dj.mixer._need = None
+    assert deck._needs()["micro"] > 0 and dj.mixer._needs()[2] > 0
+    monkeypatch.setattr(type(deck), "_show", orig_show)
     dj.view_combo.setCurrentText("Full")
     assert deck.view == "full"
     dj.view_combo.setCurrentText("Auto")

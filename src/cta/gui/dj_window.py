@@ -1206,6 +1206,10 @@ class DeckPanel(QFrame):
 
     def _needs(self) -> dict:
         """Height each view really needs (measured with the current fonts and settings)."""
+        if getattr(self, "_measuring", False):
+            # Qt (on Windows) asks for size hints while rows are being shown or
+            # hidden for the measurement: answer from the last result, never re-enter
+            return getattr(self, "_need", None) or {k: 0 for v in self.VIEWS for k in (v, v + "_w")}
         key = (self.dj.show_platter(), self.font().pointSizeF())
         if getattr(self, "_need_key", None) != key:
             cur = self.view
@@ -1562,6 +1566,8 @@ class MixerPanel(QGroupBox):
         self.xf_lbl.setVisible(lvl < 2)
 
     def _needs(self) -> list[int]:
+        if getattr(self, "_measuring", False):          # re-entered by Qt while measuring
+            return getattr(self, "_need", None) or [0, 0, 0]
         if getattr(self, "_need", None) is None:
             cur, need = self.level, []
             self._measuring = True
