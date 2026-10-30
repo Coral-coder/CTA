@@ -51,9 +51,20 @@ DECK_ACTIONS = {
     "beatjump_fwd": ("button", "BEAT JUMP forward / FWD"),
     "key_sync": ("button", "a button for KEY SYNC"),
     **{f"hotcue{i}": ("button", f"HOT CUE {i}") for i in range(1, 9)},
+    "master": ("button", "MASTER (tempo master) button"),
+    "needle": ("fader", "NEEDLE SEARCH strip (touch to jump; stopped decks)"),
+    "loop_size": ("relative", "AUTO LOOP knob (turn: loop size)"),
+    "tempo_range": ("button", "TEMPO RANGE button"),
+    "pad_mode": ("button", "MOVE / HOT CUE selector"),
+    "pad_delete": ("button", "DELETE (hold + hot cue to remove it)"),
+    **{f"pad{i}": ("button", f"performance button {i} (hot cue {i} / loop ½, ×2, BWD, FWD)") for i in range(1, 5)},
 }
 ADVANCED = {"filter", "fx1_assign", "fx2_assign", "loop_in", "loop_out", "loop_halve", "loop_double",
-            "beatjump_back", "beatjump_fwd", "key_sync"} | {f"hotcue{i}" for i in range(1, 9)}
+            "beatjump_back", "beatjump_fwd", "key_sync", "master", "loop_size", "tempo_range", "pad_mode",
+            "pad_delete"} | {f"hotcue{i}" for i in range(1, 9)} | {f"pad{i}" for i in range(1, 5)}
+# what the performance buttons do in MOVE mode (they are hot cues in HOT CUE mode)
+PAD_MOVE = {1: "loop_halve", 2: "loop_double", 3: "beatjump_back", 4: "beatjump_fwd"}
+TEMPO_RANGES = (0.06, 0.08, 0.16, 0.5)
 GLOBAL_ACTIONS = {
     "crossfader": ("fader", "CROSSFADER"),
     "master_volume": ("fader", "MASTER volume"),
@@ -87,25 +98,59 @@ class Binding:
 
 
 def ddj_t1_default() -> list[Binding]:
-    """Bindings confirmed from Pioneer's DDJ-T1 MIDI message list. Controls
-    not listed there are added with the guided setup (MIDI learn)."""
+    """The whole Pioneer DDJ-T1, from Pioneer's MIDI message list (operating
+    instructions, "List of MIDI messages"): decks on channels 1-4, effects
+    on 5-6, mixer and browser on 7. Laid out the way the unit is labelled."""
     out = []
     for ch, deck in enumerate("ABCD"):
+        n = lambda num, a, ch=ch, deck=deck: Binding("note", ch, num, a, deck)  # noqa: E731
         out += [
-            Binding("note", ch, 11, "play", deck),
-            Binding("note", ch, 12, "cue", deck),
+            n(11, "play"), n(12, "cue"),
             Binding("cc14", ch, 1, "jog", deck, relative=True),
+            Binding("cc14", ch, 6, "jog", deck, relative=True),         # SHIFT + jog
+            n(54, "jog_touch"),
             Binding("cc14", ch, 0, "tempo", deck),
+            Binding("cc14", ch, 5, "tempo", deck),                      # SHIFT + tempo
+            n(26, "keylock"), n(25, "tempo_range"),
+            n(16, "loop_in"), n(17, "loop_out"), n(18, "loop"), n(20, "loop"),
+            Binding("cc", ch, 19, "loop_size", deck, relative=True),
+            Binding("cc", ch, 4, "filter", deck),
+            Binding("cc", ch, 3, "needle", deck),
+            n(42, "pad_mode"), n(45, "pad_delete"),
+            n(46, "pad1"), n(47, "pad2"), n(48, "pad3"), n(49, "pad4"),
+            n(95, "hotcue5"), n(96, "hotcue6"), n(97, "hotcue7"), n(98, "hotcue8"),   # SHIFT + pads
+        ]
+    # mixer (channel 7)
+    for i, deck in enumerate("ABCD"):
+        out += [
+            Binding("cc", 6, 3 + i, "gain", deck),
+            Binding("cc", 6, 7 + i, "eq_high", deck),
+            Binding("cc", 6, 11 + i, "eq_mid", deck),
+            Binding("cc", 6, 15 + i, "eq_low", deck),
+            Binding("cc", 6, 19 + 2 * i, "volume", deck),
+            Binding("note", 6, 76 + i, "fx1_assign", deck),
+            Binding("note", 6, 80 + i, "fx2_assign", deck),
+            Binding("note", 6, 84 + i, "phones_cue", deck),
+            Binding("note", 6, 88 + i, "sync", deck),
+            Binding("note", 6, 92 + i, "master", deck),
+            Binding("note", 6, 70 + i, "load", deck),
         ]
     out += [
+        Binding("cc", 6, 0, "master_volume"),
+        Binding("cc", 6, 1, "cue_mix"),
+        Binding("cc", 6, 2, "phones_volume"),
+        Binding("cc", 6, 31, "crossfader"),
         Binding("cc", 6, 64, "browse", relative=True),
-        Binding("note", 6, 65, "transition"),
-        Binding("note", 6, 67, "automix"),
-        Binding("note", 6, 70, "load", "A"),
-        Binding("note", 6, 71, "load", "B"),
-        Binding("note", 6, 72, "load", "C"),
-        Binding("note", 6, 73, "load", "D"),
+        Binding("note", 6, 65, "transition"),          # browse knob press
+        Binding("note", 6, 67, "automix"),             # FAVORITES (REC)
     ]
+    # effects (channels 5 and 6)
+    for ch, u in ((4, 1), (5, 2)):
+        out += [
+            Binding("cc", ch, 0, f"fx{u}_wet"),
+            Binding("cc", ch, 2, f"fx{u}_amount"),
+            Binding("note", ch, 67, f"fx{u}_on"),
+        ]
     return out
 
 
@@ -232,6 +277,8 @@ class Controller:
         self._led_state: dict[tuple[int, int], int] = {}
         self._lock = threading.Lock()
         self.jump_beats = 4
+        self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
+        self._delete_held: dict[str, bool] = {}
 
     def _index(self):
         self._map = {(b.type, b.ch, b.num): b for b in self.bindings}
@@ -397,6 +444,36 @@ class Controller:
             e.beatjump(deck, self.jump_beats)
         elif a == "key_sync" and pressed:
             e.key_sync(deck)
+        elif a == "master" and pressed:
+            e.set_master(deck)
+        elif a == "needle" and ev.value > 0:
+            d = e.decks[deck]
+            if d.loaded and not d.playing:            # never jumps a playing deck by accident
+                from .engine import SR
+
+                e.seek(deck, (ev.value - 1) / 126.0 * d.length / SR)
+        elif a == "loop_size":
+            d_ = rel14(ev.value) if ev.type == "cc14" else rel7(ev.value)
+            if d_:
+                e.loop_resize(deck, 2.0 if d_ > 0 else 0.5)
+        elif a == "tempo_range" and pressed:
+            cur = e.decks[deck].tempo_range
+            k = min(range(len(TEMPO_RANGES)), key=lambda i: abs(TEMPO_RANGES[i] - cur))
+            e.set(deck, tempo_range=TEMPO_RANGES[(k + 1) % len(TEMPO_RANGES)])
+        elif a == "pad_mode" and pressed:
+            self._pad_mode[deck] = "move" if self._pad_mode.get(deck, "hotcue") == "hotcue" else "hotcue"
+        elif a == "pad_delete":
+            self._delete_held[deck] = pressed
+        elif a.startswith("pad") and a[3:].isdigit() and pressed:
+            i = int(a[3:])
+            if self._pad_mode.get(deck, "hotcue") == "move":
+                self.dispatch(Binding(b.type, b.ch, b.num, PAD_MOVE[i], deck), ev)
+            elif self._delete_held.get(deck):
+                e.hotcue_delete(deck, i - 1)
+                if self.ui is not None and hasattr(self.ui, "cues_changed"):
+                    self.ui.cues_changed(deck)
+            else:
+                self.dispatch(Binding(b.type, b.ch, b.num, f"hotcue{i}", deck), ev)
         elif a.startswith("hotcue") and pressed:
             e.hotcue(deck, int(a[6:]) - 1)
             if self.ui is not None and hasattr(self.ui, "cues_changed"):
@@ -449,6 +526,22 @@ class Controller:
                   "fx1_assign": 0 in d.fx, "fx2_assign": 1 in d.fx}.get(b.action)
             if b.action.startswith("hotcue"):
                 on = d.hotcues[int(b.action[6:]) - 1] is not None
+            elif b.action.startswith("pad") and b.action[3:].isdigit():
+                on = self._pad_mode.get(b.deck, "hotcue") == "hotcue" and \
+                    d.hotcues[int(b.action[3:]) - 1] is not None
+            elif b.action == "pad_mode":            # the MOVE (43) and HOT CUE (44) lights
+                hot = self._pad_mode.get(b.deck, "hotcue") == "hotcue"
+                for num, lit in ((b.num + 1, not hot), (b.num + 2, hot)):
+                    v = 127 if lit else 0
+                    if self._led_state.get((b.ch, num)) != v:
+                        self._led_state[(b.ch, num)] = v
+                        try:
+                            self._out.send_message([0x90 | b.ch, num, v])
+                        except Exception:  # noqa: BLE001
+                            pass
+                continue
+            elif b.action == "master":
+                on = self.eng.master_deck == b.deck
             if on is None:
                 continue
             v = 127 if on else 0

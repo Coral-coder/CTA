@@ -2607,7 +2607,8 @@ class LearnWizard(QDialog):
             b.setAutoDefault(False)
             row.addWidget(b)
         row.addStretch()
-        for txt, fn in (("Import…", self._import), ("Export…", self._export), ("Finish && save", self._finish)):
+        for txt, fn in (("Import Traktor (.tsi)…", self._import_tsi), ("Import…", self._import),
+                        ("Export…", self._export), ("Finish && save", self._finish)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
             b.setFocusPolicy(Qt.NoFocus)
@@ -2762,6 +2763,27 @@ class LearnWizard(QDialog):
         self.result = {(b.action, b.deck): b for b in bs}
         self.ctl.set_bindings(bs, learned=True)        # used from now on, every time it connects
         self.heard.setText(f"Imported {len(bs)} controls from {path} - saved for this controller")
+        self._show()
+
+    def _import_tsi(self):
+        from ..dj.tsi import TsiError, tsi_bindings
+
+        path, _ = QFileDialog.getOpenFileName(self, "Import a Traktor mapping", "",
+                                              "Traktor settings / mapping (*.tsi)")
+        if not path:
+            return
+        try:
+            name, bs, unused = tsi_bindings(path)
+        except TsiError as e:
+            QMessageBox.warning(self, "Import Traktor mapping", str(e))
+            return
+        self.result = {(b.action, b.deck): b for b in bs}
+        self.ctl.set_bindings(bs, learned=True)        # used from now on, every time it connects
+        msg = f"Imported the {name} mapping: {len(bs)} controls, saved for this controller."
+        if unused:
+            msg += "\n\nNot used by CTA: " + ", ".join(unused)
+        self.heard.setText(msg.split("\n")[0])
+        QMessageBox.information(self, "Import Traktor mapping", msg)
         self._show()
 
     def done(self, r):

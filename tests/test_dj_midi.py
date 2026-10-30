@@ -121,3 +121,79 @@ def test_learn_wizard_waits_for_space_and_keeps_other_settings(tmp_path, monkeyp
     wz._import()
     assert any(b.action == "play" and b.num == 42 for b in saved["b"])
     wz.done(0)
+
+
+def _tsi_file(path, device="Pioneer.DDJ-T1", inputs=("Deck.A.HotCue 1/5", "Mixer.A.Vol", "Deck.A.Needle.Function 1")):
+    """A minimal Traktor .tsi with a controller mapping, built frame by frame."""
+    import base64
+    import struct
+
+    def fr(tag, body):
+        return tag.encode() + struct.pack(">I", len(body)) + body
+
+    def ws(s_):
+        return struct.pack(">I", len(s_)) + s_.encode("utf-16-be")
+    dcdt = b"".join(fr("DCDT", ws(n) + struct.pack(">IIfII", 1, 0, 1.0, 3, 8)) for n in inputs)
+    ddci = fr("DDCI", struct.pack(">I", len(inputs)) + dcdt)
+    ddco = fr("DDCO", struct.pack(">I", 0))
+    ddat = fr("DDAT", fr("DDIF", b"\0" * 4) + fr("DDDC", ddci + ddco))
+    devi = fr("DEVI", ws(device) + ddat)
+    blob = fr("DIOM", fr("DIOI", struct.pack(">I", 1)) + fr("DEVS", struct.pack(">I", 1) + devi))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write('<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n<NIXML><TraktorSettings>'
+                '<Entry Name="DeviceIO.Config.Controller" Type="3" Value="'
+                + base64.b64encode(blob).decode() + '"></Entry></TraktorSettings></NIXML>')
+
+
+def test_traktor_tsi_import_gives_the_full_ddj_t1(tmp_path):
+    from cta.dj.tsi import TsiError, read_tsi, tsi_bindings
+
+    p = str(tmp_path / "Settings.tsi")
+    _tsi_file(p)
+    assert read_tsi(p) == [{"name": "Pioneer.DDJ-T1",
+                            "inputs": ["Deck.A.HotCue 1/5", "Mixer.A.Vol", "Deck.A.Needle.Function 1"],
+                            "outputs": []}]
+    name, bs, unused = tsi_bindings(p)
+    assert name == "Pioneer.DDJ-T1" and unused == ["Deck.Needle.Function 1"]
+    have = {(b.type, b.ch, b.num, b.action, b.deck) for b in bs}
+    # spot checks against Pioneer's MIDI list
+    assert ("note", 0, 11, "play", "A") in have and ("note", 1, 12, "cue", "B") in have
+    assert ("cc", 6, 19, "volume", "A") in have and ("cc", 6, 21, "volume", "B") in have
+    assert ("cc", 6, 31, "crossfader", None) in have and ("cc", 6, 16, "eq_low", "B") in have
+    assert ("note", 6, 88, "sync", "A") in have and ("note", 6, 85, "phones_cue", "B") in have
+    _tsi_file(p, device="Generic MIDI")
+    with pytest.raises(TsiError):
+        tsi_bindings(p)
+
+
+def test_ddj_t1_performance_buttons_and_mixer():
+    from cta.dj.midi import Controller, ddj_t1_default
+
+    eng = Engine()
+    t = np.arange(SR * 20) / SR
+    y = (0.3 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    eng.load("A", np.stack([y, y]), BeatGrid(120.0, 0.0, 20.0), TrackInfo(loudness=-10))
+    c = Controller(eng, device="Test DDJ-T1")
+    c.set_bindings(ddj_t1_default(), learned=False)
+    c.handle_raw([0xB6, 19, 64])                      # deck A channel fader half way
+    eng.render(256)
+    assert abs(eng.decks["A"].volume - 64 / 127) < 1e-6
+    c.handle_raw([0x90, 46, 127])                     # pad 1 in HOT CUE mode: sets hot cue 1
+    eng.render(256)
+    assert eng.decks["A"].hotcues[0] is not None
+    c.handle_raw([0x90, 45, 127])                     # hold DELETE + pad 1: removes it
+    c.handle_raw([0x90, 46, 127])
+    c.handle_raw([0x90, 45, 0])
+    eng.render(256)
+    assert eng.decks["A"].hotcues[0] is None
+    c.handle_raw([0x90, 42, 127])                     # MOVE mode: pad 4 jumps forward
+    t0 = eng.decks["A"].time
+    c.handle_raw([0x90, 49, 127])
+    eng.render(256)
+    assert eng.decks["A"].time > t0 + 1.0
+    c.handle_raw([0xB0, 3, 64])                       # needle strip: half way into the track
+    eng.render(256)
+    assert abs(eng.decks["A"].time - 10.0) < 0.3
+    c.handle_raw([0x96, 92, 127])                     # MASTER A
+    eng.render(256)
+    assert eng.master_deck == "A"

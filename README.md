@@ -363,7 +363,17 @@ Under the hood:
   - Plug it in and CTA finds both its MIDI ports and its 4-channel sound
     card: master on outputs 1-2, headphones on 3-4, with headphone cue and
     a cue/master mix.
-  - A basic map (play, cue, jog, tempo, load, browse) works straight away.
+  - The whole unit works straight away, from Pioneer's MIDI list: play, cue,
+    jog (touch to scratch), tempo and TEMPO RANGE, KEY LOCK, loop IN / OUT /
+    ACTIVE, AUTO LOOP (press: loop, turn: size), FILTER, the needle-search
+    strip (stopped decks), the four performance buttons (HOT CUE mode: hot
+    cues 1-4, SHIFT 5-8, hold DELETE to remove one; MOVE mode: loop ½ / ×2,
+    BWD / FWD), and the whole mixer: GAIN, EQ, channel faders, crossfader,
+    headphone CUE / MIX / VOL, SYNC, MASTER, FX assign, LOAD, browse and the
+    FX dry/wet, parameter and on buttons.
+  - **Import Traktor (.tsi)…** in Controller setup reads a Traktor settings or
+    mapping export and sets up the DDJ-T1 from it (listing anything CTA has
+    no equivalent for).
     **Controller setup…** then walks you through every control once ("move
     the deck A tempo fader…"). CTA shows what it heard and waits: press
     **Space** to keep it and go on (**Backspace** listens again, **S** or
