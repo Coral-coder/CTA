@@ -76,10 +76,10 @@ class MixLearner:
     def tick(self, eng):
         if not self.enabled:
             return
-        # auto-mix's own transitions are not lessons
-        if self.am.active and self.am.tr is not None and self.am.tr.started:
-            self._active = None
-            return
+        # auto-mix's own transitions are not lessons - unless the DJ takes one over
+        auto_now = self.am.active and self.am.tr is not None and self.am.tr.started
+        if auto_now and self._active is not None:
+            self._active["auto"] = True
         live = [d for d in eng.decks.values() if d.loaded and d.grid is not None and self._audible(eng, d) > 0.2]
         now = time.time()
         if self._active is None:
@@ -89,7 +89,8 @@ class MixLearner:
                 out, inc = (a, b) if a.time - a.grid.first_beat > b.time - b.grid.first_beat else (b, a)
                 self._active = {"out": out.name, "in": inc.name, "t0": now,
                                 "out_bar0": out.grid.beat_at(out.time) / 4.0,
-                                "in_bar0": inc.grid.beat_at(inc.time) / 4.0, "bpm": out.bpm}
+                                "in_bar0": inc.grid.beat_at(inc.time) / 4.0, "bpm": out.bpm,
+                                "auto": auto_now}
                 self._quiet_since = None
             return
         st = self._active
@@ -107,8 +108,14 @@ class MixLearner:
             return
         bars = (self._quiet_since - st["t0"]) * st["bpm"] / 60.0 / 4.0
         self._active = None
-        if 1.0 <= bars <= 96:
+        if 1.0 <= bars <= 96 and not st.get("auto"):
             self._record(eng, out, inc, st, bars)
+
+    def took_over(self):
+        """The DJ grabbed an auto-mix transition: from here it is their mix,
+        timed from when the blend began."""
+        if self._active is not None:
+            self._active["auto"] = False
 
     def _record(self, eng, out, inc, st, bars):
         try:

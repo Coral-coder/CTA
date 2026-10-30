@@ -30,6 +30,11 @@ import numpy as np
 from .engine import SR, Engine
 from .structure import Structure, analyse, plan_transition
 
+# hand moves that make a transition in progress the DJ's own
+TAKEOVER_ACTIONS = {"volume", "eq_low", "eq_mid", "eq_high", "crossfader", "filter", "gain", "trim", "play",
+                    "cue", "sync", "tempo", "jog", "jog_touch", "scratch", "bend", "jump", "beatjump_back",
+                    "beatjump_fwd", "loop", "loop_in", "loop_out", "loop_double", "loop_halve", "fader", "eq"}
+
 log = logging.getLogger(__name__)
 
 
@@ -121,6 +126,8 @@ class AutoMix:
         self.skip_bars = 4
         self._load_gen: dict[str, int] = {}
         self.learner = None                  # MixLearner: the DJ's own transition habits
+        self.resume_after_manual = False     # the DJ took over a blend: carry on after it
+        self._resume_t = None
         self._sync_loads = synchronous_loads
         self._loading_item: dict = {}
         self.on_change = None        # optional callback for the UI (called from audio/loader thread)
@@ -181,15 +188,56 @@ class AutoMix:
         self.active = False
         self.tr = None
         self.glide = None
+        self.resume_after_manual = False
         self.status = "Auto-mix off"
         self._changed()
 
     def user_took_over(self):
-        """The DJ touched a fader/EQ during a transition: hand control back."""
+        """The DJ took over a transition: auto-mix lets go at once (no more
+        fader / EQ moves), the learner keeps the blend as a lesson, and
+        auto-mix carries on by itself once the DJ's blend is done."""
         if self.active:
             self.stop()
-            self.status = "Manual control - auto-mix paused"
+            self.resume_after_manual = True
+            self._resume_t = None
+            if self.learner is not None:
+                self.learner.took_over()
+            self.status = "You're mixing - auto-mix carries on after your blend"
             self._changed()
+
+    def manual(self, deck: str | None, action: str) -> bool:
+        """The DJ did something by hand (UI, keyboard or controller). If it
+        touches a transition in progress - or starts the other deck - the
+        transition is theirs. Returns True when auto-mix stepped back."""
+        if not self.active or action not in TAKEOVER_ACTIONS and not action.startswith("hotcue"):
+            return False
+        tr = self.tr
+        if tr is not None and tr.started:
+            if deck is None or deck in (tr.in_deck, tr.out_deck):
+                self.user_took_over()
+                return True
+        elif action == "play" and deck in self.decks and not self.eng.decks[deck].playing \
+                and any(self.eng.decks[d].playing for d in self.decks if d != deck):
+            self.user_took_over()               # starting the other deck: a manual mix begins
+            return True
+        return False
+
+    def maybe_resume(self):
+        """Called ~30x/s by the UI: back to auto-mix once one track plays alone."""
+        if not self.resume_after_manual or self.active:
+            return
+        import time as _t
+
+        playing = [d for d in self.decks if self.eng.decks[d].playing]
+        if len(playing) != 1 or self.eng.paused:
+            self._resume_t = None
+            return
+        now = _t.monotonic()
+        if self._resume_t is None:
+            self._resume_t = now
+        elif now - self._resume_t >= 3.0:
+            self.resume_after_manual = False
+            self.start()
 
     def transition_now(self, bars: int | None = None):
         """Assist: mix into the other (loaded) deck starting at the next bar."""

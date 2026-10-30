@@ -332,3 +332,76 @@ def test_cue_on_first_beat_and_markers_drive_automix():
     assert started_at is not None
     assert abs(started_at - tracks["x"].grid.time_of_beat(32)) < beat * 0.6
     assert abs(in_pos - tracks["y"].grid.time_of_beat(16)) < beat * 0.6
+
+
+def test_cue_drag_off_and_play_latch_keep_playing():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    d = eng.decks["A"]
+    eng.cue_press("A")                  # at the cue point: preview
+    _run(eng, 0.3)
+    assert d.playing and d.cue_preview
+    eng.cue_release("A")                # let go on the button: back to the cue
+    _run(eng, 0.05)
+    assert not d.playing and abs(d.play_pos - d.cue_point) < 1
+    eng.cue_press("A")
+    _run(eng, 0.3)
+    eng.cue_release("A", keep_playing=True)     # dragged off the button
+    _run(eng, 0.2)
+    assert d.playing and not d.cue_preview and d.play_pos > d.cue_point + 0.3 * SR
+    eng.cue_press("A")                  # playing: CUE stops and returns
+    _run(eng, 0.05)
+    assert not d.playing
+    eng.cue_press("A")
+    eng.toggle_play("A")                # PLAY while holding CUE: latch
+    eng.cue_release("A")
+    _run(eng, 0.3)
+    assert d.playing and not d.cue_preview
+
+
+def test_levels_reset_when_a_track_loads():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    eng.set("A", eq=(0.0, 1.5, 0.2), trim=2.0, filter=0.6, key_shift=2.0)
+    _run(eng, 0.05)
+    _load(eng, "A", 126.0)
+    d = eng.decks["A"]
+    assert d.trim == 1.0 and d.filter == 0.0 and d.key_shift == 0.0 and np.allclose(d.eq, 1.0)
+
+
+def test_taking_over_a_transition_hands_control_back_and_resumes():
+    from types import SimpleNamespace
+
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    tracks = {}
+    for name, bpm in (("t1", 124.0), ("t2", 124.0), ("t3", 124.0)):
+        a = _stereo(bpm, 60)
+        tracks[name] = SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, bpm), peaks=None,
+                                       info=TrackInfo(title=name, bpm=bpm, loudness=-10))
+    eng = Engine()
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=8, phrase_bars=4),
+                 synchronous_loads=True)
+    took = []
+    am.learner = SimpleNamespace(took_over=lambda: took.append(1), preferences=lambda g: None)
+    am.set_queue(["t1", "t2", "t3"])
+    am.start()
+    am.transition_now(8)
+    for _ in range(int(4 * SR / 1024)):
+        eng.render(1024)
+    assert am.tr is not None and am.tr.started
+    tr = am.tr
+    # touching a deck that is not in the blend changes nothing
+    assert not am.manual("C", "volume") and am.active
+    assert am.manual(tr.in_deck, "volume")
+    assert not am.active and am.resume_after_manual and took
+    # the DJ finishes the blend: auto-mix no longer moves the faders
+    eng.decks[tr.in_deck].volume = 0.7
+    for _ in range(int(2 * SR / 1024)):
+        eng.render(1024)
+    assert eng.decks[tr.in_deck].volume == 0.7
+    eng.set_playing(tr.out_deck, False)
+    eng.render(1024)
+    am._resume_t = -100.0                  # pretend one track has played alone for a while
+    am.maybe_resume()
+    assert am.active and not am.resume_after_manual

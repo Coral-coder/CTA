@@ -357,3 +357,106 @@ def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
     dj.view_combo.setCurrentText("Auto")
     dj.shutdown()
     w.close()
+
+
+def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
+    from PySide6.QtCore import QEvent, QEventLoop, QPoint, QPointF, QSettings, Qt, QTimer
+    from PySide6.QtGui import QKeyEvent, QMouseEvent
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    for n, bpm in enumerate((124.0, 125.0, 126.0)):
+        write_audio(str(music / f"t{n}.flac"), synth_track(bpm, 30, chord=(57, 60, 64)))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def wait(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        wait(50)
+    w.open_dj()
+    dj = w.dj
+    eng = dj.engine
+    dj.load_index("A", 0)
+    for _ in range(200):
+        if eng.decks["A"].loaded:
+            break
+        wait(50)
+    w.lib_view.setFocus()
+    monkeypatch.setattr(QtWidgets.QApplication, "activeWindow", staticmethod(lambda: w))
+    d = eng.decks["A"]
+
+    def key(k, release=False, mods=Qt.NoModifier):
+        ev = QKeyEvent(QEvent.KeyRelease if release else QEvent.KeyPress, k, mods)
+        app.sendEvent(w.lib_view, ev)
+
+    # Traktor keys: W plays deck A, W again pauses, Q holds the cue preview
+    key(Qt.Key_W)
+    assert d.playing
+    key(Qt.Key_W)
+    assert not d.playing
+    key(Qt.Key_Q)
+    assert d.playing and d.cue_preview
+    key(Qt.Key_Q, release=True)
+    assert not d.playing
+    key(Qt.Key_U)
+    assert d.sync
+    key(Qt.Key_1)
+    assert d.hotcues[0] is not None
+    key(Qt.Key_1, mods=Qt.ControlModifier)
+    assert d.hotcues[0] is None
+    # typing in the search box is not deck control
+    w.search.setFocus()
+    app.sendEvent(w.search, QKeyEvent(QEvent.KeyPress, Qt.Key_W, Qt.NoModifier, "w"))
+    assert not d.playing and w.search.text() == "w"
+    w.search.clear()
+
+    # CUE button: dragging off it before letting go keeps the track playing
+    b = dj.decks["A"].b_cue
+    c = QPointF(b.rect().center())
+    app.sendEvent(b, QMouseEvent(QEvent.MouseButtonPress, c, c, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+    assert d.playing and d.cue_preview
+    off = QPointF(QPoint(b.width() + 40, 5))
+    app.sendEvent(b, QMouseEvent(QEvent.MouseMove, off, off, Qt.NoButton, Qt.LeftButton, Qt.NoModifier))
+    app.sendEvent(b, QMouseEvent(QEvent.MouseButtonRelease, off, off, Qt.LeftButton, Qt.NoButton, Qt.NoModifier))
+    assert d.playing and not d.cue_preview
+    eng.set_playing("A", False)
+
+    # playlists: two songs get a dimmed bridge between them; accepting it adds it
+    pl = w.playlists
+    k = pl.new_list(name="Friday")
+    pl.add_tracks([0, 2], playlist=k)
+    assert pl.items() == [0, 2]
+    kinds = pl.model.kinds
+    assert kinds == ["track", "bridge", "track"]
+    bridge = pl.model.items[1]
+    assert bridge == 1
+    from cta.gui.playlists import DIM
+
+    assert pl.model.data(pl.model.index(1, 6), Qt.ForegroundRole) == DIM
+    pl.accept_bridge(1)
+    assert pl.items() == [0, 1, 2]
+    # saved with the library
+    pl2 = type(pl)(w)
+    assert pl2.names() == ["Friday"] and pl2.items() == [0, 1, 2]
+    pl.to_automix()
+    assert list(dj.automix.queue) == [0, 1, 2]
+    dj.shutdown()
+    w.close()

@@ -358,25 +358,34 @@ class Engine:
     def seek(self, deck: str, seconds: float):
         self.cmd(lambda e: e._seek(e.decks[deck], seconds * SR))
 
+    def _play_now(e, deck: str, on: bool, quantize: bool = True):
+        d = e.decks[deck]
+        if not d.loaded:
+            return
+        if on and d.cue_preview:
+            d.cue_preview = False          # PLAY while holding CUE: keep playing
+            return
+        if on and not d.playing:
+            if quantize and d.sync and e._master(exclude=deck) is not None:
+                e._align_phase(d, e._master(exclude=deck))
+            d.playing = True
+            if e.master_deck is None:
+                e.master_deck = deck
+        elif not on:
+            d.cue_preview = False
+            d.playing = False
+            if e.master_deck == deck:
+                e.master_deck = None
+
     def set_playing(self, deck: str, on: bool, quantize: bool = True):
-        def f(e):
-            d = e.decks[deck]
-            if not d.loaded:
-                return
-            if on and not d.playing:
-                if quantize and d.sync and e._master(exclude=deck) is not None:
-                    e._align_phase(d, e._master(exclude=deck))
-                d.playing = True
-                if e.master_deck is None:
-                    e.master_deck = deck
-            elif not on:
-                d.playing = False
-                if e.master_deck == deck:
-                    e.master_deck = None
-        self.cmd(f)
+        self.cmd(Engine._play_now, deck, on, quantize)
 
     def toggle_play(self, deck: str):
-        self.set_playing(deck, not self.decks[deck].playing)
+        # decided in the audio thread: a CUE preview counts as "not playing yet"
+        def f(e):
+            d = e.decks[deck]
+            Engine._play_now(e, deck, d.cue_preview or not d.playing)
+        self.cmd(f)
 
     def cue_press(self, deck: str):
         def f(e):
@@ -399,13 +408,16 @@ class Engine:
                 e._seek(d, d.cue_point)
         self.cmd(f)
 
-    def cue_release(self, deck: str):
+    def cue_release(self, deck: str, keep_playing: bool = False):
+        """keep_playing: the CUE button was let go somewhere else (dragged off
+        it): the preview carries on as normal play."""
         def f(e):
             d = e.decks[deck]
             if d.cue_preview:
                 d.cue_preview = False
-                d.playing = False
-                e._seek(d, d.cue_point)
+                if not keep_playing:
+                    d.playing = False
+                    e._seek(d, d.cue_point)
         self.cmd(f)
 
     def set(self, deck: str, **kw):
@@ -689,6 +701,15 @@ class Engine:
         elif db - target > 0.5:
             target += 1
         self._seek(d, d.grid.time_of_beat(target) * SR)
+
+    def phase_snap(self, deck: str):
+        """Put the deck's beats in phase with the master (a jump of under a beat)."""
+        def f(e):
+            d = e.decks[deck]
+            m = e._master(exclude=deck)
+            if d.loaded and m is not None:
+                e._align_phase(d, m)
+        self.cmd(f)
 
     def phase_error(self, deck: str) -> float | None:
         """Beat phase difference to the master in beats (-0.5..0.5)."""

@@ -21,6 +21,7 @@ import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDial,
@@ -131,20 +132,27 @@ def _band_colors(b: np.ndarray) -> np.ndarray:
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
+_BG32 = np.uint32(0xFF000000 | (18 << 16) | (19 << 8) | 22)
+_YS: dict[int, np.ndarray] = {}
+
+
 def _render(heights: np.ndarray, colors: np.ndarray, h: int, past: int | None = None) -> QImage:
-    """Mirror-waveform image from per-column heights (0..1) and colours."""
+    """Mirror-waveform image from per-column heights (0..1) and colours.
+    Packed 32-bit pixels: one numpy pass per frame (the UI thread must stay
+    free so buttons react at once)."""
     w = heights.size
-    img = np.empty((h, w, 4), np.uint8)
-    img[..., 3] = 255
-    img[..., :3] = (18, 19, 22)
-    half = h / 2
-    ys = np.abs(np.arange(h)[:, None] + 0.5 - half)
-    mask = ys <= heights[None, :] * (half - 1)
-    col = colors.copy()
+    ys = _YS.get(h)
+    if ys is None:
+        ys = _YS[h] = np.abs(np.arange(h, dtype=np.float32)[:, None] + 0.5 - h / 2)
+    mask = ys <= (heights.astype(np.float32) * (h / 2 - 1))[None, :]
+    c = colors.astype(np.uint32)
     if past is not None and past > 0:
-        col[:past] = (col[:past] * 0.45).astype(np.uint8)
-    img[..., :3] = np.where(mask[..., None], col[None, :, :], img[..., :3])
-    return QImage(img.data, w, h, 4 * w, QImage.Format_RGBA8888).copy()
+        c[:past] = (c[:past] * 115) >> 8
+    packed = np.uint32(0xFF000000) | (c[:, 0] << 16) | (c[:, 1] << 8) | c[:, 2]
+    img = np.where(mask, packed[None, :], _BG32).astype(np.uint32)
+    q = QImage(img.data, w, h, 4 * w, QImage.Format_RGB32)
+    q._buf = img                        # keep the pixels alive as long as the image
+    return q
 
 
 class Waveform(QWidget):
@@ -182,6 +190,7 @@ class Waveform(QWidget):
     def set_track(self, peaks, bands, duration, grid):
         self.peaks, self.bands, self.duration, self.grid = peaks, bands, max(duration, 1e-3), grid
         self._over = None
+        self._over_img = (None, None)
         self.update()
 
     def _time_at(self, x: float) -> float:
@@ -280,7 +289,10 @@ class Waveform(QWidget):
                 b = self.peaks[np.linspace(0, n - 1, w).astype(int)]
                 self._over = (w, np.clip(b.max(axis=1), 0, 1), _band_colors(b))
             past = int(self.pos / self.duration * w)
-            p.drawImage(0, 0, _render(self._over[1], self._over[2], h, past))
+            key = (w, h, past)
+            if getattr(self, "_over_img", (None, None))[0] != key:
+                self._over_img = (key, _render(self._over[1], self._over[2], h, past))
+            p.drawImage(0, 0, self._over_img[1])
         if self.loop:
             x0, x1 = self._x(self.loop[0] / SR, w), self._x(self.loop[1] / SR, w)
             p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(80, 220, 120, 60))
@@ -365,6 +377,17 @@ def _sync_check(b, on):
         b.blockSignals(False)
 
 
+def _set_text(w, t):
+    """setText only on change: every change re-lays out the panel."""
+    if w.text() != t:
+        w.setText(t)
+
+
+def _set_ss(w, st):
+    if w.styleSheet() != st:
+        w.setStyleSheet(st)
+
+
 def _sync_value(w, v, tol=2):
     if abs(w.value() - v) > tol and not getattr(w, "isSliderDown", lambda: False)():
         w.blockSignals(True)
@@ -421,48 +444,130 @@ class JogPlatter(QWidget):
             self.scratch_end.emit()
             self.update()
 
-    def paintEvent(self, _ev):
-        p = QPainter(self)
+    def _static(self) -> QPixmap:
+        """The record itself (body, grooves, deck-coloured rim): drawn once."""
+        key = (self.width(), self.height(), self.held)
+        if getattr(self, "_bg", (None, None))[0] == key:
+            return self._bg[1]
+        pm = QPixmap(self.size())
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing)
-        r = self.rect().adjusted(4, 4, -4, -4)
+        r = QRectF(self.rect().adjusted(4, 4, -4, -4))
         p.setPen(QPen(QColor(10, 11, 14), 2))
-        p.setBrush(QColor(28, 30, 36))
+        p.setBrush(QColor(22, 23, 27))
         p.drawEllipse(r)
-        # grooves
         p.setBrush(Qt.NoBrush)
-        for k in range(3, 9):
-            p.setPen(QPen(QColor(48, 50, 58), 1))
-            inset = k * r.width() / 20
+        for k in range(1, 7):
+            p.setPen(QPen(QColor(44, 46, 54), 1))
+            inset = k * r.width() / 40
             p.drawEllipse(r.adjusted(inset, inset, -inset, -inset))
-        # ring
         ring = QColor(self.color)
         ring.setAlpha(255 if self.held else 170)
         p.setPen(QPen(ring, 5))
         p.drawEllipse(r.adjusted(3, 3, -3, -3))
-        # spinning marker
-        c = r.center()
-        rad = r.width() / 2 - 12
+        p.end()
+        self._bg = (key, pm)
+        return pm
+
+    def paintEvent(self, _ev):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, self._static())
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect().adjusted(4, 4, -4, -4)
+        c = QPointF(r.center())
         a = np.radians(self.angle - 90)
-        p.setPen(QPen(QColor(240, 240, 245), 5, Qt.SolidLine, Qt.RoundCap))
-        p.drawLine(c, c + QPointF(np.cos(a) * rad, np.sin(a) * rad).toPoint())
+        # the record label: album art turning with the platter (most of the record)
+        lr = r.width() * 0.34
+        p.save()
+        p.translate(c)
+        p.rotate(self.angle)
+        clip = QPainterPath()
+        clip.addEllipse(QPointF(0, 0), lr, lr)
+        p.setClipPath(clip)
         if self.art is not None and not self.art.isNull():
-            # the record label: album art turning with the platter
-            lr = r.width() * 0.22
-            p.save()
-            p.translate(QPointF(c))
-            p.rotate(self.angle)
-            clip = QPainterPath()
-            clip.addEllipse(QPointF(0, 0), lr, lr)
-            p.setClipPath(clip)
-            p.drawPixmap(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.art, QRectF(self.art.rect()))
-            p.restore()
-            p.setBrush(QColor(20, 20, 24))
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(QPointF(c), 3, 3)
+            aw, ah = self.art.width(), self.art.height()
+            sq = min(aw, ah)
+            p.drawPixmap(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.art, QRectF((aw - sq) / 2, (ah - sq) / 2, sq, sq))
         else:
-            p.setBrush(self.color)
-            p.setPen(Qt.NoPen)
-            p.drawEllipse(c, 14, 14)
+            p.fillRect(QRectF(-lr, -lr, 2 * lr, 2 * lr), self.color.darker(170))
+            p.setPen(QPen(self.color, 2))
+            p.drawEllipse(QPointF(0, 0), lr * 0.6, lr * 0.6)
+        p.restore()
+        p.setPen(QPen(QColor(0, 0, 0, 160), 1.5))
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(c, lr, lr)
+        # spinning marker on the vinyl, outside the label
+        rad0, rad1 = lr + 3, r.width() / 2 - 9
+        p.setPen(QPen(QColor(240, 240, 245), 4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(c + QPointF(np.cos(a) * rad0, np.sin(a) * rad0), c + QPointF(np.cos(a) * rad1, np.sin(a) * rad1))
+        p.setBrush(QColor(20, 20, 24))
+        p.setPen(QPen(QColor(200, 200, 205), 1))
+        p.drawEllipse(c, 3, 3)
+
+
+class PressButton(QPushButton):
+    """Fires the moment it is pressed (like a hardware button), not on release."""
+
+    hit = Signal()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.setDown(True)
+            self.hit.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        self.mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.setDown(False)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+
+class CueButton(QPushButton):
+    """CUE: acts on the press (no waiting for a click). Let go on the button
+    and the preview stops; drag off it and let go, and the track plays on."""
+
+    down = Signal()
+    up = Signal(bool)          # True: released away from the button -> keep playing
+
+    def __init__(self, text):
+        super().__init__(text)
+        self._held = False
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._held = True
+            self.setDown(True)
+            self.down.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        self.mousePressEvent(ev)        # rapid taps: every one counts
+
+    def mouseMoveEvent(self, ev):
+        if self._held:
+            self.setDown(self.rect().contains(ev.position().toPoint()))
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._held and ev.button() == Qt.LeftButton:
+            self._held = False
+            self.setDown(False)
+            self.up.emit(not self.rect().contains(ev.position().toPoint()))
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
 
 class _Scratcher:
@@ -1029,17 +1134,18 @@ class DeckPanel(QFrame):
         for wv in (self.zoom, self.over):
             wv.seek.connect(lambda t, n=name: self.eng.seek(n, t))
             wv.marker.connect(lambda kind, t, n=name: self.dj.set_marker(n, kind, t))
-        self.zoom.scratch.connect(self.scr.move)
+        self.zoom.scratch.connect(lambda secs: (self.dj.manual_touch(name, "scratch"), self.scr.move(secs)))
         self.zoom.scratch_end.connect(self.scr.end)
         self.platter = JogPlatter(col, 112)
-        self.platter.scratch.connect(lambda revs: self.scr.move(revs * 1.8))
+        self.platter.scratch.connect(lambda revs: (self.dj.manual_touch(name, "scratch"), self.scr.move(revs * 1.8)))
         self.platter.scratch_end.connect(self.scr.end)
         tb = QVBoxLayout()
         self.tempo = QSlider(Qt.Vertical)
         self.tempo.setRange(-1000, 1000)
         self.tempo.setInvertedAppearance(True)       # down = faster, like a turntable
         self.tempo.setToolTip("Tempo")
-        self.tempo.valueChanged.connect(lambda v: self.eng.set(name, tempo=v / 1000.0))
+        self.tempo.valueChanged.connect(lambda v: (self.dj.manual_touch(name, "tempo"),
+                                                   self.eng.set(name, tempo=v / 1000.0)))
         tb.addWidget(self.tempo, 1, Qt.AlignHCenter)
         self.range = QComboBox()
         self.range.addItems(["±6%", "±8%", "±16%", "±50%"])
@@ -1062,7 +1168,7 @@ class DeckPanel(QFrame):
         self.b_sync.setObjectName("sync")
         self.b_sync.setCheckable(True)
         self.b_sync.setToolTip("Tempo + phase lock to the master deck")
-        self.b_sync.clicked.connect(lambda on: self.eng.set(name, sync=on))
+        self.b_sync.clicked.connect(lambda on: (self.dj.manual_touch(name, "sync"), self.eng.set(name, sync=on)))
         self.b_master = QPushButton("MASTER")
         self.b_master.setObjectName("toggle")
         self.b_master.setCheckable(True)
@@ -1080,8 +1186,10 @@ class DeckPanel(QFrame):
         self.jump.addItems(["1", "2", "4", "8", "16", "32"])
         self.jump.setCurrentText("4")
         self.jump.setToolTip("Beat jump size (beats)")
-        b_jb.clicked.connect(lambda: self.eng.beatjump(name, -int(self.jump.currentText())))
-        b_jf.clicked.connect(lambda: self.eng.beatjump(name, int(self.jump.currentText())))
+        b_jb.clicked.connect(lambda: (self.dj.manual_touch(name, "jump"),
+                                      self.eng.beatjump(name, -int(self.jump.currentText()))))
+        b_jf.clicked.connect(lambda: (self.dj.manual_touch(name, "jump"),
+                                      self.eng.beatjump(name, int(self.jump.currentText()))))
         srow = QHBoxLayout()
         for b in (self.b_sync, self.b_master, self.b_key):
             b.setFixedHeight(22)
@@ -1094,19 +1202,20 @@ class DeckPanel(QFrame):
         outer.addWidget(self.over)
 
         # ---- transport + loops:  ▶ CUE CUP FLX | ‹ 1 2 4 8 16 32 › | IN OUT ACTIVE | ⌃ ------------
-        self.b_play = QPushButton("▶")
+        self.b_play = PressButton("▶")
         self.b_play.setObjectName("play")
         self.b_play.setCheckable(True)
         self.b_play.setToolTip("Play / pause")
-        self.b_play.clicked.connect(lambda: self.eng.toggle_play(name))
-        self.b_cue = QPushButton("CUE")
+        self.b_play.hit.connect(lambda: (self.dj.manual_touch(name, "play"), self.eng.toggle_play(name)))
+        self.b_cue = CueButton("CUE")
         self.b_cue.setObjectName("cue")
-        self.b_cue.setToolTip("Cue (hold to preview from the cue point)")
-        self.b_cue.pressed.connect(lambda: self.eng.cue_press(name))
-        self.b_cue.released.connect(lambda: self.eng.cue_release(name))
-        b_cup = QPushButton("CUP")
+        self.b_cue.setToolTip("Cue (hold to preview from the cue point; drag off the button or press "
+                              "PLAY while holding to keep playing)")
+        self.b_cue.down.connect(lambda: (self.dj.manual_touch(name, "cue"), self.eng.cue_press(name)))
+        self.b_cue.up.connect(lambda keep: self.eng.cue_release(name, keep))
+        b_cup = PressButton("CUP")
         b_cup.setToolTip("Cue-play: jump to the cue point and play")
-        b_cup.clicked.connect(self._cup)
+        b_cup.hit.connect(self._cup)
         self.b_flux = _btn("FLX", True, "Flux: after a loop or jump the track continues where it would have been")
         self.b_flux.clicked.connect(lambda on: self.eng.set(name, flux=on))
         trow = QHBoxLayout()
@@ -1283,10 +1392,12 @@ class DeckPanel(QFrame):
             QTimer.singleShot(0, self.apply_view)
 
     def _toggle_loop(self, on):
+        self.dj.manual_touch(self.name, "loop")
         self.eng.loop_beats(self.name, self.loop_beats_sel if on else None)
 
     def _loop_size(self, n: int):
         """Loop-size buttons: start a loop of that size; the same size again ends it."""
+        self.dj.manual_touch(self.name, "loop")
         d = self.eng.decks[self.name]
         if d.loop is not None and self.loop_beats_sel == n:
             self.eng.loop_beats(self.name, None)
@@ -1301,6 +1412,7 @@ class DeckPanel(QFrame):
             self.eng.loop_resize(self.name, f)
 
     def _cup(self):
+        self.dj.manual_touch(self.name, "play")
         d = self.eng.decks[self.name]
         if d.loaded:
             self.eng.seek(self.name, d.cue_point / SR)
@@ -1382,8 +1494,9 @@ class DeckPanel(QFrame):
             return
         pm = QPixmap()
         if pm.loadFromData(data):
-            self.art.setPixmap(pm)
-            self.platter.art = pm
+            # scaled once here: the platter redraws it rotated 30 times a second
+            self.art.setPixmap(pm.scaled(64, 64, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation))
+            self.platter.art = pm.scaled(200, 200, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
             self.platter.update()
 
     def refresh(self):
@@ -1407,18 +1520,18 @@ class DeckPanel(QFrame):
             _sync_value(self.key_shift, int(d.key_shift), 0)
         if not d.loaded:
             for lb in (self.bpm_lbl, self.pct_lbl, self.key_lbl, self.time_lbl, self.remain_lbl):
-                lb.setText("")
-            self.key_lbl.setStyleSheet("")
+                _set_text(lb, "")
+            _set_ss(self.key_lbl, "")
             return
         pct = (d.base_rate - 1) * 100
-        self.bpm_lbl.setText(f"{d.bpm:.2f}")
-        self.pct_lbl.setText(f"{pct:+.2f}%  ·  orig {d.grid.bpm if d.grid else 0:.1f}")
+        _set_text(self.bpm_lbl, f"{d.bpm:.2f}")
+        _set_text(self.pct_lbl, f"{pct:+.2f}%  ·  orig {d.grid.bpm if d.grid else 0:.1f}")
         ek = d.effective_key
         if ek >= 0:
             kc = key_color(ek) or QColor(200, 200, 200)
             shifted = ek != d.info.key
-            self.key_lbl.setText(f"{camelot_str(ek)}\n{key_name(ek)}")
-            self.key_lbl.setStyleSheet(f"background: {kc.darker(260).name()}; color: {kc.name()};"
+            _set_text(self.key_lbl, f"{camelot_str(ek)}\n{key_name(ek)}")
+            _set_ss(self.key_lbl, f"background: {kc.darker(260).name()}; color: {kc.name()};"
                                        f" border: 1px solid {kc.name()}; border-radius: 6px;"
                                        f" font-weight: 800; font-size: 14px; padding: 2px 6px;"
                                        + (" border-style: dashed;" if shifted else ""))
@@ -1427,10 +1540,10 @@ class DeckPanel(QFrame):
         # what you see matches what you hear: positions drawn as late as the output plays
         t_vis = max(0.0, d.time - self.eng.display_latency * d.rate) if d.playing else d.time
         remain = d.length / SR - t_vis
-        self.remain_lbl.setText(f"-{fmt_time(remain)}")
-        self.time_lbl.setText(fmt_time(t_vis))
+        _set_text(self.remain_lbl, f"-{fmt_time(remain)}")
+        _set_text(self.time_lbl, fmt_time(t_vis))
         warn = d.playing and remain < 30
-        self.remain_lbl.setStyleSheet("font-size: 20px; font-weight: 700; color: "
+        _set_ss(self.remain_lbl, "font-size: 20px; font-weight: 700; color: "
                                       + ("#ff5050;" if warn else "#f2f2f5;"))
         for wv in (self.zoom, self.over):
             wv.pos = t_vis
@@ -1452,7 +1565,7 @@ class DeckPanel(QFrame):
                       (self.b_master, self.eng.master_deck == self.name), (self.b_flux, d.flux),
                       (self.b_loop, d.loop is not None)):
             _sync_check(b, on)
-        self.b_play.setText("❚❚" if d.playing else "▶")
+        _set_text(self.b_play, "❚❚" if d.playing else "▶")
         for i, b in enumerate(self.hc):
             st = (f"background: {CUE_COLORS[i].name()}; color: #111; font-weight: 800;"
                   if d.hotcues[i] is not None else "")
@@ -1647,9 +1760,13 @@ class MixerPanel(QFrame):
         self.rec = _btn("● REC", True, "Record the master output to a WAV file", h=24)
         self.rec.setStyleSheet("QPushButton:checked { background: #c62828; color: white; }")
         self.rec.clicked.connect(lambda _on: dj.toggle_record())
-        self.rec_lbl = QLabel("Not recording")
+        self.rec_lbl = QLabel("Rec off")
         self.rec_lbl.setAlignment(Qt.AlignCenter)
         self.rec_lbl.setStyleSheet("color: #8d8f97;")
+        self.rec_lbl.setMinimumWidth(64)
+        from PySide6.QtWidgets import QSizePolicy
+
+        self.rec_lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
     def _set_level(self, lvl: int):
         self.level = lvl
@@ -1687,9 +1804,7 @@ class MixerPanel(QFrame):
             self._set_level(lvl)
 
     def _xf(self, v):
-        am = self.dj.automix
-        if am.tr is not None and am.tr.started:
-            am.user_took_over()
+        self.dj.automix.manual(None, "crossfader")
         self.dj.engine.crossfader = v / 100.0
 
     def refresh(self, show_cd: bool):
@@ -1703,12 +1818,12 @@ class MixerPanel(QFrame):
         _sync_value(self.xf, int(eng.crossfader * 100), 1)
         r = eng.recorder
         _sync_check(self.rec, r is not None)
-        self.rec_lbl.setText(f"REC {fmt_time(r.seconds)}" if r is not None else "Not recording")
+        _set_text(self.rec_lbl, f"REC {fmt_time(r.seconds)}" if r is not None else "Rec off")
         lim = eng._lim_gain < 0.98
         if lim != getattr(self, "_lim_on", None):
             self._lim_on = lim
-            self.limiter.setStyleSheet("font-size: 9px; font-weight: 800; color: "
-                                       + ("#ff9a3c;" if lim else "#4a4c52;"))
+            _set_ss(self.limiter, "font-size: 9px; font-weight: 800; color: "
+                    + ("#ff9a3c;" if lim else "#4a4c52;"))
 
 
 class FXPanel(QGroupBox):
@@ -1725,16 +1840,26 @@ class FXPanel(QGroupBox):
         self.kind.addItems(FX_TYPES)
         self.kind.setCurrentText(self.u.kind)
         self.kind.currentTextChanged.connect(lambda t: setattr(self.u, "kind", t))
+        # narrow combos: the global row must fit a 1280-pixel screen with Windows fonts
+        self.kind.setFixedWidth(78)
         lay.addWidget(self.kind)
-        lay.addWidget(QLabel("D/W"))
-        self.wet = Knob(50, 26, "Dry / wet")
+
+        def knob(k, cap):
+            col = QVBoxLayout()
+            col.setSpacing(0)
+            col.addWidget(k, 0, Qt.AlignHCenter)
+            lb = QLabel(cap)
+            lb.setStyleSheet("font-size: 8px; color: #8d8f97; font-weight: 800;")
+            col.addWidget(lb, 0, Qt.AlignHCenter)
+            lay.addLayout(col)
+        self.wet = Knob(50, 24, "Dry / wet")
         self.wet.valueChanged.connect(lambda v: setattr(self.u, "wet", v / 100))
-        lay.addWidget(self.wet)
-        lay.addWidget(QLabel("Amt"))
-        self.amt = Knob(50, 26, "Effect amount (feedback / size / depth)")
+        knob(self.wet, "D/W")
+        self.amt = Knob(50, 24, "Effect amount (feedback / size / depth)")
         self.amt.valueChanged.connect(lambda v: setattr(self.u, "amount", v / 100))
-        lay.addWidget(self.amt)
+        knob(self.amt, "AMT")
         self.div = QComboBox()
+        self.div.setFixedWidth(50)
         self.div.addItems(["1/8", "1/4", "1/2", "3/4", "1", "2"])
         self.div.setCurrentIndex(self.u.div_index)
         self.div.setToolTip("Beat-synced timing")
@@ -2481,7 +2606,29 @@ class DJPanel(QWidget):
             hl.addWidget(chk)
             act.setDefaultWidget(holder)
             menu.addAction(act)
+        menu.addSeparator()
+        from .shortcuts import HELP, DeckKeys
+
+        self.keys_chk = QCheckBox("Keyboard control (Traktor keys)")
+        self.keys_chk.setChecked(self.settings.value("dj_keys", "true") == "true")
+        act = QWidgetAction(menu)
+        holder = QWidget()
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(10, 3, 10, 3)
+        hl.addWidget(self.keys_chk)
+        act.setDefaultWidget(holder)
+        menu.addAction(act)
+        menu.addAction("Keyboard shortcuts…", lambda: QMessageBox.information(
+            self, "Keyboard shortcuts", f"<pre style='font-size:12px'>{HELP}</pre>"))
         b_opts.setMenu(menu)
+        self.deck_keys = DeckKeys(self)
+        self.deck_keys.enabled = self.keys_chk.isChecked()
+        QApplication.instance().installEventFilter(self.deck_keys)
+
+        def keys_toggled(on):
+            self.deck_keys.enabled = on
+            self.settings.setValue("dj_keys", "true" if on else "false")
+        self.keys_chk.toggled.connect(keys_toggled)
         self.audio_lbl.setMaximumWidth(230)
         self.stream_lbl.setMaximumWidth(210)
         self.midi_combo.setMinimumWidth(130)
@@ -2574,6 +2721,7 @@ class DJPanel(QWidget):
         lay.addLayout(col)
         self.b_auto = _btn("▶ AUTO-MIX", True, "Auto-mix: plays the queue as a continuous, beat-matched mix", h=24)
         self.b_auto.setObjectName("sync")
+        self.b_auto.setFixedWidth(96)
         self.b_auto.clicked.connect(self.toggle_automix)
         b_tr = _btn("⏭", tip="Mix into the other deck now (from the next bar)", h=24, w=30)
         b_tr.clicked.connect(lambda: self.automix.transition_now())
@@ -2593,6 +2741,7 @@ class DJPanel(QWidget):
         self.mix_bars = QSpinBox()
         self.mix_bars.setRange(1, 128)
         self.mix_bars.setSuffix(" bars")
+        self.mix_bars.setFixedWidth(72)
         self.mix_bars.setToolTip("Blend length (the longest blend when Auto is on)")
         self.mix_bars.setValue(int(self.settings.value("dj_mix_bars", 16)))
         self.mix_bars.valueChanged.connect(self._update_am_settings)
@@ -3211,6 +3360,14 @@ class DJPanel(QWidget):
         self.set_seed = sl[0]
         self._show_queue()
 
+    def queue_items(self, items: list[int]):
+        """Auto-mix plays these next, in order (a playlist)."""
+        self.automix.set_queue(list(items))
+        if items:
+            self.set_seed = items[0]
+        self._show_queue()
+        self.main.status_label.setText(f"{len(items)} tracks queued for auto-mix - press ▶ AUTO-MIX to play them")
+
     def _show_queue(self):
         from PySide6.QtWidgets import QListWidgetItem
 
@@ -3270,10 +3427,10 @@ class DJPanel(QWidget):
             self.automix.stop()
         self._show_queue()
 
-    def manual_touch(self, deck):
-        am = self.automix
-        if am.tr is not None and am.tr.started and deck in (am.tr.in_deck, am.tr.out_deck):
-            am.user_took_over()
+    def manual_touch(self, deck, action: str = "fader"):
+        """Anything done by hand (mouse, keyboard): a transition in progress
+        becomes the DJ's own - auto-mix steps back and learns from it."""
+        self.automix.manual(deck, action)
 
     def played_indices(self) -> set[int]:
         """Everything that is on a deck, queued, loading or already played -
@@ -3347,6 +3504,7 @@ class DJPanel(QWidget):
 
     def _tick(self):
         self._watchdog()
+        self.automix.maybe_resume()
         show_cd = self.show_cd.isChecked()
         for p in self.decks.values():
             if p.isVisible():
@@ -3355,14 +3513,14 @@ class DJPanel(QWidget):
         for f in self.fx:
             f.refresh()
         am = self.automix
-        self.am_status.setText(("⏸ PAUSED · " if self.engine.paused else "") + am.status)
+        _set_text(self.am_status, ("⏸ PAUSED · " if self.engine.paused else "") + am.status)
         m = self.engine._master()
         bpm = f"{m.bpm:.2f}" if m is not None else "—"
         if self.clock_bpm.text() != bpm:
-            self.clock_bpm.setText(bpm)
+            _set_text(self.clock_bpm, bpm)
         _sync_check(self.b_pause, self.engine.paused)
         _sync_check(self.b_auto, am.active)
-        self.b_auto.setText("■ Stop auto-mix" if am.active else "▶ Auto-mix")
+        _set_text(self.b_auto, "■ STOP MIX" if am.active else "▶ AUTO-MIX")
         if am.active:
             self._keep_queue_filled()
             if self.queue_list.count() != len(am.queue):
@@ -3373,12 +3531,13 @@ class DJPanel(QWidget):
         except Exception:  # noqa: BLE001
             log.exception("learner failed")
         n = self.learner.count()
-        self.learn_lbl.setText(f"{n} transition{'s' if n != 1 else ''} learned" if n else "nothing learned yet")
+        _set_text(self.learn_lbl, f"{n} transition{'s' if n != 1 else ''} learned" if n else "nothing learned yet")
         if self.controller is not None:
             self.controller.tick()
             self.controller.update_leds()
 
     def shutdown(self):
+        QApplication.instance().removeEventFilter(self.deck_keys)
         self.timer.stop()
         self.dev_timer.stop()
         self.engine.close_outputs()

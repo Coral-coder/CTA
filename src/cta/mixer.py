@@ -290,3 +290,26 @@ def transition_report(lib: Library, seq: list[int], s: MixSettings) -> list[dict
         out.append({"from": a, "to": b, "score": float(sc.total[b]), "pitch_pct": float(sc.pitch_pct[b]),
                     "key": float(sc.key[b]), "sound": float(sc.sound[b])})
     return out
+
+
+def suggest_bridge(lib: Library, a: int, c: int, s: MixSettings, exclude=None, n: int = 8) -> list[int]:
+    """Tracks that mix well out of a AND into c (to put between them in a
+    playlist): the weaker of the two transitions counts most."""
+    if lib.n == 0 or not (0 <= a < lib.n and 0 <= c < lib.n):
+        return []
+    sa = score_from(lib, a, s)
+    sc = score_from(lib, c, s)
+    total = 0.7 * np.minimum(sa.total, sc.total) + 0.3 * (sa.total + sc.total) / 2
+    valid = sa.valid & sc.valid
+    if not valid.any():
+        valid = sa.valid | sc.valid
+    # never the neighbours themselves or copies of them
+    valid &= (lib.dedup_code != lib.dedup_code[a]) & (lib.dedup_code != lib.dedup_code[c])
+    if exclude:
+        ex = [int(i) for i in exclude if 0 <= int(i) < lib.n]
+        valid[ex] = False
+    total = np.where(valid, total, -np.inf)
+    k = min(n, lib.n)
+    idx = np.argpartition(-total, k - 1)[:k]
+    idx = idx[np.argsort(-total[idx])]
+    return [int(i) for i in idx if np.isfinite(total[i])]

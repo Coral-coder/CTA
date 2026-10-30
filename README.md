@@ -49,7 +49,14 @@ The AI model is bundled, so nothing needs to be installed.
    wave / cooldown) and a variety amount. Then click **Generate**. A beam
    search finds the sequence with the best transitions overall. Each
    transition shows its pitch change and mix score.
-4. **Export** to:
+4. **Playlists** (tab): make your own playlists. Drag tracks in from the
+   library, or right-click a track → **Add to playlist**. Between every two
+   songs CTA shows a **dimmed suggestion**: the library track that best
+   bridges the gap (tempo, key, sound and genre into the next song).
+   Double-click it to keep it, or right-click → **Suggest another bridge**.
+   Drag to reorder; Delete removes. **Queue in auto-mix** plays the
+   playlist as a mix; **To setlist** and **Export…** work as for setlists.
+5. **Export** to:
    - **M3U8**: Serato, Traktor, VirtualDJ, Engine DJ and rekordbox
    - **rekordbox XML**: includes BPM and key
    - **CSV**
@@ -70,6 +77,28 @@ the bar between them to give the decks more or less room.
   fader, SYNC / MASTER / KEY with beat jump, overview, then one transport
   row (play, CUE, CUP, FLX, loop sizes 1–32, IN / OUT / LOOP). The **⌃**
   button shows hot cues and the grid / key tools.
+- **CUE** reacts the moment you press it. Hold it to preview from the cue
+  point; drag off the button before letting go (or press PLAY while
+  holding) and the track keeps playing. PLAY and CUP also act on press.
+- **Jog platter:** the album art turns on the record.
+- **Keyboard (Traktor Pro's default keys):** deck A on the top letter row,
+  deck B on the home row. **Options → Keyboard shortcuts…** lists them;
+  they never fire while you type in a text box.
+
+  | | Deck A | Deck B |
+  |---|---|---|
+  | Cue (hold) | Q | A |
+  | Play / pause | W | S |
+  | Beat jump (Shift: back) | E | D |
+  | Tempo bend (hold; Shift: slower) | T | G |
+  | Sync (Shift: master) | U | J |
+  | Tap BPM (Shift: snap phase) | I | K |
+  | Loop in (Shift: halve) | O | L |
+  | Loop out (Shift: double) | P | ; |
+  | Loop on / off | [ | ' |
+  | Key lock | Shift+Y | Shift+H |
+  | Hot cues (Ctrl: delete; Shift: loop 1–16) | 1–5 | 6–0 |
+  | Load selected track | Shift+← | Shift+→ |
 - **Mixer:** GAIN, HI, MID, LOW, FILTER, FX and headphones per channel.
   **The gain, EQ, filter and key reset when a new track loads.** The
   crossfader, headphone mix and volume sit under the decks.
@@ -161,7 +190,11 @@ the bar between them to give the decks more or less room.
   16-bar phrasing and long blends.
 - **Learns from your mixes:** every transition you do by hand is recorded:
   where in each track's structure you mixed, how long the blend was, and
-  how far before the next track's drop you brought it in. After 3
+  how far before the next track's drop you brought it in. **Taking over
+  an auto-mix transition** (any fader, EQ, crossfader, play, cue, tempo,
+  loop or jog move on either deck, by mouse, keyboard or controller) makes
+  auto-mix let go at once; the blend is learned as yours, and auto-mix
+  carries on by itself a few seconds after your blend is done. After 3
   examples for a style, auto-mix mixes that style your way. The auto-mix
   panel shows how much it has learned and has a **Forget** button.
 - **Sets stay in the seed's genre:** every suggestion is scored against the

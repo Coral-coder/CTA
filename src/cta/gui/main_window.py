@@ -355,6 +355,10 @@ class MainWindow(QMainWindow):
             return sa
         self.tabs.addTab(scrolled(self._build_next_tab()), "Next Track")
         self.tabs.addTab(scrolled(self._build_setlist_tab()), "Setlist Builder")
+        from .playlists import PlaylistPanel
+
+        self.playlists = PlaylistPanel(self)
+        self.tabs.addTab(self.playlists, "Playlists")
 
         split = QSplitter(Qt.Horizontal)
         split.addWidget(self.lib_view)
@@ -562,6 +566,7 @@ class MainWindow(QMainWindow):
             self.focus_track(lib.paths.index(prev_path))
         self.setlist = []
         self._refresh_setlist()
+        self.playlists.refresh()
         ai = int(lib.has_ai.sum())
         msg = f"{lib.n} tracks analysed"
         if lib.n:
@@ -802,6 +807,8 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         m.addAction("Build setlist from this track", lambda: (self.focus_track(i), self.generate_setlist()))
         m.addAction("Add to end of setlist", lambda: self._append(i))
+        sel = [self.lib_model.lib_index(x.row()) for x in self.lib_view.selectionModel().selectedRows()]
+        self.playlists.add_menu(m, sel if i in sel else [i])
         m.addSeparator()
         self._add_deck_actions(m, i)
         m.addSeparator()
@@ -827,6 +834,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         m.addAction("Follow (show what mixes after this)", lambda: self.focus_track(i))
         m.addAction("Add to setlist", self._add_suggestion_to_setlist)
+        self.playlists.add_menu(m, [i])
         m.addAction("Preview in default player", lambda: self.play(i))
         m.exec(self.next_view.viewport().mapToGlobal(pos))
 
@@ -842,6 +850,7 @@ class MainWindow(QMainWindow):
         m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show next-track options for this", lambda: (self.focus_track(i), self.tabs.setCurrentIndex(0)))
         m.addAction("Regenerate everything after this", lambda: self._regen_after(r))
+        self.playlists.add_menu(m, [i])
         m.addAction("Remove", self._remove_from_setlist)
         m.exec(self.sl_view.viewport().mapToGlobal(pos))
 

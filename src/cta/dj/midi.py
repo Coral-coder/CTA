@@ -313,10 +313,8 @@ class Controller:
             x = 1.0 - x
         pressed = ev.value > 0
         am = self.automix
-        manual = a in ("volume", "eq_low", "eq_mid", "eq_high", "crossfader")
-        if manual and am is not None and am.tr is not None and am.tr.started:
-            if deck is None or deck in (am.tr.in_deck, am.tr.out_deck):
-                am.user_took_over()
+        if am is not None and (pressed or b.type != "note"):
+            am.manual(deck, a)
 
         if a == "play" and pressed:
             e.toggle_play(deck)

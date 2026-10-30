@@ -106,3 +106,19 @@ def test_sets_stay_in_the_seed_genre(tmp_path):
     late = suggest_next(lib, seq[-1], MixSettings(max_pitch_pct=6), n=5, exclude=house, anchor=seed)
     assert late and max(pos[s.idx] for s in late) < 60
     assert anchor_mask(lib, seed).sum() < lib.n
+
+
+def test_bridge_suggestions_fit_both_neighbours(tmp_path):
+    from cta.mixer import score_from, suggest_bridge
+
+    lib = Library(_fake_db(str(tmp_path / "x.db")))
+    s = MixSettings(max_pitch_pct=6)
+    a, c = 3, 17
+    opts = suggest_bridge(lib, a, c, s, exclude={5})
+    assert opts and a not in opts and c not in opts and 5 not in opts
+    b = opts[0]
+    sa, sc = score_from(lib, a, s), score_from(lib, c, s)
+    worst = min(sa.total[b], sc.total[b])
+    # better than a typical track at linking the two
+    typical = np.median(np.minimum(sa.total, sc.total))
+    assert worst > typical
