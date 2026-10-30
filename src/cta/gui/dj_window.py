@@ -3070,7 +3070,8 @@ class DJPanel(QWidget):
                                            f"({eng.display_latency * 1000:.0f} ms)")
 
     def _scan_devices_bg(self):
-        if getattr(self, "_scanning", False):
+        if getattr(self, "_scanning", False) or getattr(self, "_closing", False) \
+                or os.environ.get("CTA_NO_DEVICE_WATCH"):
             return
         self._scanning = True
 
@@ -3078,7 +3079,11 @@ class DJPanel(QWidget):
             from ..dj import outputs
 
             try:
-                self._devices_sig.emit(outputs.scan_devices())
+                recs = outputs.scan_devices()
+                if not getattr(self, "_closing", False):
+                    self._devices_sig.emit(recs)
+            except RuntimeError:          # the panel went away meanwhile
+                pass
             finally:
                 self._scanning = False
         threading.Thread(target=job, daemon=True, name="device-watch").start()
@@ -3660,6 +3665,7 @@ class DJPanel(QWidget):
             self.controller.update_leds()
 
     def shutdown(self):
+        self._closing = True
         QApplication.instance().removeEventFilter(self.deck_keys)
         self.timer.stop()
         self.dev_timer.stop()

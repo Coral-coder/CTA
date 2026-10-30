@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+# no background device-scan helpers outliving the test that opened DJ mode
+os.environ["CTA_NO_DEVICE_WATCH"] = "1"
 
 SR = 22050
 
@@ -170,8 +172,6 @@ def pytest_unconfigure(config):
     import os
     import sys
 
-    if sys.platform == "win32":
-        return          # Windows reports a failed run after os._exit; its teardown is fine
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_EXIT_STATUS["code"])

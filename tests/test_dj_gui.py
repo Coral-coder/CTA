@@ -159,7 +159,10 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     res = call(lambda: cmd(action="seed", idx=seed))
     assert res["ok"] and "r1" in res["message"]
     assert w.setlist[0] == seed                                  # the set shows up on the PC too
-    for _ in range(200):                                         # decks load in threads
+    import time as _time
+
+    t_end = _time.monotonic() + 20                               # decks load in threads (slow on busy CI)
+    while _time.monotonic() < t_end:
         eng.render(1024)
         if eng._master() is not None and eng._master().info.lib_index == seed:
             break
