@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..dj.engine import SR, Engine
-from ..dj.rehearsal import LANES, Session
+from ..dj.rehearsal import LANES
 
 LANE_STYLE = {  # lane: (colour, label) - the ones drawn in the lane view
     "xf": (QColor(235, 235, 240), "Crossfader"),
@@ -100,9 +100,8 @@ class TimeShiftWindow(QDialog):
         self.live: Engine = dj.engine
         self.setWindowTitle("⏱ Time-Shift - mix ahead, play it live later")
         self.resize(1100, 760)
-        self.pv = Engine(block=self.live.block)
-        self.pv._driven = True                 # rendered inside the live engine's callback
-        self.session = Session(self.pv)
+        self.pv = self.live.create_preview()   # its own decks, rendered inside the live engine
+        self.session = self.pv.session
         self.store = dj.rehearsals
         self.idx = {"A": None, "B": None}
         self.paths = {"A": "", "B": ""}
@@ -111,7 +110,6 @@ class TimeShiftWindow(QDialog):
         # headphones when there are any; the main output only while the room hears nothing
         live_on = any(d.playing for d in self.live.decks.values())
         self.live.preview_route = "phones" if self._has_phones() or live_on else "master"
-        self.live.preview = self.pv
 
         lay = QVBoxLayout(self)
         intro = QLabel("Mix the next transition now, on your headphones, while the room keeps listening to the "
@@ -187,7 +185,7 @@ class TimeShiftWindow(QDialog):
         self.xf = ResetSlider(Qt.Horizontal, 0, "Preview crossfader")
         self.xf.setRange(-100, 100)
         self.xf.setMinimumWidth(180)
-        self.xf.valueChanged.connect(lambda v: self.pv.cmd(lambda e: setattr(e, "crossfader", v / 100.0)))
+        self.xf.valueChanged.connect(lambda v: setattr(self.pv, "crossfader", v / 100.0))
         xcol.addWidget(self.xf)
         xcol.addWidget(QLabel("A  ·  crossfader  ·  B"), 0, Qt.AlignHCenter)
         ml.insertLayout(1, xcol)
@@ -497,9 +495,7 @@ class TimeShiftWindow(QDialog):
         self.timer.stop()
         self._controller_to_preview(False)
         self.session.stop()
-        self.session.close()
-        if self.live.preview is self.pv:
-            self.live.preview = None
+        self.live.close_preview()
 
     def closeEvent(self, ev):
         self._cleanup()

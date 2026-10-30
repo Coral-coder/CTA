@@ -348,8 +348,7 @@ class RemoteBackend:
         if m is not None and m.info.lib_index == i:
             raise ValueError("That track is playing right now")
         if self._starting():
-            with self.am._lock:
-                self.am.queue.appendleft(i)
+            self.am.queue_insert(0, i)
         elif not self._anything_playing():
             self.am.set_queue([i] + list(self.am.queue))
             self._start_from_queue()
@@ -361,20 +360,17 @@ class RemoteBackend:
 
     def _cmd_queue_add(self, idx):
         i = self._idx(idx)
-        with self.am._lock:
-            self.am.queue.append(i)
+        self.am.queue_append(i)
         self.dj._show_queue()
         return {"message": f"Added {self.lib.titles[i]}"}
 
     def _queue_pop(self, pos) -> int:
-        with self.am._lock:
-            q = list(self.am.queue)
-            p = int(pos)
-            if not 0 <= p < len(q):
-                raise ValueError("that track is no longer in the queue")
-            item = q.pop(p)
-            self.am.queue.clear()
-            self.am.queue.extend(q)
+        q = list(self.am.queue)
+        p = int(pos)
+        if not 0 <= p < len(q):
+            raise ValueError("that track is no longer in the queue")
+        item = q[p]
+        self.am.queue_remove(p)
         return item
 
     def _cmd_queue_remove(self, pos):
@@ -387,14 +383,12 @@ class RemoteBackend:
         return self._cmd_play_next(item)
 
     def _cmd_queue_move(self, pos, to):
-        with self.am._lock:
-            q = list(self.am.queue)
-            p, t = int(pos), int(to)
-            if not (0 <= p < len(q) and 0 <= t < len(q)):
-                raise ValueError("that track is no longer in the queue")
-            q.insert(t, q.pop(p))
-            self.am.queue.clear()
-            self.am.queue.extend(q)
+        q = list(self.am.queue)
+        p, t = int(pos), int(to)
+        if not (0 <= p < len(q) and 0 <= t < len(q)):
+            raise ValueError("that track is no longer in the queue")
+        q.insert(t, q.pop(p))
+        self.am.set_queue(q)
         self.dj._show_queue()
         return {}
 

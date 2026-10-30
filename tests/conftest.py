@@ -7,6 +7,8 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # no background device-scan helpers outliving the test that opened DJ mode
 os.environ["CTA_NO_DEVICE_WATCH"] = "1"
+# the GUI tests drive the engine through the client, in-process (no child, deterministic)
+os.environ["CTA_AUDIO_INPROC"] = "1"
 
 SR = 22050
 

@@ -46,8 +46,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..dj.automix import AutoMix, AutoMixSettings
-from ..dj.engine import SR, Engine, TrackInfo, list_output_devices
+from ..dj.automix import AutoMixSettings
+from ..dj.engine import SR, TrackInfo, list_output_devices
+from ..dj.engine_client import EngineClient
 from ..dj.fx import BEAT_DIVS, FX_TYPES
 from ..dj.loader import load_track
 from ..dj.midi import DECK_ACTIONS, GLOBAL_ACTIONS, Binding, Controller, Learner, learn_steps
@@ -2769,7 +2770,7 @@ class TapCalibration(QDialog):
     """Tap along with clicks on one output; the gap between the clicks being
     made and your taps is how late that output plays."""
 
-    def __init__(self, eng: Engine, which: str, parent=None):
+    def __init__(self, eng, which: str, parent=None):
         super().__init__(parent)
         import time as _t
 
@@ -2799,10 +2800,7 @@ class TapCalibration(QDialog):
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
         # measure the raw output: no alignment delay while clicking
-        self._saved = (eng._mdelay.frames, eng._pdelay.frames)
-        eng._mdelay.frames = eng._pdelay.frames = 0
-        eng.click_times.clear()
-        eng.click_target = which
+        eng.calibrate(which)              # clicks on that output, alignment delays off meanwhile
 
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
@@ -2824,8 +2822,7 @@ class TapCalibration(QDialog):
         self.ok.setEnabled(len(self.taps) >= 12)
 
     def done(self, r):
-        self.eng.click_target = None
-        self.eng._mdelay.frames, self.eng._pdelay.frames = self._saved
+        self.eng.calibrate(None)
         super().done(r)
 
 
@@ -3235,16 +3232,33 @@ class DJPanel(QWidget):
         super().__init__()
         self.main = main_window
         self.settings = main_window.settings
-        self.engine = Engine(block=int(self.settings.value("dj_block", 512)))
-        self.automix = AutoMix(self.engine, self._automix_load, self._automix_settings())
+        # the engine runs in its own process (audio never waits for the GUI); the
+        # client has the engine's API. In-process when asked (tests) or if no child starts.
+        from dataclasses import asdict
+
+        inproc = os.environ.get("CTA_AUDIO_INPROC") == "1" or \
+            self.settings.value("dj_audio_process", "true") != "true"
+        block = int(self.settings.value("dj_block", 512))
+        am_cfg = asdict(self._automix_settings())
+        try:
+            self.engine = EngineClient(block=block, inproc=inproc, automix_settings=am_cfg,
+                                       load_fn=self._automix_load)
+        except Exception:  # noqa: BLE001
+            log.exception("audio process did not start - running the engine in-process")
+            self.engine = EngineClient(block=block, inproc=True, automix_settings=am_cfg,
+                                       load_fn=self._automix_load)
+        self.automix = self.engine.automix
         from ..dj.learn import MixLearner
 
         self.learner = MixLearner(main_window.db, self.automix)
         self.automix.learner = self.learner
+        self._learned_n = -1
         from ..dj.rehearsal import RehearsalStore
 
         self.rehearsals = RehearsalStore(main_window.db)
         self.automix.rehearsals = self.rehearsals
+        self.rehearsals.on_change = self._push_rehearsals
+        self._push_rehearsals()
         self.automix.rehearsal_fill = self.settings.value("ts_fill", "true") == "true"
         self.controller: Controller | None = None
         self.session = time.strftime("%Y-%m-%d ") + uuid.uuid4().hex[:6]
@@ -3305,7 +3319,8 @@ class DJPanel(QWidget):
         self.xy_chk = QCheckBox("XY scope on the platters")
         self.xy_chk.setToolTip("Show each deck's stereo image (a goniometer) over its jog platter")
         self.xy_chk.setChecked(self.settings.value("dj_xyscope", "false") == "true")
-        self.xy_chk.toggled.connect(lambda on: self.settings.setValue("dj_xyscope", "true" if on else "false"))
+        self.xy_chk.toggled.connect(lambda on: (self.settings.setValue("dj_xyscope", "true" if on else "false"),
+                                                self.engine.set_want_deck_scope(bool(on))))
         self.tools_chk = QCheckBox("Global section (FX, auto-mix, recorder)")
         self.tools_chk.setToolTip("Show the row above the decks: FX units, auto-mix, main level, recorder")
         self.tools_chk.setChecked(self.settings.value("dj_tools", "true") == "true")
@@ -3665,16 +3680,16 @@ class DJPanel(QWidget):
         dev = None
         try:
             devices = list_output_devices()
-            for i, n, _ch in devices:
+            for _i, n, _ch in devices:
                 if n == name:
-                    dev = i
+                    dev = n
             if dev is None:
-                for i, n, ch in devices:                 # prefer the DDJ-T1 sound card
+                for _i, n, ch in devices:                # prefer the DDJ-T1 sound card
                     if "DDJ-T1" in n.upper() and ch >= 4:
-                        dev = i
+                        dev = n
                         break
             pname = s.value("dj_phones_device_name", "") or ""
-            pdev = next((i for i, n, _c in devices if n == pname), None) if pname else None
+            pdev = next((n for _i, n, _c in devices if n == pname), None) if pname else None
             mc = _pair_tuple(str(s.value("dj_master", "1-2"))) or (0, 1)
             pc = _pair_tuple(str(s.value("dj_phones", "3-4")))
             if pc == mc and pdev is None:
@@ -3683,7 +3698,8 @@ class DJPanel(QWidget):
             for attr, key in (("master_delay_s", "dj_master_delay_ms"), ("phones_delay_s", "dj_phones_delay_ms")):
                 v = s.value(key, "")
                 setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
-            eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_device=pdev)
+            eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_label=pdev)
+            self.engine.set_want_deck_scope(self.xy_chk.isChecked())
             if not eng.extra_outputs:
                 self.apply_extras()
             self.apply_clock()
@@ -3763,7 +3779,7 @@ class DJPanel(QWidget):
     def apply_extras(self, available: set | None = None):
         """Start / stop / re-time the extra speakers. available: labels (and
         names) connected right now - unknown means "try them all"."""
-        from ..dj.outputs import ExtraOutput, base_name
+        from ..dj.outputs import base_name
 
         eng = self.engine
         wanted = {e["label"]: e for e in self.wanted_extras()}
@@ -3775,12 +3791,13 @@ class DJPanel(QWidget):
             delay = None if e.get("delay_ms") is None else float(e["delay_ms"]) / 1000
             cur = next((o for o in eng.extra_outputs if o.label == label), None)
             if cur is not None:
-                cur.delay_s = delay
+                if cur.delay_s != delay:
+                    eng.set_output_delay(label, delay)
                 continue
             if available is not None and label not in available and base_name(label) not in available:
                 continue
             try:
-                eng.add_output(ExtraOutput(label, delay_s=delay, block=eng.block))
+                eng.add_output(label, delay_s=delay)
                 started.append(base_name(label))
             except OSError as ex:
                 log.warning("could not start %s: %s", label, ex)
@@ -4208,8 +4225,8 @@ class DJPanel(QWidget):
             for r in self.rehearsals.items():
                 self.rehearsals.delete(r.out_path, r.in_path)
             msg += " · Mix Ahead recordings deleted"
-        if self.automix.tr is not None and not self.automix.tr.started:
-            self.automix.tr = None             # planned with the old learning: plan again
+        self.automix.replan()                  # planned with the old learning: plan again
+        self._learned_n = -1
         self.main.status_label.setText(msg + " - the next transition is planned afresh")
 
     def queue_from_setlist(self):
@@ -4247,26 +4264,18 @@ class DJPanel(QWidget):
             self.queue_list.addItem(it)
 
     def clear_queue(self):
-        with self.automix._lock:
-            self.automix.queue.clear()
+        self.automix.queue_clear()
         self._show_queue()
         self.main.status_label.setText("Queue cleared (auto-mix picks the next track itself when it runs dry)"
                                         if self.auto_suggest.isChecked() else "Queue cleared")
 
     def remove_from_queue(self, pos: int):
-        with self.automix._lock:
-            q = list(self.automix.queue)
-            if 0 <= pos < len(q):
-                q.pop(pos)
-                self.automix.queue.clear()
-                self.automix.queue.extend(q)
+        self.automix.queue_remove(pos)
         self._show_queue()
 
     def _queue_reordered(self):
         order = [self.queue_list.item(r).data(Qt.UserRole) for r in range(self.queue_list.count())]
-        with self.automix._lock:
-            self.automix.queue.clear()
-            self.automix.queue.extend(int(i) for i in order if i is not None)
+        self.automix.set_queue([int(i) for i in order if i is not None])
 
     def unload_decks(self, all_decks: bool = False):
         """Empty the decks in preparation for the next set (stopped ones only,
@@ -4285,7 +4294,7 @@ class DJPanel(QWidget):
             if am.active and (name in am.meta or name in am._loading):
                 continue                       # auto-mix is preparing this one: leave it
             self.engine.unload(name, even_if_playing=all_decks)
-            am.meta.pop(name, None)
+            am.forget_deck(name)
             n += 1
         reset = not am.active                  # (all_decks stopped it above)
         if reset:
@@ -4385,9 +4394,19 @@ class DJPanel(QWidget):
         hiccup, sleep): reopen it. The decks keep their place."""
         eng = self.engine
         now = time.monotonic()
-        while eng.deck_errors:
-            msg = eng.deck_errors.pop(0)
-            self.main.status_label.setText(msg + " - see the log")
+        if not eng.process_alive:
+            log.error("the audio process died - starting a new one")
+            self.main.status_label.setText("Audio process restarted (it crashed) - see the log")
+            try:
+                eng.respawn()
+                self.start_audio(quiet=True)
+            except Exception:  # noqa: BLE001
+                log.exception("audio process restart failed")
+            return
+        errs = eng.deck_errors
+        if errs and errs != getattr(self, "_errs_seen", None):
+            self._errs_seen = errs
+            self.main.status_label.setText(errs[-1] + " - see the log")
         if not eng.running or eng.virtual:
             self._wd = (eng.frames_rendered, now)
             return
@@ -4471,10 +4490,25 @@ class DJPanel(QWidget):
                 f"Audio is near its limit ({n - last_n} late blocks) - raise the buffer in Audio… "
                 f"(now {self.engine.block}) to stop any stutter")
 
+    def _push_learned(self):
+        """What auto-mix learned lives here (the database); the engine process gets the numbers."""
+        from ..dj.learn import style_group  # noqa: F401 - groups below match style_group()
+
+        self.engine.push_learned({g: self.learner.preferences(g) for g in ("long", "club", "short")})
+
+    def _push_rehearsals(self):
+        self.engine.push_rehearsals([r.to_dict() for r in self.rehearsals.items() if r.enabled])
+
     def _tick(self):
         self._offer_unload()
         # with a controller attached its knobs set the levels: loading a track keeps them
-        self.engine.reset_on_load = self.controller is None
+        want_reset = self.controller is None
+        if want_reset != self.engine.reset_on_load:
+            self.engine.reset_on_load = want_reset
+        n_learned = len(self.learner.examples)
+        if n_learned != self._learned_n:
+            self._learned_n = n_learned
+            self._push_learned()
         self._watchdog()
         self._audio_health()
         self.automix.maybe_resume()
@@ -4517,6 +4551,9 @@ class DJPanel(QWidget):
             self.controller.update_leds()
 
     def shutdown(self):
+        if getattr(self, "_shut", False):
+            return
+        self._shut = True
         self._closing = True
         ts = getattr(self, "_timeshift", None)
         if ts is not None:
@@ -4534,6 +4571,7 @@ class DJPanel(QWidget):
         self.engine.stop()
         if self.controller:
             self.controller.close()
+        self.engine.close()
 
     def closeEvent(self, ev):
         self.shutdown()

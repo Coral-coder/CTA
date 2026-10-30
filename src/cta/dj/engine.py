@@ -1224,10 +1224,36 @@ class Engine:
         except Exception:  # noqa: BLE001
             return 0.0
 
-    def add_output(self, eo) -> None:
-        """Another master output (an ExtraOutput); everything is re-lined up."""
+    def add_output(self, eo, delay_s=None, chans=(0, 1)) -> None:
+        """Another master output: an ExtraOutput, or a device label (one is
+        started for it); everything is re-lined up."""
+        if isinstance(eo, str):
+            from . import outputs
+
+            eo = outputs.ExtraOutput(eo, chans=tuple(chans), delay_s=delay_s, block=self.block)
         self.extra_outputs = [o for o in self.extra_outputs if o.label != eo.label] + [eo]
         self.update_alignment()
+
+    def set_output_delay(self, label: str, delay_s) -> None:
+        for o in self.extra_outputs:
+            if o.label == label:
+                o.delay_s = delay_s
+        self.update_alignment()
+
+    def calibrate(self, which: str | None) -> None:
+        """Tap test: clicks on one output with the alignment delays off
+        (which = "master" | "phones" | "extra:LABEL"); None ends it."""
+        if which:
+            self._cal_saved = (self._mdelay.frames, self._pdelay.frames)
+            self._mdelay.frames = self._pdelay.frames = 0
+            self.click_times.clear()
+            self.click_target = which
+        else:
+            self.click_target = None
+            saved = getattr(self, "_cal_saved", None)
+            if saved:
+                self._mdelay.frames, self._pdelay.frames = saved
+                self._cal_saved = None
 
     def remove_output(self, label: str) -> None:
         keep, gone = [], []

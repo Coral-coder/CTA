@@ -103,6 +103,33 @@ class _Transition:
         return 0.0
 
 
+def analyse_deck(d) -> _Meta:
+    """The structure (sections, drops) and marker bars of whatever a deck
+    holds - works on an engine Deck or the GUI's view of one."""
+    g = d.grid
+    bands = getattr(d, "bands", None)
+    if bands is None:
+        from .loader import waveform_bands
+        bands = waveform_bands(d.audio, hop=256)
+        d.bands = bands
+    style = (getattr(d.info, "style", "") or "").lower()
+    long_form = any(w in style for w in ("trance", "progressive", "psy"))
+    st = analyse(bands, g, phrase_origin=getattr(d, "phrase_origin", None),
+                 phrase_bars=16 if long_form else 8)
+    in_m = out_m = None
+    if d.mix_in is not None:
+        in_m = float(np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6))
+    out_end = None
+    if d.mix_out is not None:
+        out_m = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6))
+        if getattr(d, "mix_out_end", None) is not None:
+            out_end = float(np.floor(g.beat_at(d.mix_out_end / SR) / 4.0 + 1e-6))
+            if out_end <= out_m:
+                out_end = None
+    return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, out_end_bar=out_end,
+                 title=d.info.title, genre=getattr(d.info, "genre", "") or "", long_form=long_form)
+
+
 def _ramp(v: float) -> float:
     return float(np.clip(v, 0.0, 1.0))
 
@@ -469,29 +496,42 @@ class AutoMix:
         self.eng.cmd(f)
 
     def _analyse_deck(self, d) -> _Meta:
-        g = d.grid
-        bands = getattr(d, "bands", None)
-        if bands is None:
-            from .loader import waveform_bands
-            bands = waveform_bands(d.audio, hop=256)
-            d.bands = bands
-        style = (getattr(d.info, "style", "") or "").lower()
-        long_form = any(w in style for w in ("trance", "progressive", "psy"))
-        st = analyse(bands, g, phrase_origin=getattr(d, "phrase_origin", None),
-                     phrase_bars=16 if long_form else 8)
-        in_m = out_m = None
-        if d.mix_in is not None:
-            in_m = float(np.floor(g.beat_at(d.mix_in / SR) / 4.0 + 1e-6))
-        out_end = None
-        if d.mix_out is not None:
-            out_m = float(np.floor(g.beat_at(d.mix_out / SR) / 4.0 + 1e-6))
-            if getattr(d, "mix_out_end", None) is not None:
-                out_end = float(np.floor(g.beat_at(d.mix_out_end / SR) / 4.0 + 1e-6))
-                if out_end <= out_m:
-                    out_end = None
-        return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, out_end_bar=out_end,
-                     title=d.info.title,
-                     genre=getattr(d.info, "genre", "") or "", long_form=long_form)
+        return analyse_deck(d)
+
+    # ---- queue edits (from the UI / phone, any thread) --------------------------------
+    def queue_clear(self):
+        with self._lock:
+            self.queue.clear()
+
+    def queue_remove(self, pos: int):
+        with self._lock:
+            q = list(self.queue)
+            if 0 <= pos < len(q):
+                q.pop(pos)
+                self.queue.clear()
+                self.queue.extend(q)
+
+    def queue_insert(self, pos: int, item):
+        with self._lock:
+            q = list(self.queue)
+            q.insert(max(0, min(pos, len(q))), item)
+            self.queue.clear()
+            self.queue.extend(q)
+
+    def queue_append(self, item):
+        with self._lock:
+            self.queue.append(item)
+
+    def replan(self):
+        """Drop a planned (not started) transition: it is planned afresh."""
+        def f(e):
+            if self.tr is not None and not self.tr.started:
+                self.tr = None
+        self.eng.cmd(f)
+
+    def forget_deck(self, deck: str):
+        """The deck was emptied by hand: nothing prepared there any more."""
+        self.meta.pop(deck, None)
 
     # ---- audio-thread logic ------------------------------------------------------
     def _make_plan(self, e: Engine, m, din_name: str, now_beat: float, force_bars: int | None = None,

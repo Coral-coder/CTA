@@ -109,6 +109,7 @@ class RehearsalStore:
     def __init__(self, db):
         self.db = db
         self._cache: dict[str, Rehearsal] | None = None
+        self.on_change = None            # called after every put / delete
 
     @staticmethod
     def key(out_path: str, in_path: str) -> str:
@@ -146,6 +147,11 @@ class RehearsalStore:
             self.db.set_meta(META_KEY, {k: r.to_dict() for k, r in self._all().items()})
         except Exception:  # noqa: BLE001
             pass
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class Session:

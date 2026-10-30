@@ -240,9 +240,7 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     assert calls == [True]
     monkeypatch.undo()
     # PC queue list: ✕ / Delete / drag-out remove, drag to reorder
-    with dj.automix._lock:
-        dj.automix.queue.clear()
-        dj.automix.queue.extend([0, 1, 2])
+    dj.automix.set_queue([0, 1, 2])
     dj._show_queue()
     assert dj.queue_list.count() == 3
     dj.queue_list.removeRequested.emit(1)
