@@ -74,6 +74,19 @@ FX / auto-mix strip, which you can hide under **Options**.
   sheds its GAIN and FILTER knobs, then the EQ, as it gets shorter. The jog
   platter can be switched off under **Options**; you can always scratch on
   the waveform.
+- **Audio outputs (Audio… button):**
+  - The device list is re-read when you open it; **Rescan** finds devices
+    plugged in or paired while CTA runs (the audio restarts for a moment).
+  - Master and headphones can each go to **any connected device**, for
+    example the DDJ-T1's outputs, the laptop jack or a Bluetooth speaker.
+    The channel pairs offered match each device.
+  - **Bluetooth delay:** each output has a delay. **Auto** uses what the
+    driver reports; for Bluetooth devices CTA suggests about 200 ms.
+    **Measure…** gives you clicks on that output: tap along about 20 times
+    and CTA works out how late it plays. With the delays known, CTA holds
+    back the faster output so master and headphones stay in time, and
+    draws the waveforms and playheads that late so what you see matches
+    what you hear.
 - **Small screens (13-inch laptops):** CTA fits a 1280-pixel-wide screen.
   For even more room, **Settings → Interface size** (70–150 %) scales the
   whole app after a restart.

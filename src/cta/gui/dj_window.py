@@ -1364,14 +1364,16 @@ class DeckPanel(QFrame):
                                        + (" border-style: dashed;" if shifted else ""))
             self.key_lbl.setToolTip(f"original key {camelot_str(d.info.key)} {key_name(d.info.key)}"
                                     if shifted else "")
-        remain = d.length / SR - d.time
+        # what you see matches what you hear: positions drawn as late as the output plays
+        t_vis = max(0.0, d.time - self.eng.display_latency * d.rate) if d.playing else d.time
+        remain = d.length / SR - t_vis
         self.remain_lbl.setText(f"-{fmt_time(remain)}")
-        self.time_lbl.setText(fmt_time(d.time))
+        self.time_lbl.setText(fmt_time(t_vis))
         warn = d.playing and remain < 30
         self.remain_lbl.setStyleSheet("font-size: 20px; font-weight: 700; color: "
                                       + ("#ff5050;" if warn else "#f2f2f5;"))
         for wv in (self.zoom, self.over):
-            wv.pos = d.time
+            wv.pos = t_vis
             wv.cue = d.cue_point / SR
             wv.loop = d.loop
             wv.hotcues = d.hotcues
@@ -1382,7 +1384,7 @@ class DeckPanel(QFrame):
             wv.mix_beats = 4.0 * self.dj.automix.s.mix_bars
             wv.update()
         if not self.platter.held:
-            self.platter.angle = (d.time / 1.8) * 360.0 % 360.0
+            self.platter.angle = (t_vis / 1.8) * 360.0 % 360.0
         self.platter.update()
         self.phase.err = self.eng.phase_error(self.name) if d.playing else None
         self.phase.update()
@@ -1652,32 +1654,52 @@ class FXPanel(QGroupBox):
 # dialogs
 # --------------------------------------------------------------------------
 
+def _pairs(ch: int) -> list[str]:
+    return [f"{k + 1}-{k + 2}" for k in range(0, max(ch, 2) - 1, 2)]
+
+
+def _pair_tuple(txt: str):
+    if not txt or txt.startswith("off"):
+        return None
+    a, b = txt.split("-")
+    return (int(a) - 1, int(b) - 1)
+
+
 class AudioSettings(QDialog):
-    def __init__(self, settings: QSettings, parent=None):
+    """Outputs: every connected device (rescanned when this opens), master
+    and headphones on the same or different cards, and each output's delay
+    (driver, Bluetooth guess or measured with the tap test)."""
+
+    def __init__(self, settings: QSettings, parent=None, dj=None):
         super().__init__(parent)
         self.setWindowTitle("Audio output")
         self.s = settings
-        form = QFormLayout(self)
+        self.dj = dj
+        self.restart_needed = False
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+        lay.addLayout(form)
+        row = QHBoxLayout()
         self.dev = QComboBox()
-        self.dev.addItem("System default", None)
-        for i, name, _ch in list_output_devices():
-            self.dev.addItem(name, i)
-        ix = self.dev.findText(settings.value("dj_device_name", ""))
-        if ix >= 0:
-            self.dev.setCurrentIndex(ix)
-        form.addRow("Output device", self.dev)
+        self.dev.setMinimumWidth(320)
+        row.addWidget(self.dev, 1)
+        b_rescan = _btn("↻ Rescan", tip="Look for devices plugged in or paired since CTA started "
+                        "(restarts the audio for a moment)")
+        b_rescan.clicked.connect(lambda: self.rescan(force=True))
+        row.addWidget(b_rescan)
+        form.addRow("Master device", row)
         self.master = QComboBox()
-        self.master.addItems(["1-2", "3-4"])
-        self.master.setCurrentText(settings.value("dj_master", "1-2"))
         form.addRow("Master outputs", self.master)
+        self.pdev = QComboBox()
+        form.addRow("Headphones device", self.pdev)
         self.phones = QComboBox()
-        self.phones.addItems(["off (master only)", "3-4", "1-2"])
-        self.phones.setCurrentText(settings.value("dj_phones", "3-4"))
         form.addRow("Headphone outputs", self.phones)
         self.block = QComboBox()
         self.block.addItems(["256", "512", "1024", "2048"])
         self.block.setCurrentText(str(settings.value("dj_block", "512")))
         form.addRow("Buffer (samples)", self.block)
+        self.mdelay, self.m_auto, self.m_info = self._delay_row(form, "Master delay", "master")
+        self.pdelay, self.p_auto, self.p_info = self._delay_row(form, "Headphones delay", "phones")
         self.rec_dir = QPushButton(settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music",
                                                                           "CTA Recordings")))
         self.rec_dir.clicked.connect(self._pick_dir)
@@ -1686,26 +1708,202 @@ class AudioSettings(QDialog):
         self.port.setRange(1024, 65535)
         self.port.setValue(int(settings.value("stream_port", 8000)))
         form.addRow("Phone stream port", self.port)
-        form.addRow(QLabel("<small>DDJ-T1: choose its sound card (WASAPI), master 1-2, headphones 3-4.<br>"
-                           "Use a bigger buffer if you hear crackles.</small>"))
+        note = QLabel("<small>Bluetooth plays audio 150-300 ms late. Set its delay (or <b>Measure</b> it by tapping "
+                      "along) and CTA keeps master and headphones in time and draws the waveforms that late, "
+                      "so what you see is what you hear.<br>DDJ-T1: choose its sound card, master 1-2, headphones "
+                      "3-4. Use a bigger buffer if you hear crackles.</small>")
+        note.setWordWrap(True)
+        lay.addWidget(note)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        lay.addWidget(bb)
+        self.dev.currentIndexChanged.connect(self._dev_changed)
+        self.pdev.currentIndexChanged.connect(self._dev_changed)
+        self.rescan(force=False)
+
+    def _delay_row(self, form, label, which):
+        row = QHBoxLayout()
+        sp = QSpinBox()
+        sp.setRange(0, 1000)
+        sp.setSuffix(" ms")
+        auto = QCheckBox("Auto")
+        auto.setToolTip("Use what the driver reports")
+        info = QLabel("")
+        info.setStyleSheet("color: #9a9ba3;")
+        b = _btn("Measure…", tip="Tap along with clicks on this output: CTA works out how late it plays")
+        b.clicked.connect(lambda: self._measure(which))
+        auto.toggled.connect(lambda on: sp.setEnabled(not on))
+        v = self.s.value(f"dj_{which}_delay_ms", "")
+        auto.setChecked(v in ("", None))
+        sp.setValue(int(float(v)) if v not in ("", None) else 0)
+        for w_ in (sp, auto, b, info):
+            row.addWidget(w_)
+        row.addStretch()
+        form.addRow(label, row)
+        return sp, auto, info
+
+    # ---- devices ------------------------------------------------------------------------
+    def rescan(self, force: bool):
+        """Re-read the connected devices. Without force it only restarts the
+        audio when nothing is playing."""
+        eng = self.dj.engine if self.dj is not None else None
+        idle = eng is None or not any(d.playing for d in eng.decks.values())
+        if eng is not None and (force or idle):
+            if force and not idle and QMessageBox.question(
+                    self, "Rescan", "Audio stops for a moment while CTA looks for devices. Go ahead?") \
+                    != QMessageBox.Yes:
+                return
+            try:
+                eng.stop()
+                from ..dj.outputs import rescan_devices
+
+                rescan_devices()
+            except Exception:  # noqa: BLE001
+                log.exception("device rescan failed")
+            self.restart_needed = True
+        try:
+            self.devices = list_output_devices()
+        except Exception:  # noqa: BLE001
+            self.devices = []
+        for combo, key, first in ((self.dev, "dj_device_name", "System default"),
+                                  (self.pdev, "dj_phones_device_name", "Same as master")):
+            cur = combo.currentText() or str(self.s.value(key, ""))
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(first, None)
+            for i, name, ch in self.devices:
+                combo.addItem(name, (i, ch))
+            ix = combo.findText(cur)
+            combo.setCurrentIndex(ix if ix >= 0 else 0)
+            combo.blockSignals(False)
+        self._dev_changed()
+
+    def _channels(self, combo) -> int:
+        d = combo.currentData()
+        return d[1] if d else 2
+
+    def _dev_changed(self, *_):
+        from ..dj.outputs import BLUETOOTH_GUESS_MS, is_bluetooth
+
+        for combo, chans, key, extra in ((self.master, self._channels(self.dev), "dj_master", []),
+                                         (self.phones, self._channels(self.pdev if self.pdev.currentData()
+                                                                      else self.dev), "dj_phones",
+                                          ["off (master only)"])):
+            cur = combo.currentText() or str(self.s.value(key, ""))
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(extra + _pairs(chans))
+            ix = combo.findText(cur)
+            combo.setCurrentIndex(ix if ix >= 0 else (0 if not extra or chans < 4 else combo.findText("3-4")))
+            combo.blockSignals(False)
+        for combo, sp, auto, info in ((self.dev, self.mdelay, self.m_auto, self.m_info),
+                                      (self.pdev if self.pdev.currentData() else self.dev, self.pdelay,
+                                       self.p_auto, self.p_info)):
+            bt = is_bluetooth(combo.currentText())
+            info.setText("Bluetooth: about 200 ms late - measure it" if bt else "")
+            if bt and auto.isChecked():
+                auto.setChecked(False)
+                sp.setValue(int(BLUETOOTH_GUESS_MS))
+
+    # ---- measuring ---------------------------------------------------------------------------
+    def _measure(self, which: str):
+        if self.dj is None:
+            return
+        self.save()                                   # measure on the outputs chosen here
+        self.dj.start_audio(quiet=True)
+        self.restart_needed = False
+        if which == "phones" and self.dj.engine.phones_chans is None:
+            QMessageBox.information(self, "Measure", "Choose headphone outputs first.")
+            return
+        dlg = TapCalibration(self.dj.engine, which, self)
+        if dlg.exec() and dlg.result_ms is not None:
+            sp, auto = (self.mdelay, self.m_auto) if which == "master" else (self.pdelay, self.p_auto)
+            auto.setChecked(False)
+            sp.setValue(int(round(dlg.result_ms)))
 
     def _pick_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Recordings folder", self.rec_dir.text())
         if d:
             self.rec_dir.setText(d)
 
-    def accept(self):
+    def save(self):
         self.s.setValue("dj_device_name", self.dev.currentText() if self.dev.currentData() is not None else "")
+        self.s.setValue("dj_phones_device_name", self.pdev.currentText() if self.pdev.currentData() else "")
         self.s.setValue("dj_master", self.master.currentText())
         self.s.setValue("dj_phones", self.phones.currentText())
         self.s.setValue("dj_block", self.block.currentText())
+        self.s.setValue("dj_master_delay_ms", "" if self.m_auto.isChecked() else self.mdelay.value())
+        self.s.setValue("dj_phones_delay_ms", "" if self.p_auto.isChecked() else self.pdelay.value())
         self.s.setValue("rec_dir", self.rec_dir.text())
         self.s.setValue("stream_port", self.port.value())
+
+    def accept(self):
+        self.save()
         super().accept()
+
+
+class TapCalibration(QDialog):
+    """Tap along with clicks on one output; the gap between the clicks being
+    made and your taps is how late that output plays."""
+
+    def __init__(self, eng: Engine, which: str, parent=None):
+        super().__init__(parent)
+        import time as _t
+
+        self.eng = eng
+        self.which = which
+        self.result_ms: float | None = None
+        self.taps: list[float] = []
+        self._t = _t
+        self.setWindowTitle("Measure the output delay")
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"Listen on the <b>{'master' if which == 'master' else 'headphone'}</b> output and "
+                             "tap (button or space bar) <b>exactly when you hear each click</b>.<br>"
+                             "About 20 taps. Keep steady - it is the average that counts."))
+        self.b = QPushButton("TAP")
+        self.b.setMinimumHeight(90)
+        self.b.setStyleSheet("font-size: 28px; font-weight: 800;")
+        self.b.pressed.connect(self.tap)
+        lay.addWidget(self.b)
+        self.lbl = QLabel("0 taps")
+        lay.addWidget(self.lbl)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.ok = bb.button(QDialogButtonBox.Ok)
+        self.ok.setEnabled(False)
+        self.ok.setText("Use it")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+        # measure the raw output: no alignment delay while clicking
+        self._saved = (eng._mdelay.frames, eng._pdelay.frames)
+        eng._mdelay.frames = eng._pdelay.frames = 0
+        eng.click_times.clear()
+        eng.click_target = which
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Space and not ev.isAutoRepeat():
+            self.tap()
+            return
+        super().keyPressEvent(ev)
+
+    def tap(self):
+        from ..dj.outputs import estimate_latency
+
+        self.taps.append(self._t.monotonic())
+        est = estimate_latency(self.taps, list(self.eng.click_times))
+        if est is None:
+            self.lbl.setText(f"{len(self.taps)} taps" + (" - keep going, steady" if len(self.taps) >= 8 else ""))
+            return
+        self.result_ms = est * 1000
+        self.lbl.setText(f"{len(self.taps)} taps · this output plays <b>{self.result_ms:.0f} ms</b> late")
+        self.lbl.setTextFormat(Qt.RichText)
+        self.ok.setEnabled(len(self.taps) >= 12)
+
+    def done(self, r):
+        self.eng.click_target = None
+        self.eng._mdelay.frames, self.eng._pdelay.frames = self._saved
+        super().done(r)
 
 
 class LearnWizard(QDialog):
@@ -2230,15 +2428,28 @@ class DJPanel(QWidget):
                     if "DDJ-T1" in n.upper() and ch >= 4:
                         dev = i
                         break
-            mc = (2, 3) if s.value("dj_master", "1-2") == "3-4" else (0, 1)
-            ph = s.value("dj_phones", "3-4")
-            pc = None if ph.startswith("off") else ((2, 3) if ph == "3-4" else (0, 1))
-            if pc == mc:
+            pname = s.value("dj_phones_device_name", "") or ""
+            pdev = next((i for i, n, _c in devices if n == pname), None) if pname else None
+            mc = _pair_tuple(str(s.value("dj_master", "1-2"))) or (0, 1)
+            pc = _pair_tuple(str(s.value("dj_phones", "3-4")))
+            if pc == mc and pdev is None:
                 pc = None
-            self.engine.start(dev, int(s.value("dj_block", 512)), mc, pc)
-            phones = ("headphones " + ("3-4" if self.engine.phones_chans == (2, 3) else "1-2")
-                      if self.engine.phones_chans else "no separate headphones")
-            self.audio_lbl.setText(f"Audio: {self.engine.out_channels} ch, {self.engine.latency_ms:.0f} ms, {phones}")
+            eng = self.engine
+            for attr, key in (("master_delay_s", "dj_master_delay_ms"), ("phones_delay_s", "dj_phones_delay_ms")):
+                v = s.value(key, "")
+                setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
+            eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_device=pdev)
+            if eng.phones_chans is None:
+                phones = "no separate headphones"
+            elif eng._pstream is not None:
+                phones = "headphones on " + pname.split(" (")[0]
+            else:
+                phones = f"headphones {eng.phones_chans[0] + 1}-{eng.phones_chans[1] + 1}"
+            m, p = eng.output_delays()
+            delay = f"{m * 1000:.0f} ms" + (f" / {p * 1000:.0f} ms" if eng.phones_chans is not None and p != m else "")
+            self.audio_lbl.setText(f"Audio: {delay}, {phones}")
+            self.audio_lbl.setToolTip(f"{eng.out_channels} channels, buffer {eng.block}. Delay = how late the "
+                                      "output plays (driver or measured); master and headphones are kept in time.")
         except Exception as e:  # noqa: BLE001
             log.exception("audio start failed")
             # keep the mix running for the phone stream / recording
@@ -2249,7 +2460,9 @@ class DJPanel(QWidget):
                                  "The mix still runs for the phone remote and recordings.")
 
     def audio_settings(self):
-        if AudioSettings(self.settings, self).exec():
+        dlg = AudioSettings(self.settings, self, dj=self)
+        ok = dlg.exec()
+        if ok or dlg.restart_needed or not self.engine.running:
             self.engine.stop()
             self.engine.block = int(self.settings.value("dj_block", 512))
             self.start_audio()

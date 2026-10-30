@@ -238,6 +238,22 @@ class Engine:
         self.callback_errors = 0       # audio callback failures (watchdog/diagnostics)
         self.deck_errors: list[str] = []   # decks stopped because they failed to render (for the UI)
         self._errors_seen: set[str] = set()
+        # outputs: optional second sound card for the headphones, and per-output
+        # delay (seconds, None = what the driver reports) used to line them up
+        self._pstream = None
+        self._pring = None
+        self.master_delay_s: float | None = None
+        self.phones_delay_s: float | None = None
+        from .outputs import Delay
+
+        self._mdelay = Delay(SR)
+        self._pdelay = Delay(SR)
+        self.display_latency = 0.0     # seconds: draw positions this late so they match the sound
+        # tap calibration clicks
+        self.click_target: str | None = None     # "master" | "phones"
+        self.click_period = 0.6
+        self.click_times: list[float] = []
+        self._next_click = 0.0
         self.paused = False            # master pause (remote / server): fade out, then stop the decks
         self._pause_gain = 1.0
         self._pause_applied = False
@@ -900,15 +916,49 @@ class Engine:
         return master, np.tanh(phones)
 
     # ---- device -------------------------------------------------------------------
+    def _clicks(self, master: np.ndarray, phones: np.ndarray, n: int, t0: float):
+        """Calibration clicks (1 kHz blips) mixed into one output; the time
+        each one was generated is kept to compare with the DJ's taps."""
+        import time as _t
+
+        now = t0 if t0 else _t.monotonic()
+        if self._next_click < now:
+            self._next_click = now + 0.3
+        target = master if self.click_target == "master" else phones
+        while self._next_click < now + n / SR:
+            k = int((self._next_click - now) * SR)
+            m = min(int(0.03 * SR), n - k)
+            if m > 0:
+                tt = np.arange(m) / SR
+                blip = (0.6 * np.sin(2 * np.pi * 1000 * tt) * np.exp(-tt * 120)).astype(np.float32)
+                target[:, k:k + m] += blip
+                self.click_times.append(self._next_click)
+                del self.click_times[:-200]
+            self._next_click += self.click_period
+
+    def _route(self, master: np.ndarray, phones: np.ndarray, frames: int):
+        """Line the outputs up (delay the faster one) and send the headphones
+        to their own sound card when they have one."""
+        import time as _t
+
+        if self.click_target:
+            self._clicks(master, phones, frames, _t.monotonic())
+        master = self._mdelay.process(master)
+        phones = self._pdelay.process(phones)
+        if self._pring is not None:
+            self._pring.write(np.ascontiguousarray(phones.T))
+        return master, phones
+
     def _callback(self, outdata, frames, time_info, status):
         if status and status.output_underflow:
             self.underruns += 1
         try:
             master, phones = self.render(frames)
+            master, phones = self._route(master, phones, frames)
             outdata.fill(0)
             outdata[:, self.master_chans[0]] = master[0]
             outdata[:, self.master_chans[1]] = master[1]
-            if self.phones_chans is not None:
+            if self.phones_chans is not None and self._pring is None:
                 outdata[:, self.phones_chans[0]] = phones[0]
                 outdata[:, self.phones_chans[1]] = phones[1]
         except Exception as ex:  # noqa: BLE001
@@ -919,8 +969,22 @@ class Engine:
                 self._errors_seen.add(key)
                 log.exception("audio callback error (#%d)", self.callback_errors)
 
-    def start(self, device=None, block: int | None = None, master_chans=(0, 1), phones_chans=None):
-        """Open the output; falls back to safer settings rather than failing."""
+    def _pcallback(self, outdata, frames, time_info, status):
+        """Headphones on their own sound card: play what the main callback queued."""
+        try:
+            x = self._pring.read(frames)
+            outdata.fill(0)
+            c = self.phones_chans or (0, 1)
+            outdata[:, c[0]] = x[:, 0]
+            outdata[:, c[1]] = x[:, 1]
+        except Exception:  # noqa: BLE001
+            outdata.fill(0)
+
+    def start(self, device=None, block: int | None = None, master_chans=(0, 1), phones_chans=None,
+              phones_device=None):
+        """Open the output(s); falls back to safer settings rather than failing.
+        phones_device: a different sound card for the headphones (None = the
+        master's card, channels phones_chans)."""
         import sounddevice as sd
 
         self.stop()
@@ -930,14 +994,67 @@ class Engine:
         if device is not None:
             attempts.append((None, max(self.block, 1024)))      # system default as last resort
         last = None
+        separate = phones_device is not None and phones_device != device
         for dev, blk in attempts:
             try:
-                self._open(sd, dev, blk, master_chans, phones_chans)
-                return
+                self._open(sd, dev, blk, master_chans, None if separate else phones_chans)
+                break
             except Exception as e:  # noqa: BLE001
                 last = e
                 log.warning("audio open failed on %s (block %d): %s", dev, blk, e)
-        raise RuntimeError(f"no usable audio output: {last}")
+        else:
+            raise RuntimeError(f"no usable audio output: {last}")
+        if separate:
+            try:
+                self._open_phones(sd, phones_device, phones_chans or (0, 1))
+            except Exception as e:  # noqa: BLE001
+                log.warning("headphone device %s failed: %s - headphones off", phones_device, e)
+                self.phones_chans = None
+        self.update_alignment()
+
+    def _open_phones(self, sd, device, chans):
+        from .outputs import Ring
+
+        info = sd.query_devices(device, "output")
+        n = int(min(info["max_output_channels"], max(2, max(chans) + 1)))
+        if max(chans) >= n:
+            chans = (0, 1)
+        self._pring = Ring(target=max(2 * self.block, 1024))
+        extra = None
+        if "WASAPI" in sd.query_hostapis(info["hostapi"])["name"]:
+            extra = sd.WasapiSettings(auto_convert=True)
+        st = sd.OutputStream(samplerate=SR, blocksize=self.block, channels=n, dtype="float32", device=device,
+                             latency="low", callback=self._pcallback, extra_settings=extra)
+        st.start()
+        self._pstream = st
+        self.phones_chans = chans
+        log.info("headphones on %s (%d ch)", info["name"], n)
+
+    # ---- output delays -------------------------------------------------------------------
+    def reported_latency(self, phones: bool = False) -> float:
+        st = self._pstream if phones and self._pstream is not None else self._stream
+        try:
+            return float(st.latency) if st is not None and not isinstance(st, _VirtualOutput) else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def output_delays(self) -> tuple[float, float]:
+        """(master, headphones) delay in seconds: measured/entered, else reported."""
+        m = self.master_delay_s if self.master_delay_s is not None else self.reported_latency()
+        if self._pstream is None and self.phones_delay_s is None:
+            return m, m                       # same sound card: same delay
+        p = self.phones_delay_s if self.phones_delay_s is not None else self.reported_latency(phones=True)
+        return m, p
+
+    def update_alignment(self):
+        """Delay the faster output so master and headphones play together, and
+        set how late positions are drawn."""
+        m, p = self.output_delays()
+        phones_used = self.phones_chans is not None
+        diff = (m - p) if phones_used else 0.0
+        self._pdelay.frames = int(round(diff * SR)) if diff > 0 else 0
+        self._mdelay.frames = int(round(-diff * SR)) if diff < 0 else 0
+        self.display_latency = max(m, p) if phones_used else m
 
     def _open(self, sd, device, block, master_chans, phones_chans):
         info = sd.query_devices(device, "output")
@@ -979,6 +1096,14 @@ class Engine:
         return isinstance(self._stream, _VirtualOutput)
 
     def stop(self):
+        if self._pstream is not None:
+            try:
+                self._pstream.abort()
+                self._pstream.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._pstream = None
+            self._pring = None
         if self._stream is not None:
             try:
                 self._stream.abort()          # never waits on a hung device
