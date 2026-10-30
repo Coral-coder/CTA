@@ -170,6 +170,8 @@ def pytest_unconfigure(config):
     import os
     import sys
 
+    if sys.platform == "win32":
+        return          # Windows reports a failed run after os._exit; its teardown is fine
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_EXIT_STATUS["code"])

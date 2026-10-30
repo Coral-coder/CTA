@@ -460,3 +460,24 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
     assert list(dj.automix.queue) == [0, 1, 2]
     dj.shutdown()
     w.close()
+
+
+def test_zoomed_waveform_scrolls_without_flicker():
+    """Moving the playhead only shifts the columns: none of them changes
+    (each column is the peak of a fixed slice of the track)."""
+    import numpy as np
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui.dj_window import SR, Waveform
+
+    w = Waveform("A", True)
+    w.bands = np.random.default_rng(0).random((SR * 60 // 256, 3)).astype(np.float32)
+    for span in (2.0, 8.0, 32.0):
+        w.span = span
+        col = span / 600
+        w.pos = 20.0
+        a, _ = w._zoom_columns(600)
+        w.pos = 20.0 + col * 3.4
+        b, frac = w._zoom_columns(600)
+        assert abs(frac - 0.4) < 1e-6
+        assert np.allclose(a[3:], b[:-3])

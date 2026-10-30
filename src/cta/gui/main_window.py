@@ -998,7 +998,15 @@ class MainWindow(QMainWindow):
         s = self.settings
         return ScanSettings(workers=int(s.value("workers", 0)), min_bpm=float(s.value("min_bpm", 70)),
                             max_bpm=float(s.value("max_bpm", 180)), use_ai=s.value("use_ai", "true") == "true",
-                            ai_device=s.value("ai_device", "auto"), force=force)
+                            ai_device=s.value("ai_device", "auto"), force=force, gentle=self._music_playing)
+
+    def _music_playing(self) -> bool:
+        """Called from the scan thread: is DJ mode making sound right now?"""
+        dj = getattr(self, "dj", None)
+        try:
+            return dj is not None and any(d.playing for d in dj.engine.decks.values())
+        except Exception:  # noqa: BLE001
+            return False
 
     def start_scan(self, force=False):
         if self._scan_thread is not None:

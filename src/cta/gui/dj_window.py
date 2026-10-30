@@ -262,6 +262,25 @@ class Waveform(QWidget):
             self.span = float(np.clip(self.span * (0.8 if ev.angleDelta().y() > 0 else 1.25), 2, 32))
             self.update()
 
+    def _zoom_columns(self, w: int) -> tuple[np.ndarray, float]:
+        """Band levels for w+1 pixel columns of the zoomed view. The columns sit
+        on a grid fixed to the track (not to the screen) and each one holds
+        the loudest point inside it, so scrolling never makes peaks blink.
+        Returns (levels (w+1, 3), sub-pixel offset to draw them at)."""
+        col = self.span / w                          # seconds per pixel
+        hop = 256 / SR
+        t0 = self.pos - self.span / 2
+        c0 = np.floor(t0 / col)
+        frac = float(t0 / col - c0)
+        n = self.bands.shape[0]
+        edges = np.floor((c0 + np.arange(w + 2)) * col / hop).astype(np.int64)
+        lo, hi = edges[:-1], edges[1:]
+        inside = (hi > 0) & (lo < n)
+        padded = np.vstack([self.bands, np.zeros((1, 3), self.bands.dtype)])
+        out = np.maximum.reduceat(padded, np.clip(edges, 0, n))[:-1]   # the last segment runs to the end
+        out[~inside] = 0
+        return out.astype(np.float32), frac
+
     def _x(self, t, w):
         if self.zoom:
             return (t - (self.pos - self.span / 2)) / self.span * w
@@ -277,12 +296,8 @@ class Waveform(QWidget):
                 p.drawText(self.rect(), Qt.AlignCenter, "Drag a track here, or right-click a track → Load to Deck")
             return
         if self.zoom and self.bands is not None:
-            t0 = self.pos - self.span / 2
-            idx = ((t0 + np.arange(w) / w * self.span) * SR / 256).astype(np.int64)
-            valid = (idx >= 0) & (idx < self.bands.shape[0])
-            b = np.zeros((w, 3), np.float32)
-            b[valid] = self.bands[idx[valid]]
-            p.drawImage(0, 0, _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), h))
+            b, frac = self._zoom_columns(w)
+            p.drawImage(QPointF(-frac, 0), _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), h))
         else:
             if self._over is None or self._over[0] != w:
                 n = self.peaks.shape[0]
@@ -2840,6 +2855,9 @@ class DJPanel(QWidget):
 
     # ---- audio ---------------------------------------------------------------
     def start_audio(self, quiet: bool = False):
+        from ..dj import outputs
+
+        outputs.raise_priority()
         s = self.settings
         name = s.value("dj_device_name", "")
         dev = None

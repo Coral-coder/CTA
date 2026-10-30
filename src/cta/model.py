@@ -123,6 +123,8 @@ class StyleModel:
             try:
                 so = ort.SessionOptions()
                 so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                # leave cores free for the audio (scans run while you DJ)
+                so.intra_op_num_threads = max(1, min(4, (os.cpu_count() or 2) // 3))
                 if prov == "DmlExecutionProvider":
                     so.enable_mem_pattern = False
                     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL

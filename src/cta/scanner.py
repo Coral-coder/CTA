@@ -35,6 +35,7 @@ class ScanSettings:
     ai_device: str = "auto"          # auto | cpu
     force: bool = False              # re-analyse everything
     retry_failed: bool = False
+    gentle: object = None            # callable -> True while music plays: analyse fewer files at once
 
 
 @dataclass
@@ -266,7 +267,9 @@ class Scanner:
 
         try:
             while (queue or inflight) and not self._stop.is_set():
-                while queue and len(inflight) < window:
+                gentle = s.gentle is not None and s.gentle()
+                cap = max(1, workers // 3) if gentle else window
+                while queue and len(inflight) < cap:
                     p = queue.pop()
                     try:
                         fut = pool.submit(analyze_file, p, s.min_bpm, s.max_bpm, want_model)

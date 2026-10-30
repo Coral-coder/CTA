@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 import traceback
 
@@ -18,8 +19,25 @@ def _limit_threads():
         os.environ.setdefault(v, "1")
 
 
+def lower_priority():
+    """Analysis runs in the background: it must never take CPU time from
+    the music (DJ mode) or the interface."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            BELOW_NORMAL_PRIORITY_CLASS = 0x4000
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(10)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def worker_init():
     _limit_threads()
+    lower_priority()
 
 
 def analyze_file(path: str, min_bpm: float = 70.0, max_bpm: float = 180.0,

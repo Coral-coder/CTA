@@ -153,6 +153,23 @@ def estimate_latency(taps: list[float], clicks: list[float], min_taps: int = 8) 
 # played by its own helper process that has a fresh PortAudio: devices come and
 # go without the music in the main process ever stopping.
 
+def raise_priority() -> None:
+    """Windows: run the app (and so its audio) above normal priority, so a
+    library scan or another program never makes the music skip."""
+    import sys
+
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
+        k32 = ctypes.windll.kernel32
+        k32.SetPriorityClass(k32.GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cli_command() -> list[str]:
     """How to run CTA's command line (frozen builds or from source)."""
     import os
