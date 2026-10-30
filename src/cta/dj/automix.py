@@ -30,6 +30,8 @@ import numpy as np
 from .engine import SR, Engine
 from .structure import Structure, analyse, plan_transition
 
+# level moves on the incoming deck that make a planned (not yet started) blend the DJ's
+LEVEL_ACTIONS = {"volume", "eq_low", "eq_mid", "eq_high", "crossfader", "filter", "gain", "trim", "fader", "eq"}
 # hand moves that make a transition in progress the DJ's own
 TAKEOVER_ACTIONS = {"volume", "eq_low", "eq_mid", "eq_high", "crossfader", "filter", "gain", "trim", "play",
                     "cue", "sync", "tempo", "jog", "jog_touch", "scratch", "bend", "jump", "beatjump_back",
@@ -153,6 +155,7 @@ class AutoMix:
         self._load_gen: dict[str, int] = {}
         self.learner = None                  # MixLearner: the DJ's own transition habits
         self.resume_after_manual = False     # the DJ took over a blend: carry on after it
+        self.resume_after_takeover = True    # ... if wanted (toggle); off: stay off until started again
         self.rehearsals = None               # RehearsalStore: transitions the DJ mixed ahead of time
         self.rehearsal_fill = True           # untouched controls of a recorded mix follow auto-mix
         self._resume_t = None
@@ -182,6 +185,13 @@ class AutoMix:
         playing = [d for d in self.decks if e.decks[d].playing]
         for d in playing:
             self._register(d)
+        for d in self.decks:
+            dk = e.decks[d]
+            # a stopped deck still holding a track that already went on air (the one the DJ
+            # mixed out of by hand): never plan a blend back into it - it is free to reuse
+            if not dk.playing and d in self.meta and (dk.info.lib_index in self.aired
+                                                     or dk.info.title in self.history):
+                self.meta.pop(d, None)
         if not playing and from_queue and self.queue and not e.paused:
             # whatever the decks hold is stale: the queue decides what plays
             for dn in self.decks:
@@ -264,6 +274,11 @@ class AutoMix:
             if deck is None or deck in (tr.in_deck, tr.out_deck):
                 self.user_took_over()
                 return True
+        elif tr is not None and deck == tr.in_deck and action in LEVEL_ACTIONS:
+            # the DJ is setting up the incoming deck (fader, EQ, filter) before the
+            # planned blend: that blend is theirs - never start it over their settings
+            self.user_took_over()
+            return True
         elif action == "play" and deck in self.decks and not self.eng.decks[deck].playing \
                 and any(self.eng.decks[d].playing for d in self.decks if d != deck):
             self.user_took_over()               # starting the other deck: a manual mix begins
@@ -271,8 +286,13 @@ class AutoMix:
         return False
 
     def maybe_resume(self):
-        """Called ~30x/s by the UI: back to auto-mix once one track plays alone."""
+        """Called ~30x/s by the UI: back to auto-mix once one track plays alone
+        (only with resume_after_takeover on - off: auto-mix stays off until
+        the DJ starts it again)."""
         if not self.resume_after_manual or self.active:
+            return
+        if not self.resume_after_takeover:
+            self.resume_after_manual = False
             return
         import time as _t
 

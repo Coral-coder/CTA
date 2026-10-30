@@ -196,6 +196,14 @@ the bar between them to give the decks more or less room.
     back the faster output so master and headphones stay in time, and
     draws the waveforms and playheads that late so what you see matches
     what you hear.
+- **Audio stability (Audio… → Output safety):** how much audio the sound card
+  holds in reserve. **Normal** (25 ms, default) is tight and stable; **Safe**
+  (50 ms) gives a slow or busy computer more headroom; **Tight** is the
+  least delay the driver allows. CTA also keeps full speed in the background:
+  no App Nap on the Mac, no power throttling on Windows, and the
+  time-stretcher is never rebuilt inside an audio block (a cue press or jump
+  on a synced deck used to cost a dropout). The status bar warns when blocks
+  come close to their deadline.
 - **Small screens (13-inch laptops):** CTA fits a 1280-pixel-wide screen.
   For even more room, **Settings → Interface size** (70–150 %) scales the
   whole app after a restart.
@@ -413,6 +421,21 @@ Under the hood:
   - Any other MIDI controller can be mapped with the same wizard.
 - **LOOP OUT** with no IN set loops the chosen loop length at once; after an
   IN it loops from the IN point to where you are.
+- **Taking over from auto-mix:** touching the incoming deck's fader, EQ or
+  filter *before* a planned blend, or anything on either deck *during* one,
+  makes that transition yours: auto-mix never starts or changes it over your
+  settings. **Options → Auto-mix carries on after I take over** (on by
+  default) brings auto-mix back once your blend is done; off, it stays off
+  until you press ▶ AUTO-MIX again. A track you mixed out of by hand is never
+  mixed back into.
+- **CUE** previews straight from the cue point: sync no longer pulls a
+  previewing deck, and the playhead never draws a step back when you press
+  CUE or PLAY.
+- **Drag on the overview strip** (the whole-track waveform) to scrub.
+- **Forget what was learned** asks whether to drop the Mix Ahead recordings
+  too, and re-plans the next transition; learned blends are never shorter
+  than 4 bars, and a blip (a deck started and stopped at once) is never
+  learned or recorded.
 - **Tempo sync or beat sync:** **Options → SYNC also locks the beat phase**.
   Off: SYNC matches the tempo only and you line up the beats yourself (they
   stay where you put them; nothing jumps when you press PLAY or SYNC). On:

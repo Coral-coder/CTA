@@ -138,6 +138,10 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
     # block: make busy threads (drawing, analysis) hand it over 5x more often than
     # the default 5 ms, so the music never stutters while the screen is busy
     sys.setswitchinterval(0.001)
+    # fewer, smaller memory clean-ups while the music plays (see main_window.quiet_memory)
+    import gc
+
+    gc.set_threshold(20000, 20, 1000)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("CTA")
     app.setOrganizationName("CTA")

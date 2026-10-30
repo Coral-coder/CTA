@@ -22,6 +22,7 @@ from .engine import SR
 LANES = ("xf", "out_vol", "in_vol", "out_low", "out_mid", "out_high", "in_low", "in_mid", "in_high",
          "out_filter", "in_filter")
 META_KEY = "rehearsals"
+MIN_BEATS = 8.0                      # shorter than 2 bars is not a transition (ignored)
 DEFAULTS = {"xf": 0.0, "out_vol": 1.0, "in_vol": 1.0, "out_low": 1.0, "out_mid": 1.0, "out_high": 1.0,
             "in_low": 1.0, "in_mid": 1.0, "in_high": 1.0, "out_filter": 0.0, "in_filter": 0.0}
 
@@ -124,7 +125,7 @@ class RehearsalStore:
 
     def get(self, out_path: str, in_path: str) -> Rehearsal | None:
         r = self._all().get(self.key(out_path, in_path))
-        return r if r is not None and r.enabled else None
+        return r if r is not None and r.enabled and r.beats >= MIN_BEATS else None
 
     def find(self, out_path: str, in_path: str) -> Rehearsal | None:
         return self._all().get(self.key(out_path, in_path))
@@ -300,6 +301,10 @@ class Session:
             self.mode = "done" if self.mode != "idle" else "idle"
             return
         a, b = e.decks[self.OUT], e.decks[self.IN]
+        if self.x < MIN_BEATS:                 # a blip (started and stopped at once): nothing recorded
+            self.result = None
+            self.mode = "done"
+            return
         x = max(self.x, 1.0)
         for k, pts in self.lanes.items():
             last = self._last.get(k, DEFAULTS[k])

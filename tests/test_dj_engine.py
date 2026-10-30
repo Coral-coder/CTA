@@ -516,3 +516,62 @@ def test_tempo_only_sync_leaves_the_phase_to_the_dj():
     eng.phase_lock = True                          # beat sync again: it is pulled onto the beat
     _run(eng, 4)
     assert abs(eng.phase_error("B")) < 0.02
+
+
+def test_cue_preview_plays_straight_from_the_cue_point_even_when_synced():
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 128.0, offset=0.2)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set("B", sync=True)
+    d = eng.decks["B"]
+    eng.set_cue("B", 5.0)
+    _run(eng, 0.05)
+    eng.cue_press("B")                              # hold CUE: preview from the cue point
+    _run(eng, 1.0)
+    assert d.cue_preview and d.phase_corr == 0.0   # sync does not pull it while you preview
+    assert abs(d.time - (5.0 + 1.0 * d.rate)) < 0.03
+    assert abs(d.start_pos / SR - 5.0) < 1e-6      # the display holds here, never earlier
+    eng.cue_release("B")
+
+
+def test_setting_up_the_incoming_deck_before_the_blend_makes_it_the_djs():
+    from types import SimpleNamespace
+
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    tracks = {}
+    for name in ("t1", "t2"):
+        a = _stereo(124.0, 60)
+        tracks[name] = SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, 124.0), peaks=None,
+                                       info=TrackInfo(title=name, bpm=124.0, loudness=-10, lib_index=len(tracks)))
+    eng = Engine()
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=8), synchronous_loads=True)
+    am.set_queue(["t1", "t2"])
+    am.start()
+    for _ in range(int(3 * SR / 1024)):
+        eng.render(1024)
+    assert am.tr is not None and not am.tr.started
+    din = am.tr.in_deck
+    eng.set(din, volume=0.3)                        # the DJ sets the incoming fader before the blend
+    assert am.manual(din, "volume") and not am.active   # ... so the blend is theirs: auto-mix lets go
+    for _ in range(int(2 * SR / 1024)):
+        eng.render(1024)
+    assert abs(eng.decks[din].volume - 0.3) < 1e-6  # never overridden
+    # with "carry on after I take over" off, auto-mix stays off
+    am.resume_after_takeover = False
+    am._resume_t = -100.0
+    am.maybe_resume()
+    assert not am.active and not am.resume_after_manual
+    # the DJ mixes by hand into the incoming and stops the old deck: auto-mix, started again,
+    # never plans a blend back into the track that already played
+    out = am.decks[0] if din != am.decks[0] else am.decks[1]
+    eng.set_playing(din, True)
+    eng.render(1024)
+    eng.set_playing(out, False)
+    eng.render(1024)
+    am.start()
+    for _ in range(int(2 * SR / 1024)):
+        eng.render(1024)
+    assert am.tr is None or am.tr.in_deck != out or eng.decks[out].info.title != "t1"

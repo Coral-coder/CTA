@@ -296,6 +296,7 @@ class Controller:
         self._lock = threading.Lock()
         self.jump_beats = 4
         self.scratch_enabled = True              # off: pressing the jog top does not scratch
+        self._last_val: dict[tuple, int] = {}    # last value per control (jitter filter)
         self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
         self._delete_held: dict[str, bool] = {}
 
@@ -391,7 +392,7 @@ class Controller:
             x = 1.0 - x
         pressed = ev.value > 0
         am = self.automix
-        if am is not None and (pressed or b.type != "note"):
+        if am is not None and self._moved(b, ev):
             am.manual(deck, a)
 
         if a == "play" and pressed:
@@ -512,6 +513,21 @@ class Controller:
             am.stop() if am.active else am.start()
         elif a == "transition" and pressed and am is not None:
             am.transition_now()
+
+    def _moved(self, b: Binding, ev: Event) -> bool:
+        """A real hand move (not a fader's electrical jitter): a button press,
+        a jog / encoder turn, or a fader / knob moved by more than a hair."""
+        if b.type == "note":
+            return ev.value > 0
+        if b.relative or b.action in ("jog", "browse", "loop_size"):
+            return True
+        key = (ev.type, ev.ch, ev.num)
+        last = self._last_val.get(key)
+        self._last_val[key] = ev.value
+        if last is None:
+            return False
+        step = 3 * (128 if ev.type == "cc14" else 1)
+        return abs(ev.value - last) >= step
 
     def jog(self, deck: str, revs: float, dt: float):
         e = self.eng

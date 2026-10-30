@@ -153,6 +153,7 @@ class Deck:
     loop: tuple[float, float] | None = None  # (start, end) source frames
     phase_offset: float = 0.0                # beats: where the DJ's jog nudge left the sync lock
     nudged: bool = False                     # the jog is (or was just) nudging this deck
+    start_pos: float = 0.0                   # where the last start began (frames): the display holds there
     auto_phase: bool = False                 # auto-mix holds it on the beat even with tempo-only sync
     loop_size: float = 4.0                   # the chosen loop length (beats): OUT with no IN uses it
     scope: np.ndarray | None = None          # the deck's newest output block (XY scope)
@@ -177,6 +178,7 @@ class Deck:
     _rb: object = None
     _rb_ratio: float = 1.0
     _rb_drop: int = 0
+    _rb_reset: bool = False                  # jump / cue / loop: start the stretcher afresh (reused)
     _mode: str = "vinyl"
     _eq: ThreeBandEQ | None = None
     _last_gain: float = 0.0
@@ -273,6 +275,9 @@ class Engine:
         self.scope: np.ndarray | None = None
         self.scope_prev: np.ndarray | None = None
         self.reset_on_load = True              # gain / EQ / filter back to neutral when a track loads
+        # the sound card's cushion: "low" = the least delay; seconds = more headroom
+        # against the system pausing CTA (background, busy machine) - no glitches live
+        self.out_latency: str | float = 0.05
         self.phase_lock = True                 # SYNC = tempo + beat phase; False: tempo only (phase by hand)
         self.cpu_load = 0.0                    # share of each block's time spent rendering (peak, decaying)
         self.slow_blocks = 0                   # blocks that nearly missed their deadline
@@ -432,7 +437,8 @@ class Engine:
     def _seek(self, d: Deck, frame: float):
         frame = float(np.clip(frame, 0, max(d.length - 1, 0)))
         d.play_pos = d.feed_pos = frame
-        d._rb = None
+        d.start_pos = frame
+        d._rb_reset = True
         d.end_reached = False
 
     def seek(self, deck: str, seconds: float):
@@ -449,6 +455,7 @@ class Engine:
             if quantize and d.sync and e.phase_lock and e._master(exclude=deck) is not None:
                 e._align_phase(d, e._master(exclude=deck))
             d.playing = True
+            d.start_pos = d.play_pos
             if e.master_deck is None:
                 e.master_deck = deck
         elif not on:
@@ -478,6 +485,7 @@ class Engine:
             elif abs(d.play_pos - d.cue_point) < SR * 0.01:
                 d.cue_preview = True
                 d.playing = True
+                d.start_pos = d.play_pos
             else:
                 # set the cue where you are (snapped to the beat only with quantise on)
                 p = e._quant(d, d.play_pos)
@@ -595,7 +603,7 @@ class Engine:
             if d.scratching:
                 d.scratching = False
                 d.scratch_rate = 0.0
-                d._rb = None
+                d._rb_reset = True
                 d.feed_pos = d.play_pos
         self.cmd(f)
 
@@ -819,8 +827,8 @@ class Engine:
                 d.phase_corr = 0.0
                 continue
             d.rate_override = self.sync_ratio(m.bpm, d.grid.bpm)
-            if not d.playing or d.scratching:
-                continue
+            if not d.playing or d.scratching or d.cue_preview:
+                continue                           # CUE preview: plays from the cue point, untouched
             if not (self.phase_lock or d.auto_phase):
                 d.phase_corr = 0.0                 # tempo sync only: the phase is the DJ's
                 continue
@@ -896,10 +904,22 @@ class Engine:
 
     def _render_stretched(self, d: Deck, n: int, rate: float) -> np.ndarray:
         if d._rb is None:
+            # built once per deck (12 ms - too long for inside an audio block, so
+            # never again: a cue press, jump or loop only resets it, 0.1 ms)
             d._rb, d._rb_drop = _rb_new(rate)
             d._rb_ratio = rate
             d._pitch = 1.0
             d.feed_pos = d.play_pos
+            d._rb_reset = False
+        elif d._rb_reset:
+            rb = d._rb
+            rb.reset()
+            pad = rb.get_preferred_start_pad()
+            if pad:
+                rb.process(np.zeros((2, pad), np.float32))
+            d._rb_drop = rb.get_start_delay()
+            d.feed_pos = d.play_pos
+            d._rb_reset = False
         rb = d._rb
         if abs(rate - d._rb_ratio) > 1e-6:
             rb.time_ratio = 1.0 / rate
@@ -950,7 +970,7 @@ class Engine:
             y = self._render_stretched(d, n, rate)
         else:
             if d._mode == "stretch":
-                d._rb = None
+                d._rb_reset = True
                 d._mode = "vinyl"
             y = self._render_vinyl(d, n, rate)
         if d.play_pos >= d.length - 1 and d.loop is None:
@@ -1190,7 +1210,7 @@ class Engine:
         if "WASAPI" in sd.query_hostapis(info["hostapi"])["name"]:
             extra = sd.WasapiSettings(auto_convert=True)
         st = sd.OutputStream(samplerate=SR, blocksize=self.block, channels=n, dtype="float32", device=device,
-                             latency="low", callback=self._pcallback, extra_settings=extra)
+                             latency=self.out_latency, callback=self._pcallback, extra_settings=extra)
         st.start()
         self._pstream = st
         self.phones_chans = chans
@@ -1271,7 +1291,7 @@ class Engine:
             # shared mode only accepts the device's own rate unless Windows converts
             extra = sd.WasapiSettings(auto_convert=True)
         stream = sd.OutputStream(samplerate=SR, blocksize=block, channels=chans, dtype="float32",
-                                 device=device, latency="low", callback=self._callback, extra_settings=extra)
+                                 device=device, latency=self.out_latency, callback=self._callback, extra_settings=extra)
         stream.start()
         self._stream = stream
         self.block = block

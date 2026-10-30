@@ -562,9 +562,9 @@ def test_timeshift_window_rehearses_on_the_preview_only(tmp_data_dir, monkeypatc
         if ts.session.mode == "recording":
             break
     assert ts.session.mode == "recording"
-    # the DJ mixes on the preview mixer: incoming up, outgoing down
+    # the DJ mixes on the preview mixer: incoming up, outgoing down over 4 bars
     ts.faders["B"].setValue(1000)
-    for _ in range(100):
+    for _ in range(int(8 * 44100 / 512)):
         live.render(512)
     ts.faders["A"].setValue(0)
     for _ in range(int(6 * 44100 / 512)):
@@ -738,3 +738,24 @@ def test_unload_decks_and_reset_auto_mix_for_the_next_set(tmp_data_dir, monkeypa
     app.processEvents()
     dj.shutdown()
     w.close()
+
+
+def test_dragging_the_overview_scrubs():
+    import numpy as np
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui.dj_window import Waveform
+
+    w = Waveform("A", False)
+    w.resize(200, 30)
+    w.set_track(np.ones((200, 3), np.float32) * 0.5, None, 100.0, None)
+    seeks = []
+    w.seek.connect(seeks.append)
+    for kind, x, held in ((QEvent.MouseButtonPress, 20, Qt.LeftButton), (QEvent.MouseMove, 60, Qt.LeftButton),
+                          (QEvent.MouseMove, 150, Qt.LeftButton), (QEvent.MouseButtonRelease, 150, Qt.NoButton)):
+        p = QPointF(x, 10)
+        btn = Qt.LeftButton if kind != QEvent.MouseMove else Qt.NoButton
+        app.sendEvent(w, QMouseEvent(kind, p, p, btn, held, Qt.NoModifier))
+    assert [round(s_) for s_ in seeks] == [10, 30, 75]

@@ -108,7 +108,7 @@ class MixLearner:
             return
         bars = (self._quiet_since - st["t0"]) * st["bpm"] / 60.0 / 4.0
         self._active = None
-        if 1.0 <= bars <= 96 and not st.get("auto"):
+        if 2.0 <= bars <= 96 and not st.get("auto"):          # a blip is not a transition
             self._record(eng, out, inc, st, bars)
 
     def took_over(self):
@@ -140,14 +140,15 @@ class MixLearner:
         return sum(1 for x in self.examples if group is None or x.style_group == group)
 
     def preferences(self, group: str) -> dict | None:
-        ex = [x for x in self.examples if x.style_group == group]
+        usable = [x for x in self.examples if x.bars >= 2.0]     # ignore blips from older versions
+        ex = [x for x in usable if x.style_group == group]
         if len(ex) < MIN_EXAMPLES:
-            ex = self.examples if len(self.examples) >= MIN_EXAMPLES * 2 else []
+            ex = usable if len(usable) >= MIN_EXAMPLES * 2 else []
         if not ex:
             return None
         bars = float(np.median([x.bars for x in ex]))
         return {
-            "bars": int(max(1, round(bars / 4) * 4)) if bars >= 4 else int(max(1, round(bars))),
+            "bars": int(max(4, round(bars / 4) * 4)),              # never shorter than a phrase-ish 4 bars
             "out_offset": float(np.median([x.out_offset for x in ex])),
             "in_lead": float(np.median([x.in_lead for x in ex])),
             "n": len(ex),

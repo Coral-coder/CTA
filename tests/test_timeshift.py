@@ -181,3 +181,34 @@ def test_a_mix_recorded_after_auto_mix_planned_is_still_used(tmp_path):
     store.put(_rehearse(t1, t2))                                  # the DJ mixes it ahead now
     eng.render(1024)
     assert am.tr.style == "rehearsed"
+
+
+def test_blips_are_not_recorded_and_learned_blends_stay_long(tmp_path):
+    from types import SimpleNamespace as NS
+
+    from cta.db import Database
+    from cta.dj.learn import MixLearner, TransitionExample
+
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    pv = Engine()
+    _load(pv, "A", t1)
+    _load(pv, "B", t2)
+    s = Session(pv)
+    pv.set_playing("A", True)
+    pv.render(512)
+    pv.set_playing("B", True)                      # in and straight out again
+    pv.render(512)
+    assert s.mode == "recording"
+    pv.set_playing("A", False)
+    for _ in range(int(3 * SR / 512)):
+        pv.render(512)
+    assert s.mode == "done" and s.result is None
+    s.close()
+    store = RehearsalStore(Database(str(tmp_path / "x.db")))
+    store.put(Rehearsal("/a", "/b", 64.0, 0.0, 3.0, {}))          # saved by an older version
+    assert store.get("/a", "/b") is None
+    lr = MixLearner(Database(str(tmp_path / "y.db")), NS())
+    mk = lambda bars: TransitionExample(0, "club", "a", "b", bars, 0.0, 8.0, "drop", "intro")  # noqa: E731
+    lr.examples = [mk(0.5), mk(1.0), mk(1.5), mk(3.0), mk(3.0), mk(3.0)]
+    p = lr.preferences("club")
+    assert p is not None and p["bars"] >= 4 and p["n"] == 3

@@ -232,6 +232,16 @@ class SettingsDialog(QDialog):
 # main window
 # --------------------------------------------------------------------------
 
+def quiet_memory():
+    """Python's memory clean-up can pause every thread for tens of milliseconds
+    when a big library is loaded - long enough to drop audio. Set everything
+    that lives for the whole session aside, so clean-ups stay tiny."""
+    import gc
+
+    gc.collect()
+    gc.freeze()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database, settings: QSettings | None = None):
         super().__init__()
@@ -598,6 +608,7 @@ class MainWindow(QMainWindow):
         if (lib.n == 0 and not self.db.folders() and self._scan_thread is None
                 and not os.environ.get("CTA_SMOKE_EXIT_MS") and self.isVisible()):
             QTimer.singleShot(300, self._first_run)
+        quiet_memory()
         self.apply_filter()
         if self._want_server:
             self._want_server = False
@@ -938,6 +949,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
                 return
             self.dj = DJPanel(self)
+            quiet_memory()
             self.dj_dock = self.dj                # the decks live in the top half of the splitter
             self.tabs.addTab(self.scrolled(self.dj.queue_panel), "Auto-mix queue")
             self.vsplit.insertWidget(0, self.dj)

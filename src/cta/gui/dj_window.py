@@ -506,6 +506,11 @@ class Waveform(QWidget):
         self.seek.emit(x * self.duration)
 
     def mouseMoveEvent(self, ev):
+        if not self.zoom and self.peaks is not None and ev.buttons() & Qt.LeftButton:
+            # the whole-track strip: drag to scrub through the track
+            x = min(max(ev.position().x() / max(self.width(), 1), 0.0), 1.0)
+            self.seek.emit(x * self.duration)
+            return
         if self.zoom and getattr(self, "_drag_x", None) is not None:
             x = ev.position().x()
             dx = x - self._drag_x
@@ -538,14 +543,20 @@ class Waveform(QWidget):
         levels and colours are worked out once per zoom level for the whole
         track; each frame only slices them (no per-frame colour maths)."""
         col = self.span / w
-        key = (round(self.span, 6), w, _theme["name"], _theme["sat"], self.crange, id(self.bands))
+        t0 = self.pos - self.span / 2
+        c0 = int(np.floor(t0 / col))
+        # one page = 4 screen-widths of columns around the view: a few ms to build,
+        # rebuilt only when the view leaves it (never the whole track at once - that
+        # held the interpreter for 20-30 ms on a long track, enough to drop audio)
+        page_w = 4 * w
+        page = (c0 + w) // page_w
+        key = (round(self.span, 6), w, _theme["name"], _theme["sat"], self.crange, id(self.bands), page)
         cache = getattr(self, "_zcache", None)
         if cache is None or cache[0] != key:
             hop = 256 / SR
             n = self.bands.shape[0]
-            ncols = int(np.ceil(n * hop / col)) + 1
-            first = -(w + 2)                          # columns before the start (silence)
-            cidx = np.arange(first, ncols + w + 3)
+            first = page * page_w - 2 * w - 2
+            cidx = np.arange(first, first + 2 * page_w + 3)
             edges = np.floor(cidx * col / hop).astype(np.int64)
             padded = np.vstack([self.bands, np.zeros((1, 3), self.bands.dtype)])
             b = np.maximum.reduceat(padded, np.clip(edges, 0, n))[:-1].astype(np.float32)
@@ -555,8 +566,6 @@ class Waveform(QWidget):
             colors = _band_colors(b, self.crange)
             cache = self._zcache = (key, first, b, heights, colors)
         _key, first, b, heights, colors = cache
-        t0 = self.pos - self.span / 2
-        c0 = int(np.floor(t0 / col))
         frac = float(t0 / col - c0)
         i = c0 - first
         lo, hi = max(i, 0), min(i + w + 1, len(heights))
@@ -1928,6 +1937,10 @@ class DeckPanel(QFrame):
                                     if shifted else "")
         # what you see matches what you hear: positions drawn as late as the output plays
         t_vis = max(0.0, d.time - self.eng.display_latency * d.rate) if d.playing else d.time
+        # ... but never before where it (re)started: CUE / PLAY / a jump must not look like a step back
+        s0 = d.start_pos / SR
+        if d.playing and s0 <= d.time < s0 + self.eng.display_latency + 0.05:
+            t_vis = max(t_vis, s0)
         remain = d.length / SR - t_vis
         _set_text(self.remain_lbl, f"-{fmt_time(remain)}")
         _set_text(self.time_lbl, fmt_time(t_vis))
@@ -2358,6 +2371,16 @@ class AudioSettings(QDialog):
         self.block.addItems(["256", "512", "1024", "2048"])
         self.block.setCurrentText(str(settings.value("dj_block", "512")))
         form.addRow("Buffer (samples)", self.block)
+        self.safety = QComboBox()
+        for label, key in (("Normal - tight and stable (25 ms cushion, recommended)", "normal"),
+                           ("Safe - most headroom (50 ms: a slow or busy computer)", "safe"),
+                           ("Tight - least delay (glitches if the computer is busy)", "tight")):
+            self.safety.addItem(label, key)
+        self.safety.setCurrentIndex(max(self.safety.findData(settings.value("dj_safety", "normal")), 0))
+        self.safety.setToolTip("How much audio the sound card holds in reserve. More = the music never "
+                               "glitches when the computer is busy or CTA is in the background; less = "
+                               "buttons answer a few milliseconds sooner.")
+        form.addRow("Output safety", self.safety)
         self.mdelay, self.m_auto, self.m_info = self._delay_row(form, "Master delay", "master")
         self.pdelay, self.p_auto, self.p_info = self._delay_row(form, "Headphones delay", "phones")
         # more speakers on the master (Bluetooth...), each in its own helper: they can come
@@ -2710,7 +2733,7 @@ class AudioSettings(QDialog):
     def _snapshot(self):
         g = lambda k, d="": str(self.s.value(k, d) or "")  # noqa: E731
         return (g("dj_device_name"), g("dj_phones_device_name"), g("dj_master", "1-2"), g("dj_phones", "3-4"),
-                g("dj_block", "512"))
+                g("dj_block", "512"), g("dj_safety", "safe"))
 
     def save(self):
         import json as _json
@@ -2721,6 +2744,7 @@ class AudioSettings(QDialog):
         self.s.setValue("dj_master", self.master.currentText())
         self.s.setValue("dj_phones", self.phones.currentText())
         self.s.setValue("dj_block", self.block.currentText())
+        self.s.setValue("dj_safety", self.safety.currentData())
         self.s.setValue("dj_master_delay_ms", "" if self.m_auto.isChecked() else self.mdelay.value())
         self.s.setValue("dj_phones_delay_ms", "" if self.p_auto.isChecked() else self.pdelay.value())
         self.s.setValue("rec_dir", self.rec_dir.text())
@@ -3566,6 +3590,24 @@ class DJPanel(QWidget):
         menu.addAction("⏱ Mix ahead (Time-Shift)…\tCtrl+T", lambda: self.open_timeshift())
         menu.addAction("⏏ Unload stopped decks", lambda: self.unload_decks(False))
         menu.addAction("⏏ Unload all decks (stops the music)…", lambda: self.unload_decks(True))
+        self.resume_chk = QCheckBox("Auto-mix carries on after I take over")
+        self.resume_chk.setToolTip("On: once your hand-mixed blend is done (one track playing alone), auto-mix "
+                                   "picks up again by itself.\nOff: after a takeover it stays off until you "
+                                   "press ▶ AUTO-MIX again.")
+        self.resume_chk.setChecked(self.settings.value("dj_resume_takeover", "true") == "true")
+        self.automix.resume_after_takeover = self.resume_chk.isChecked()
+
+        def resume_toggled(on):
+            self.automix.resume_after_takeover = bool(on)
+            self.settings.setValue("dj_resume_takeover", "true" if on else "false")
+        self.resume_chk.toggled.connect(resume_toggled)
+        ract = QWidgetAction(menu)
+        rholder = QWidget()
+        rl = QHBoxLayout(rholder)
+        rl.setContentsMargins(10, 3, 10, 3)
+        rl.addWidget(self.resume_chk)
+        ract.setDefaultWidget(rholder)
+        menu.addAction(ract)
         menu.addAction("Queue = setlist", self.queue_from_setlist)
         menu.addAction("Forget what was learned from my mixes", self._forget_learning)
         bm = menu.addMenu("Blend length")
@@ -3618,6 +3660,7 @@ class DJPanel(QWidget):
 
         outputs.raise_priority()
         s = self.settings
+        self.engine.out_latency = {"tight": "low", "safe": 0.05}.get(str(s.value("dj_safety", "normal")), 0.025)
         name = s.value("dj_device_name", "")
         dev = None
         try:
@@ -4145,9 +4188,29 @@ class DJPanel(QWidget):
         self.automix.learner = self.learner if on else None
 
     def _forget_learning(self):
-        if QMessageBox.question(self, "Forget learning", "Forget every transition learned from your mixes?") \
-                == QMessageBox.Yes:
-            self.learner.forget()
+        n_rec = len(self.rehearsals.items())
+        box = QMessageBox(self)
+        box.setWindowTitle("Forget learning")
+        box.setText("Forget every transition auto-mix learned from your mixes?")
+        if n_rec:
+            box.setInformativeText(f"You also have {n_rec} transition{'s' if n_rec != 1 else ''} recorded with Mix "
+                                   "Ahead - auto-mix plays those exactly as recorded.")
+        b_learn = box.addButton("Forget learned mixes", QMessageBox.AcceptRole)
+        b_all = box.addButton("Forget learned + Mix Ahead recordings", QMessageBox.DestructiveRole) if n_rec else None
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked not in (b_learn, b_all):
+            return
+        self.learner.forget()
+        msg = "Learned transitions forgotten"
+        if b_all is not None and clicked is b_all:
+            for r in self.rehearsals.items():
+                self.rehearsals.delete(r.out_path, r.in_path)
+            msg += " · Mix Ahead recordings deleted"
+        if self.automix.tr is not None and not self.automix.tr.started:
+            self.automix.tr = None             # planned with the old learning: plan again
+        self.main.status_label.setText(msg + " - the next transition is planned afresh")
 
     def queue_from_setlist(self):
         sl = list(self.main.setlist)

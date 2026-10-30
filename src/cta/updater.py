@@ -28,7 +28,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 
-from . import __version__, paths
+from . import __version__, net, paths
 
 log = logging.getLogger(__name__)
 
@@ -144,7 +144,7 @@ def can_self_update(need_release_build: bool = True) -> tuple[bool, str]:
 def _get_json(url: str, timeout: float = 15) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT,
                                                "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with net.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -199,7 +199,7 @@ def parse_sums(text: str) -> dict[str, str]:
 
 def _download(url: str, dest: str, progress=None, cancelled=None):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+    with net.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
         while True:
@@ -230,7 +230,7 @@ def download_release(rel: Release, progress=None, cancelled=None) -> str:
     os.makedirs(stage, exist_ok=True)
     sums_req = urllib.request.Request(rel.sums_url, headers={"User-Agent": USER_AGENT})
     try:
-        with urllib.request.urlopen(sums_req, timeout=30) as r:
+        with net.urlopen(sums_req, timeout=30) as r:
             sums = parse_sums(r.read().decode("utf-8", "replace"))
     except Exception as e:  # noqa: BLE001
         raise UpdateError(f"could not download checksums: {e}") from e

@@ -25,7 +25,7 @@ else:
     print("WARNING: AI model not bundled; it will be downloaded on first run")
 
 binaries = collect_dynamic_libs("onnxruntime") + collect_dynamic_libs("pylibrb")
-hiddenimports = (
+hiddenimports = ("certifi", 
     collect_submodules("cta")
     + collect_submodules("av")
     + collect_submodules("onnxruntime.capi")
@@ -100,5 +100,9 @@ if sys.platform == "darwin":
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "NSRequiresAquaSystemAppearance": False,
+            # never "App Nap" a DJ app: a minimised / background CTA keeps full
+            # timing, so the audio never glitches
+            "NSAppSleepDisabled": True,
+            "LSAppNapIsDisabled": True,
         },
     )

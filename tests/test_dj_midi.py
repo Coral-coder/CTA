@@ -231,3 +231,22 @@ def test_saved_ddj_t1_mapping_is_completed_and_scratch_can_be_switched_off(tmp_p
     c.handle_raw([0xB0, 33, 107])
     eng.render(256)
     assert not eng.decks["A"].scratching and eng.decks["A"].playing
+
+
+def test_fader_jitter_is_not_a_takeover():
+    from types import SimpleNamespace
+
+    from cta.dj.midi import Binding, Controller
+
+    eng = Engine()
+    calls = []
+    am = SimpleNamespace(manual=lambda deck, a: calls.append((deck, a)))
+    c = Controller(eng, am, device="x")
+    c.set_bindings([Binding("cc", 6, 19, "volume", "A"), Binding("note", 0, 11, "play", "A")], learned=False)
+    for v in (64, 65, 64, 63, 64, 65):             # a fader's electrical noise
+        c.handle_raw([0xB6, 19, v])
+    assert calls == []
+    c.handle_raw([0xB6, 19, 75])                    # a real move
+    assert calls == [("A", "volume")]
+    c.handle_raw([0x90, 11, 127])                   # a button press always counts
+    assert calls[-1] == ("A", "play")

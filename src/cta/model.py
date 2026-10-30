@@ -19,7 +19,7 @@ from importlib import resources
 
 import numpy as np
 
-from . import paths
+from . import net, paths
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def download_model(progress=None) -> str:
     dest = os.path.join(paths.models_dir(), MODEL_FILE)
     tmp = dest + ".part"
     req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "CTA/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
+    with net.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
         while True:

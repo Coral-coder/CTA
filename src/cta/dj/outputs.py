@@ -153,19 +153,78 @@ def estimate_latency(taps: list[float], clicks: list[float], min_taps: int = 8) 
 # played by its own helper process that has a fresh PortAudio: devices come and
 # go without the music in the main process ever stopping.
 
+_keep_awake = []          # macOS activity token: must stay referenced for the activity to last
+
+
 def raise_priority() -> None:
-    """Windows: run the app (and so its audio) above normal priority, so a
-    library scan or another program never makes the music skip."""
+    """Keep the music steady when CTA is minimised or in the background.
+
+    Windows: above-normal priority, no power throttling ("efficiency mode"
+    slows background apps on Windows 11) and 1 ms timer precision.
+    macOS: no App Nap - a latency-critical, user-initiated activity (also
+    set in the app's Info.plist)."""
     import sys
 
-    if sys.platform != "win32":
-        return
+    if sys.platform == "win32":
+        _windows_no_throttle()
+    elif sys.platform == "darwin":
+        _mac_no_app_nap()
+
+
+def _windows_no_throttle():
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        proc = k32.GetCurrentProcess()
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
+        k32.SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS)
+
+        class PowerThrottling(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+        # ProcessPowerThrottling = 4; execution speed + timer resolution: controlled, and OFF
+        pt = PowerThrottling(1, 0x1 | 0x4, 0)
+        k32.SetProcessInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        k32.SetProcessInformation(proc, 4, ctypes.byref(pt), ctypes.sizeof(pt))
+    except Exception:  # noqa: BLE001 - older Windows: no such setting
+        pass
     try:
         import ctypes
 
-        ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
-        k32 = ctypes.windll.kernel32
-        k32.SetPriorityClass(k32.GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _mac_no_app_nap():
+    if _keep_awake:
+        return
+    try:
+        import ctypes
+        import ctypes.util
+
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        ctypes.cdll.LoadLibrary(ctypes.util.find_library("Foundation"))
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+        send = objc.objc_msgSend
+        send.restype = ctypes.c_void_p
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        info = send(objc.objc_getClass(b"NSProcessInfo"), objc.sel_registerName(b"processInfo"))
+        nsstring = objc.objc_getClass(b"NSString")
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]
+        reason = send(nsstring, objc.sel_registerName(b"stringWithUTF8String:"), b"Playing music (DJ mode)")
+        # NSActivityUserInitiated | NSActivityLatencyCritical
+        opts = 0x00FFFFFF | 0xFF00000000
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p]
+        token = send(info, objc.sel_registerName(b"beginActivityWithOptions:reason:"), opts, reason)
+        if token:
+            send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            send(token, objc.sel_registerName(b"retain"))
+            _keep_awake.append(token)
     except Exception:  # noqa: BLE001
         pass
 
