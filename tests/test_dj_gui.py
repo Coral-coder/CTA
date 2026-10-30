@@ -315,7 +315,12 @@ def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
         wait(50)
     w.open_dj()
     wait(200)
-    assert w.minimumSizeHint().width() <= 1280 and w.width() <= 1280
+    mw = w.minimumSizeHint().width()
+    assert mw <= 1280 and w.width() <= 1280, (mw, {
+        "dj": w.dj.minimumSizeHint().width(), "deck": w.dj.decks["A"].minimumSizeHint().width(),
+        "mixer": w.dj.mixer.minimumSizeHint().width(),
+        "bar": w.dj.layout().itemAt(0).widget().minimumSizeHint().width(),
+        "lib": w.vsplit.widget(1).minimumSizeHint().width()})
     dj = w.dj
     deck = dj.decks["A"]
     seen = set()
@@ -326,13 +331,14 @@ def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
         seen.add(deck.view)
         need = deck._needs()
         # the richest view that fits the deck's height
-        assert deck.view == next((v for v in deck.VIEWS if deck.height() >= need[v]), "micro"), (deck.height(), need)
+        fits = (v for v in deck.VIEWS if deck.height() >= need[v] and deck.width() >= need[v + "_w"])
+        assert deck.view == next(fits, "micro"), (deck.height(), deck.width(), need)
         # nothing inside the deck or the mixer spills past its frame
         for panel in (deck, dj.mixer):
             for child in panel.findChildren(QtWidgets.QWidget):
                 if child.isVisible() and child.parentWidget() is panel:
                     assert child.geometry().bottom() <= panel.height() + 1, (panel, child, deck.view)
-    assert {"full", "micro"} <= seen
+    assert len(seen) >= 2 and "micro" in seen        # it really changes view as it shrinks
     dj.view_combo.setCurrentText("Full")
     assert deck.view == "full"
     dj.view_combo.setCurrentText("Auto")

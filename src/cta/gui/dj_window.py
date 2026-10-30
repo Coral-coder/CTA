@@ -529,6 +529,10 @@ def _relayout(widget: QWidget) -> int:
     return widget.layout().totalMinimumSize().height()
 
 
+def _min_width(widget: QWidget) -> int:
+    return widget.layout().totalMinimumSize().width()
+
+
 class QueueList(QListWidget):
     """Auto-mix queue: drag to reorder, drag out / ✕ / Delete to remove."""
 
@@ -1180,6 +1184,20 @@ class DeckPanel(QFrame):
             row.addWidget(b)
         outer.addLayout(row)
         self._loaded_path = None
+        # narrow screens: long titles are clipped (full text in the tooltip) and
+        # buttons may get narrower, so the decks never force the window wider
+        from PySide6.QtWidgets import QSizePolicy
+
+        for lb in (self.title, self.artist):
+            lb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            lb.setMinimumWidth(40)
+        for w_ in (self.w_loop, self.w_jump):     # symbols / short labels: safe to narrow
+            for b in w_.findChildren(QPushButton):
+                b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                b.setMinimumWidth(22)
+        for b in (self.b_cue, self.b_play, self.b_sync, self.b_master, self.b_key):
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumWidth(34)
         self.view = None
         self.apply_view()
 
@@ -1197,6 +1215,7 @@ class DeckPanel(QFrame):
                 for v in self.VIEWS:
                     self._show(v)
                     need[v] = _relayout(self)
+                    need[v + "_w"] = _min_width(self)
                 if cur:
                     self._show(cur)
             finally:
@@ -1208,15 +1227,16 @@ class DeckPanel(QFrame):
         # the smallest view: the splitter may shrink the deck that far, the view follows
         from PySide6.QtCore import QSize
 
-        return QSize(super().minimumSizeHint().width(), self._needs()["micro"])
+        n = self._needs()
+        return QSize(n["micro_w"], n["micro"])
 
     def wanted_view(self) -> str:
         pref = self.dj.deck_view_pref()
         if pref in self.VIEWS:
             return pref
-        need, h = self._needs(), self.height()
-        for v in self.VIEWS:                     # the richest view that fits
-            if h >= need[v]:
+        need, h, w = self._needs(), self.height(), self.width()
+        for v in self.VIEWS:                     # the richest view that fits (height and width)
+            if h >= need[v] and w >= need[v + "_w"]:
                 return v
         return "micro"
 
@@ -1311,6 +1331,7 @@ class DeckPanel(QFrame):
         if d.info.path != self._loaded_path:
             self._loaded_path = d.info.path
             self.title.setText(d.info.title or "—")
+            self.title.setToolTip(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}")
             lib = self.dj.main.lib
             played = lib is not None and 0 <= d.info.lib_index < lib.n and lib.play_count[d.info.lib_index] > 0
             sub = d.info.artist or ""
@@ -1994,9 +2015,16 @@ class DJPanel(QWidget):
         self.stream_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
         self.stream_lbl.linkActivated.connect(lambda _l: self.show_remote_info())
         self.stream = None
+        # a toolbar: whatever does not fit goes behind its » button (narrow screens)
+        from PySide6.QtWidgets import QSizePolicy, QToolBar
+
+        bar = QToolBar()
+        bar.setStyleSheet("QToolBar { border: 0; background: transparent; padding: 0; }")
         for w in (self.audio_lbl, b_audio, QLabel("  MIDI:"), self.midi_combo, b_midi, b_learn):
             bar.addWidget(w)
-        bar.addStretch()
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar.addWidget(spacer)
         # less-used switches live in one menu so the bar fits a laptop screen
         from PySide6.QtWidgets import QToolButton, QWidgetAction
 
@@ -2013,13 +2041,13 @@ class DJPanel(QWidget):
             act.setDefaultWidget(holder)
             menu.addAction(act)
         b_opts.setMenu(menu)
-        self.audio_lbl.setMaximumWidth(260)
-        self.stream_lbl.setMaximumWidth(230)
+        self.audio_lbl.setMaximumWidth(230)
+        self.stream_lbl.setMaximumWidth(210)
         self.midi_combo.setMinimumWidth(130)
         self.midi_combo.setMaximumWidth(220)
         for w in (self.stream_lbl, self.b_stream, QLabel("View:"), self.view_combo, b_opts, b_hist):
             bar.addWidget(w)
-        outer.addLayout(bar)
+        outer.addWidget(bar)
 
         grid = QGridLayout()
         grid.setSpacing(4)
@@ -2047,6 +2075,16 @@ class DJPanel(QWidget):
         bottom.addWidget(self._automix_panel(), 1)
         self.tools_w = QWidget()
         self.tools_w.setLayout(bottom)
+        # scrolls sideways rather than forcing the window wider than a laptop screen
+        from PySide6.QtWidgets import QScrollArea
+
+        self.tools_sa = QScrollArea()
+        self.tools_sa.setWidget(self.tools_w)
+        self.tools_sa.setWidgetResizable(True)
+        self.tools_sa.setFrameShape(QFrame.NoFrame)
+        self.tools_sa.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tools_sa.setMinimumHeight(self.tools_w.minimumSizeHint().height()
+                                       + self.tools_sa.horizontalScrollBar().sizeHint().height())
         # decks and tools share the height; drag the handle to give the decks more room
         from PySide6.QtWidgets import QSplitter
 
@@ -2054,17 +2092,16 @@ class DJPanel(QWidget):
         self.inner.setChildrenCollapsible(False)
         self.inner.setHandleWidth(7)
         self.inner.addWidget(decks_w)
-        self.inner.addWidget(self.tools_w)
+        self.inner.addWidget(self.tools_sa)
         self.inner.setStretchFactor(0, 1)
         self.inner.setStretchFactor(1, 0)
         st = self.settings.value("dj_inner")
         if st is None or not self.inner.restoreState(st):
             # first run: the decks get every spare pixel, the tools only what they need
             QTimer.singleShot(0, lambda: self.inner.setSizes(
-                [max(self.inner.height() - self.tools_w.minimumSizeHint().height(), 1),
-                 self.tools_w.minimumSizeHint().height()]))
+                [max(self.inner.height() - self.tools_sa.minimumHeight(), 1), self.tools_sa.minimumHeight()]))
         outer.addWidget(self.inner, 1)
-        self.tools_w.setVisible(self.tools_chk.isChecked())
+        self.tools_sa.setVisible(self.tools_chk.isChecked())
         self.tools_chk.toggled.connect(self._tools_toggled)
         self._toggle_cd(False)
 
@@ -2172,7 +2209,7 @@ class DJPanel(QWidget):
 
     def _tools_toggled(self, on):
         self.settings.setValue("dj_tools", "true" if on else "false")
-        self.tools_w.setVisible(on)
+        self.tools_sa.setVisible(on)
 
     def _toggle_cd(self, on):
         self.decks["C"].setVisible(on)
