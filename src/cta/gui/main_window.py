@@ -909,6 +909,7 @@ class MainWindow(QMainWindow):
                 return
             self.dj = DJPanel(self)
             self.dj_dock = self.dj                # the decks live in the top half of the splitter
+            self.tabs.addTab(self.dj.queue_panel, "Auto-mix queue")
             self.vsplit.insertWidget(0, self.dj)
             st = self.settings.value("dj_split")
             if st is None or not self.vsplit.restoreState(st):

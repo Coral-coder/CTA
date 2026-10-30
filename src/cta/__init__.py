@@ -1,3 +1,3 @@
 """CTA - DJ library analyser: BPM, key, AI genre and instant setlists."""
 
-__version__ = "1.9.2"
+__version__ = "1.10.0"

@@ -22,6 +22,8 @@ QPushButton:checked { background: #34507f; border-color: #0d0d0e; color: #ffffff
 QPushButton:disabled { color: #5c5e66; }
 
 QPushButton#mini { padding: 0px 2px; font-size: 11px; }
+QWidget#deckrow QPushButton { padding: 0px 2px; font-size: 11px; }
+QWidget#deckrow QComboBox, QWidget#deckrow QSpinBox { padding: 0px 3px; font-size: 11px; }
 QPushButton#small { padding: 2px 4px; font-size: 11px; font-weight: 700; }
 QPushButton#play { font-size: 17px; font-weight: 800; color: #86e39c; background: #262f28; }
 QPushButton#play:checked { background: #2f8a4a; color: #ffffff; }

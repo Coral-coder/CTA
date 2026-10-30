@@ -293,6 +293,10 @@ class Engine:
         d.loop = None
         d.hotcues = [None] * 8
         d.key_shift = 0.0
+        # a new track starts with the channel's levels back at neutral
+        d.trim = 1.0
+        d.eq = np.ones(3)
+        d.filter = 0.0
         d.end_reached = False
         d.mix_in = mix_in * SR if mix_in is not None else None
         d.mix_out = mix_out * SR if mix_out is not None else None

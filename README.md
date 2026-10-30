@@ -59,9 +59,20 @@ Your corrections are kept across re-scans.
 
 ## DJ Mode (Ctrl+D)
 
-The decks sit above the library, Traktor-style. Drag the bar between them
-to give the decks more or less room. A second bar sets the height of the
-FX / auto-mix strip, which you can hide under **Options**.
+The decks sit above the library in a compact, Traktor-style layout. Drag
+the bar between them to give the decks more or less room.
+
+- **Global row (top):** FX 1, the auto-mix clock (master BPM, Auto-mix,
+  skip, pause, blend length), the MAIN level and limiter, FX 2 and the
+  recorder. Hide it under **Options**. The auto-mix queue is a tab next to
+  the library.
+- **Decks:** header (title, key, BPM, time), waveform with the tempo
+  fader, SYNC / MASTER / KEY with beat jump, overview, then one transport
+  row (play, CUE, CUP, FLX, loop sizes 1–32, IN / OUT / LOOP). The **⌃**
+  button shows hot cues and the grid / key tools.
+- **Mixer:** GAIN, HI, MID, LOW, FILTER, FX and headphones per channel.
+  **The gain, EQ, filter and key reset when a new track loads.** The
+  crossfader, headphone mix and volume sit under the decks.
 
 - **Scalable decks:** each deck shows what fits its height, like Traktor's
   deck views:
@@ -80,8 +91,17 @@ FX / auto-mix strip, which you can hide under **Options**.
   playlist. Select several (Shift / Ctrl / Cmd-click) to drag a batch, or
   a whole setlist.
 - **Audio outputs (Audio… button):**
-  - The device list is re-read when you open it; **Rescan** finds devices
-    plugged in or paired while CTA runs (the audio restarts for a moment).
+  - Devices are scanned **live, without stopping the music**: the list is
+    re-read when you open it, and **Rescan** finds devices plugged in or
+    paired while CTA runs.
+  - **Extra master outputs:** add any number of extra devices (for example
+    two or three Bluetooth speakers) under **Extra outputs**. Each plays
+    the master mix, and CTA delays the faster ones so they all play in
+    sync (Auto delay, or **Measure…** per speaker).
+  - **Automatic detection:** CTA checks for devices every 10 seconds. A
+    remembered speaker that comes back rejoins by itself; one that drops
+    out is removed without touching the rest; a newly paired Bluetooth
+    device shows an **Add … as output** button in the status bar.
   - Master and headphones can each go to **any connected device**, for
     example the DDJ-T1's outputs, the laptop jack or a Bluetooth speaker.
     The channel pairs offered match each device.
