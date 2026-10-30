@@ -171,7 +171,6 @@ def pytest_sessionfinish(session, exitstatus):
 def pytest_unconfigure(config):
     import os
     import sys
-
     import threading
 
     alive = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
