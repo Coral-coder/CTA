@@ -69,5 +69,7 @@ def test_drag_out_carries_audio_files_for_other_apps(tmp_path):
     m.items = [2, 0, 1]
     data = m.mimeData([m.index(0, 0), m.index(0, 3), m.index(1, 0)])
     assert "text/uri-list" in m.mimeTypes()
-    assert [u.toLocalFile() for u in data.urls()] == [Lib.paths[2], Lib.paths[0]]
+    # (Qt gives forward slashes on Windows: compare normalised paths)
+    assert [os.path.normpath(u.toLocalFile()) for u in data.urls()] == \
+        [os.path.normpath(Lib.paths[2]), os.path.normpath(Lib.paths[0])]
     assert bytes(data.data(TRACK_MIME)).decode() == "2"
