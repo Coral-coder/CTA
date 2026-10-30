@@ -25,7 +25,7 @@ else:
     print("WARNING: AI model not bundled; it will be downloaded on first run")
 
 binaries = collect_dynamic_libs("onnxruntime") + collect_dynamic_libs("pylibrb")
-hiddenimports = ("certifi", 
+hiddenimports = ["certifi"] + (
     collect_submodules("cta")
     + collect_submodules("av")
     + collect_submodules("onnxruntime.capi")
