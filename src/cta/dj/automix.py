@@ -86,6 +86,7 @@ class _Transition:
     in_wraps: float = 0.0            # beats the incoming loop has wrapped back (keeps x moving forward)
     last_raw: float = 0.0
     echo_on: bool = False
+    rehearsal: object = None         # a Rehearsal: replay the DJ's own pre-mixed moves
 
     @property
     def tail_beats(self) -> float:
@@ -93,7 +94,7 @@ class _Transition:
         quarter of the blend, 2 to 8 bars, so it never just vanishes."""
         if self.style == "echo_out":
             return 8.0
-        if self.style == "cut":
+        if self.style in ("cut", "rehearsed"):
             return 0.0
         if self.swap_beat >= self.beats - 1e-6:
             return float(np.clip(0.25 * self.beats, 8.0, 32.0))
@@ -127,6 +128,7 @@ class AutoMix:
         self._load_gen: dict[str, int] = {}
         self.learner = None                  # MixLearner: the DJ's own transition habits
         self.resume_after_manual = False     # the DJ took over a blend: carry on after it
+        self.rehearsals = None               # RehearsalStore: transitions the DJ mixed ahead of time
         self._resume_t = None
         self._sync_loads = synchronous_loads
         self._loading_item: dict = {}
@@ -432,6 +434,17 @@ class AutoMix:
 
         mo, mi = self.meta[m.name], self.meta[din_name]
         din = e.decks[din_name]
+        r = None
+        if self.rehearsals is not None and force_bars is None and not immediate:
+            try:
+                r = self.rehearsals.get(m.info.path, din.info.path)
+            except Exception:  # noqa: BLE001
+                r = None
+        if r is not None and r.out_start_beat > now_beat + 1.0:
+            # the DJ mixed this one ahead of time: same beat, same moves
+            return _Transition(m.name, din_name, r.out_start_beat, r.beats, in_start_beat=r.in_start_beat,
+                               swap_beat=r.beats, style="rehearsed", reason="your time-shifted mix",
+                               fixed_length=True, rehearsal=r)
         ratio = e.sync_ratio(m.bpm, din.grid.bpm)
         gap = abs(ratio - 1.0) * 100
         harmonic = compatibility(m.effective_key, din.info.key) if din.info.key >= 0 else 1.0
@@ -513,7 +526,7 @@ class AutoMix:
                 tr.loop_set = True
             bars_left = (tr.start_beat - mb) / 4
             how = {"blend": "blend", "loop_blend": "loop + blend", "echo_out": "echo out",
-                   "cut": "cut"}[tr.style]
+                   "cut": "cut", "rehearsed": "your time-shifted mix"}[tr.style]
             self.status = (f"Next: {din.info.title} in {max(0, int(np.ceil(bars_left)))} bars "
                            f"({how}, {int(tr.beats / 4)} bars)")
             if mb < tr.start_beat - 1e-6:
@@ -529,6 +542,10 @@ class AutoMix:
             e._seek(din, din.grid.time_of_beat(target_beat) * SR)
             din.volume = 0.0
             din.eq = np.array([0.0, 0.5, 1.0]) if self.s.bass_swap else np.ones(3)
+            if tr.rehearsal is not None:
+                from .rehearsal import apply
+
+                apply(tr.rehearsal, 0.0, din, dout)
             if tr.in_loop is not None:
                 g = din.grid
                 din.loop = (g.time_of_beat(tr.in_loop[0]) * SR, g.time_of_beat(tr.in_loop[1]) * SR)
@@ -557,7 +574,11 @@ class AutoMix:
         if tr.in_loop_on and x >= tr.in_release - 1e-6:
             din.loop = None                    # let the incoming run on into its drop
             tr.in_loop_on = False
-        if tr.style == "echo_out":
+        if tr.style == "rehearsed":
+            from .rehearsal import apply
+
+            apply(tr.rehearsal, x, din, dout)
+        elif tr.style == "echo_out":
             self._echo_out(e, tr, din, dout, x)
         else:
             self._blend(tr, din, dout, x)
@@ -659,8 +680,11 @@ class AutoMix:
         dout.fx = set(dout.fx) - {len(e.fx_units) - 1}
         dout.sync = False
         dout.rate_override = None
-        din.volume = 1.0
-        din.eq = np.ones(3)
+        dout.filter = 0.0
+        if tr.style != "rehearsed":            # a rehearsed mix ends where the DJ left the incoming
+            din.volume = 1.0
+            din.eq = np.ones(3)
+            din.filter = 0.0
         din.sync = False
         din.phase_corr = 0.0
         e.master_deck = din.name

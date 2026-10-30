@@ -81,10 +81,33 @@ the bar between them to give the decks more or less room.
   point; drag off the button before letting go (or press PLAY while
   holding) and the track keeps playing. PLAY and CUP also act on press.
 - **Jog platter:** the album art turns on the record.
-- **Waveform colours (Options → Waveform colours):** **Spectrum** (default:
-  a deep, fully saturated rainbow; bass red, mids orange to green, highs
-  blue to violet), **Three-band** (blue lows, amber mids, white highs drawn
-  as layers), **Fire**, **Ice** and **Classic**.
+- **Waveform colours (Options → Waveform colours):** **Rainbow** (default:
+  the whole rainbow, red through orange, yellow, green, cyan and blue to
+  violet, spread from each track's darkest to its brightest sound),
+  **Spectrum** (bass red, mids green, highs blue), **Three-band**, **Fire**,
+  **Ice** and **Classic**, with a **Saturation** slider (0–200 %).
+- **Waveform zoom:** the **− / +** buttons under each tempo fader (the mouse
+  wheel no longer zooms). **⛓ Sync zoom** keeps both decks at the same zoom.
+  Double-click the overview to open the whole track, zoomable, with its
+  markers.
+- **Double-click resets** any knob, fader, the crossfader (centre) and the
+  tempo fader.
+- **⏱ Time-Shift (toolbar):** mix the next transition *now*, on your
+  headphones, while the room keeps hearing the live decks; auto-mix plays
+  your mix live later.
+  - A separate preview player (not the live decks) with the outgoing and
+    incoming tracks as zoomable full waveforms: place the IN / OUT markers
+    precisely, click to scrub, ▶ to listen.
+  - A preview mixer (faders, crossfader, EQ, filter). Tick **My controller
+    mixes the preview** and your MIDI controller drives it instead of the
+    live decks.
+  - **● Rehearse:** the outgoing plays from 8 bars before its OUT marker,
+    the incoming drops in on the OUT marker (or **Drop incoming now**) in
+    phase. Mix it: every move is recorded on the beat until the outgoing is
+    gone. **▶ Play back** lets you hear it as the room will.
+  - When the live set reaches those two tracks, auto-mix starts the incoming
+    on the same beat and replays your moves. Untick **Auto-mix plays this
+    transition live** to keep it without using it.
 - **Keyboard (Traktor Pro's default keys):** deck A on the top letter row,
   deck B on the home row. **Options → Keyboard shortcuts…** lists them;
   they never fire while you type in a text box.

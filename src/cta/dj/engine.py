@@ -229,6 +229,12 @@ class Engine:
         self.phones_chans: tuple[int, int] | None = None
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
         Engine._instances.add(self)
+        # time-shift preview: a second engine rendered inside this one's audio
+        # callback (its own decks; heard on the headphones, or the main output)
+        self.preview: Engine | None = None
+        self.preview_route = "phones"          # phones | master
+        self.preview_level = 1.0
+        self._driven = False                   # True: rendered by another engine (commands queue)
         self._stream = None
         self._error_logged = False
         self.hooks: list = []          # callables(engine, n) run before each block (automix)
@@ -269,7 +275,7 @@ class Engine:
     def cmd(self, fn, *args, **kw):
         """Run fn(engine, *args) at the start of the next audio block."""
         self._cmds.put((fn, args, kw))
-        if self._stream is None:      # offline / not started: apply immediately
+        if self._stream is None and not self._driven:   # offline / not started: apply immediately
             self._drain()
 
     def _drain(self):
@@ -922,6 +928,16 @@ class Engine:
             if d.cue_phones:
                 cue += y
         self._apply_pause(master, n)
+        pv = None
+        if self.preview is not None:
+            try:
+                pv = self.preview.render(n)[0] * self.preview_level
+            except Exception:  # noqa: BLE001 - the preview must never stop the live mix
+                log.exception("preview render failed")
+                self.preview = None
+            if pv is not None and self.preview_route == "master":
+                master += pv
+                pv = None
         master *= self.master_volume
         # brick-wall peak limiter: instant attack, ~150 ms release; transparent
         # below -1 dBFS and never distorts when two loud tracks overlap
@@ -938,6 +954,8 @@ class Engine:
         self.peak_level = max(min(peak * g1, 1.0), self.peak_level * 0.9)
         np.clip(master, -0.99, 0.99, out=master)
         phones = (cue * (1 - self.cue_mix) + master * self.cue_mix) * self.phones_volume
+        if pv is not None:
+            phones = phones + pv * self.phones_volume
         if self.recorder is not None:
             self.recorder.write(master)
         for tap in self.taps:

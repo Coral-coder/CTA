@@ -1,0 +1,114 @@
+"""Time-shift mixing: rehearse a transition on the preview engine, then
+auto-mix replays it live on the same beat with the same moves."""
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from conftest import synth_track
+
+pytest.importorskip("pylibrb")
+
+from cta.dj.beatgrid import fit_grid  # noqa: E402
+from cta.dj.engine import SR, Engine, TrackInfo  # noqa: E402
+from cta.dj.rehearsal import Rehearsal, RehearsalStore, Session, apply, xf_gain  # noqa: E402
+
+
+def _track(name, bpm, chord):
+    y = synth_track(bpm, 60, chord=chord, sr=SR)
+    a = np.stack([y, y])
+    return SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, bpm), peaks=None,
+                           info=TrackInfo(path=f"/m/{name}.flac", title=name, bpm=bpm, loudness=-10))
+
+
+def _load(eng, deck, t):
+    eng.load(deck, t.audio, t.grid, t.info)
+
+
+def _rehearse(t1, t2):
+    pv = Engine()
+    _load(pv, "A", t1)
+    _load(pv, "B", t2)
+    s = Session(pv)
+    s.rehearse(out_beat=32.0, in_beat=0.0, lead_beats=8.0)
+    a, b = pv.decks["A"], pv.decks["B"]
+    for _ in range(int(20 * SR / 512)):            # lead-in: 8 beats at 124 bpm
+        pv.render(512)
+        if s.mode == "recording":
+            break
+    assert s.mode == "recording"
+    assert abs(a.grid.beat_at(a.time) - 32.0) < 0.1
+    # the DJ mixes: bring B up over 8 beats, swap the bass at beat 8, take A out by beat 16
+    b.volume = 0.0
+    for _ in range(int(30 * SR / 512)):
+        pv.render(512)
+        x = s.x
+        b.volume = float(np.clip(x / 8.0, 0, 1))
+        b.eq = np.array([1.0 if x >= 8 else 0.0, 1.0, 1.0])
+        a.eq = np.array([0.0 if x >= 8 else 1.0, 1.0, 1.0])
+        a.volume = float(np.clip(1 - (x - 8) / 8.0, 0, 1))
+        if s.mode == "done":
+            break
+    assert s.mode == "done"
+    r = s.result
+    s.close()
+    return r
+
+
+def test_rehearse_records_the_moves_on_the_beat():
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    r = _rehearse(t1, t2)
+    assert r.out_path == "/m/one.flac" and r.in_path == "/m/two.flac"
+    assert r.out_start_beat == 32.0 and r.in_start_beat == 0.0
+    assert 16.0 <= r.beats <= 24.0                     # ends a bar after A went silent
+    assert abs(r.value("in_vol", 4.0) - 0.5) < 0.1
+    assert r.value("in_low", 4.0) < 0.1 and r.value("in_low", 12.0) > 0.9
+    assert r.value("out_vol", 15.9) < 0.05
+    # round-trips through storage
+    r2 = Rehearsal.from_dict(r.to_dict())
+    assert r2.value("in_vol", 4.0) == r.value("in_vol", 4.0)
+
+
+def test_apply_folds_the_crossfader_into_the_faders():
+    r = Rehearsal("a", "b", 0, 0, 8, {"xf": [[0, -1.0], [8, 1.0]]})
+    din, dout = SimpleNamespace(), SimpleNamespace()
+    apply(r, 0.0, din, dout)
+    assert dout.volume == 1.0 and din.volume == 0.0          # fully on the outgoing side
+    apply(r, 8.0, din, dout)
+    assert din.volume == 1.0 and dout.volume == 0.0
+    assert xf_gain(0.0, 1) == 1.0 and xf_gain(0.0, -1) == 1.0
+
+
+def test_automix_replays_the_rehearsal_live(tmp_path):
+    from cta.db import Database
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    r = _rehearse(t1, t2)
+    store = RehearsalStore(Database(str(tmp_path / "x.db")))
+    store.put(r)
+    store = RehearsalStore(store.db)                    # read back from the library database
+    assert store.get(r.out_path, r.in_path) is not None
+
+    eng = Engine()
+    tracks = {"one": t1, "two": t2}
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4), synchronous_loads=True)
+    am.rehearsals = store
+    am.set_queue(["one", "two"])
+    am.start()
+    seen = []
+    for _ in range(int(40 * SR / 1024)):
+        eng.render(1024)
+        tr = am.tr
+        if tr is not None and tr.started:
+            din = eng.decks[tr.in_deck]
+            x = din.grid.beat_at(din.time) - tr.in_start_beat
+            seen.append((x, din.volume, eng.decks[tr.out_deck].grid.beat_at(eng.decks[tr.out_deck].time)))
+        if seen and am.tr is None:
+            break
+    assert seen, "the rehearsed transition never started"
+    assert am.history[-1] == "two" and eng.master_deck in ("A", "B")
+    # it started on the rehearsed beat of the outgoing track
+    assert abs(seen[0][2] - 32.0) < 0.2
+    # and the incoming fader followed the rehearsal (half way up after 4 beats)
+    mid = min(seen, key=lambda s: abs(s[0] - 4.0))
+    assert abs(mid[1] - r.value("in_vol", mid[0])) < 0.05

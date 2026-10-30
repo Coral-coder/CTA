@@ -85,6 +85,19 @@ class Knob(QDial):
         self.setValue(self.default)
 
 
+class ResetSlider(QSlider):
+    """Fader / crossfader / tempo: double-click puts it back to its default."""
+
+    def __init__(self, orientation, default: int = 0, tip: str = ""):
+        super().__init__(orientation)
+        self.default = default
+        if tip:
+            self.setToolTip(tip + "\nDouble-click to reset")
+
+    def mouseDoubleClickEvent(self, _ev):
+        self.setValue(self.default)
+
+
 def knob_eq(v: int) -> float:
     x = v / 100.0
     if x <= 0.5:
@@ -124,19 +137,44 @@ class LevelMeter(QWidget):
 
 # Waveform colour themes (Options -> Waveform colours). Bands are (n, 3):
 # low, mid, high energy per pixel column.
-WAVE_THEMES = ["Spectrum", "Three-band", "Fire", "Ice", "Classic"]
+WAVE_THEMES = ["Rainbow", "Spectrum", "Three-band", "Fire", "Ice", "Classic"]
 WAVE_THEME_TIPS = {
-    "Spectrum": "Deep, fully saturated rainbow: bass red, mids orange-yellow-green, highs blue-violet",
+    "Rainbow": "The whole rainbow - red, orange, yellow, green, cyan, blue, violet - from the darkest to "
+               "the brightest sound of each track (kicks red, vocals green, hats violet)",
+    "Spectrum": "Bass red, mids green, highs blue (strong primaries)",
     "Three-band": "Bass, mids and highs drawn as layers: blue lows, amber mids, white highs",
     "Fire": "Loudness as heat: dark red to orange to yellow-white",
     "Ice": "Loudness as cold: navy to cyan to white",
     "Classic": "The original soft colours",
 }
-_theme = {"name": "Spectrum"}
+_theme = {"name": "Rainbow", "sat": 1.0}
 
 
 def set_wave_theme(name: str):
-    _theme["name"] = name if name in WAVE_THEMES else "Spectrum"
+    _theme["name"] = name if name in WAVE_THEMES else "Rainbow"
+
+
+def set_wave_saturation(sat: float):
+    """0 = grey, 1 = natural, up to 2 = extra vivid."""
+    _theme["sat"] = float(np.clip(sat, 0.0, 2.0))
+
+
+def _brightness(b: np.ndarray) -> np.ndarray:
+    """Where each column's sound sits between bass (0) and treble (1)."""
+    b = np.asarray(b, np.float64)
+    return (0.5 * b[:, 1] + 1.0 * b[:, 2]) / (b.sum(axis=1) + 1e-9)
+
+
+def colour_range(bands: np.ndarray | None) -> tuple[float, float]:
+    """The darkest and brightest sound of a track: the rainbow is spread
+    between them, so every track uses all of its colours."""
+    if bands is None or len(bands) == 0:
+        return 0.0, 1.0
+    b = np.asarray(bands[:: max(1, len(bands) // 20000)], np.float64)
+    loud = b.max(axis=1) > 0.05 * max(float(b.max()), 1e-9)
+    x = _brightness(b[loud]) if loud.any() else _brightness(b)
+    lo, hi = np.percentile(x, [3, 97]) if len(x) else (0.0, 1.0)
+    return float(lo), float(max(hi, lo + 0.05))
 
 
 def _hsv(h: np.ndarray, s: np.ndarray, v: np.ndarray) -> np.ndarray:
@@ -156,8 +194,9 @@ def _ramp(x: np.ndarray, stops: list[tuple[float, tuple[int, int, int]]]) -> np.
     return np.stack([np.interp(x, xs, cols[:, k]) for k in range(3)], axis=1)
 
 
-def _band_colors(b: np.ndarray) -> np.ndarray:
-    """(n,3) band levels -> (n,3) uint8 RGB in the chosen theme."""
+def _band_colors(b: np.ndarray, rng: tuple[float, float] | None = None) -> np.ndarray:
+    """(n,3) band levels -> (n,3) uint8 RGB in the chosen theme. rng: the
+    track's colour range (colour_range) for the rainbow."""
     name = _theme["name"]
     b = np.asarray(b, np.float64)
     tot = b.sum(axis=1) + 1e-9
@@ -175,6 +214,12 @@ def _band_colors(b: np.ndarray) -> np.ndarray:
                             (0.9, (150, 245, 255)), (1.0, (245, 255, 255))])
     elif name == "Three-band":
         rgb = np.tile(np.array([[0.12, 0.42, 1.0]]), (len(b), 1))     # outline colour = bass layer
+    elif name == "Rainbow":
+        lo, hi = rng or (0.0, 1.0)
+        x = np.clip((_brightness(b) - lo) / (hi - lo), 0.0, 1.0)
+        hue = 0.80 * x                           # red, orange, yellow, green, cyan, blue, violet
+        val = 0.62 + 0.38 * np.sqrt(level)
+        rgb = _hsv(hue, np.ones_like(hue), val)
     else:  # Spectrum: the "centre of mass" of the spectrum picks the hue
         # emphasise the dominant band so colours stay vivid instead of muddy mixes
         w = b ** 2
@@ -183,18 +228,25 @@ def _band_colors(b: np.ndarray) -> np.ndarray:
         sat = np.full_like(hue, 1.0)
         val = 0.55 + 0.45 * np.sqrt(level)
         rgb = _hsv(hue, sat, val)
+    sat = _theme["sat"]
+    if abs(sat - 1.0) > 1e-3:
+        grey = rgb.mean(axis=1, keepdims=True)
+        rgb = grey + (rgb - grey) * sat
+        if sat > 1.0:                             # keep the brightest channel where it was
+            peak = np.maximum(rgb.max(axis=1, keepdims=True), 1e-9)
+            rgb = np.where(peak > 1.0, rgb / peak, rgb)
     return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
 
 
 THREE_BAND = ((31, 107, 255), (255, 154, 31), (245, 245, 245))   # lows, mids, highs
 
 
-def _wave_image(b: np.ndarray, h: int, past: int | None = None) -> QImage:
+def _wave_image(b: np.ndarray, h: int, past: int | None = None, rng=None) -> QImage:
     """Waveform picture for per-column bands in the current theme."""
     b = np.asarray(b, np.float32)
     if _theme["name"] == "Three-band":
         return _render_layers(np.clip(b, 0, 1), h, past)
-    return _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b), h, past)
+    return _render(np.clip(b.max(axis=1), 0, 1), _band_colors(b, rng), h, past)
 
 
 def _render_layers(b: np.ndarray, h: int, past: int | None = None) -> QImage:
@@ -254,6 +306,7 @@ class Waveform(QWidget):
             self.setMaximumHeight(40)
         self.bands = None          # (frames,3) @ 256-sample hop
         self.peaks = None          # overview (W,3)
+        self.crange = (0.0, 1.0)   # the track's colour range (rainbow)
         self.duration = 1.0
         self.pos = 0.0
         self.grid = None
@@ -271,10 +324,11 @@ class Waveform(QWidget):
         self._drag_x = None
         if zoom:
             self.setCursor(Qt.OpenHandCursor)
-            self.setToolTip("Drag to scratch · double-click to jump · wheel to zoom · right-click for markers")
+            self.setToolTip("Drag to scratch · double-click to jump · − / + to zoom · right-click for markers")
 
     def set_track(self, peaks, bands, duration, grid):
         self.peaks, self.bands, self.duration, self.grid = peaks, bands, max(duration, 1e-3), grid
+        self.crange = colour_range(bands if bands is not None else peaks)
         self._over = None
         self._over_img = (None, None)
         self.update()
@@ -342,11 +396,15 @@ class Waveform(QWidget):
         if self.zoom and self.peaks is not None:
             x = ev.position().x() / max(self.width(), 1)
             self.seek.emit(self.pos + (x - 0.5) * self.span)
+        elif self.peaks is not None:
+            self.marker.emit("edit", 0.0)        # the whole track, zoomable, with its markers
 
     def wheelEvent(self, ev):
-        if self.zoom:
-            self.span = float(np.clip(self.span * (0.8 if ev.angleDelta().y() > 0 else 1.25), 2, 32))
-            self.update()
+        ev.ignore()                  # zoom with the - / + buttons; the wheel scrolls the page
+
+    def set_span(self, span: float):
+        self.span = float(np.clip(span, 2.0, 32.0))
+        self.update()
 
     def _zoom_columns(self, w: int) -> tuple[np.ndarray, float]:
         """Band levels for w+1 pixel columns of the zoomed view. The columns sit
@@ -383,16 +441,16 @@ class Waveform(QWidget):
             return
         if self.zoom and self.bands is not None:
             b, frac = self._zoom_columns(w)
-            p.drawImage(QPointF(-frac, 0), _wave_image(b, h))
+            p.drawImage(QPointF(-frac, 0), _wave_image(b, h, rng=self.crange))
         else:
             if self._over is None or self._over[0] != w:
                 n = self.peaks.shape[0]
                 b = self.peaks[np.linspace(0, n - 1, w).astype(int)]
                 self._over = (w, b)
             past = int(self.pos / self.duration * w)
-            key = (w, h, past, _theme["name"])
+            key = (w, h, past, _theme["name"], _theme["sat"])
             if getattr(self, "_over_img", (None, None))[0] != key:
-                self._over_img = (key, _wave_image(self._over[1], h, past))
+                self._over_img = (key, _wave_image(self._over[1], h, past, rng=self.crange))
             p.drawImage(0, 0, self._over_img[1])
         if self.loop:
             x0, x1 = self._x(self.loop[0] / SR, w), self._x(self.loop[1] / SR, w)
@@ -820,6 +878,7 @@ class MarkerWave(QWidget):
 
     def set_track(self, bands, duration, grid):
         self.bands, self.duration, self.grid = bands, max(duration, 1e-3), grid
+        self.crange = colour_range(bands)
         self._coarse = (None,)
         self.v0, self.v1 = 0.0, self.duration
 
@@ -881,7 +940,7 @@ class MarkerWave(QWidget):
         return best
 
     def wheelEvent(self, ev):
-        self.zoom(0.8 if ev.angleDelta().y() > 0 else 1.25, self._t(ev.position().x()))
+        ev.ignore()                  # zoom with the - / + buttons
 
     def mousePressEvent(self, ev):
         if ev.button() != Qt.LeftButton or self.bands is None:
@@ -939,7 +998,7 @@ class MarkerWave(QWidget):
             b[valid] = self._coarse[1][idx[valid] // step]
         else:
             b[valid] = src[idx[valid]]
-        p.drawImage(0, 0, _wave_image(b, wave_h))
+        p.drawImage(0, 0, _wave_image(b, wave_h, rng=getattr(self, "crange", None)))
         # bars (phrase lines every 8 bars, numbers), beats when close enough
         if self.grid is not None:
             g = self.grid
@@ -1241,10 +1300,9 @@ class DeckPanel(QFrame):
         self.platter.scratch.connect(lambda revs: (self.dj.manual_touch(name, "scratch"), self.scr.move(revs * 1.8)))
         self.platter.scratch_end.connect(self.scr.end)
         tb = QVBoxLayout()
-        self.tempo = QSlider(Qt.Vertical)
+        self.tempo = ResetSlider(Qt.Vertical, 0, "Tempo")
         self.tempo.setRange(-1000, 1000)
         self.tempo.setInvertedAppearance(True)       # down = faster, like a turntable
-        self.tempo.setToolTip("Tempo")
         self.tempo.valueChanged.connect(lambda v: (self.dj.manual_touch(name, "tempo"),
                                                    self.eng.set(name, tempo=v / 1000.0)))
         tb.addWidget(self.tempo, 1, Qt.AlignHCenter)
@@ -1256,6 +1314,18 @@ class DeckPanel(QFrame):
         self.range.currentIndexChanged.connect(
             lambda i: self.eng.set(name, tempo_range=(0.06, 0.08, 0.16, 0.5)[i]))
         tb.addWidget(self.range, 0, Qt.AlignHCenter)
+        # waveform zoom: - / + and sync zoom (both decks together), under the tempo fader
+        zr = QHBoxLayout()
+        zr.setSpacing(2)
+        b_zo = _btn("−", tip="Zoom the waveform out", h=20, w=18)
+        b_zi = _btn("+", tip="Zoom the waveform in", h=20, w=18)
+        b_zo.clicked.connect(lambda: self.dj.zoom_waveforms(self.name, 1.25))
+        b_zi.clicked.connect(lambda: self.dj.zoom_waveforms(self.name, 0.8))
+        self.b_zsync = _btn("⛓", True, "Sync zoom: both decks zoom together", h=20, w=20)
+        self.b_zsync.clicked.connect(lambda on: self.dj.set_zoom_sync(on))
+        for w_ in (b_zo, b_zi, self.b_zsync):
+            zr.addWidget(w_)
+        tb.addLayout(zr)
         self.w_tempo = wrap(tb, 2)
         body = QHBoxLayout()
         body.addWidget(self.platter, 0, Qt.AlignVCenter)
@@ -1730,11 +1800,10 @@ class ChannelStrip(QWidget):
         lay.addWidget(self.cue)
         frow = QHBoxLayout()
         self.meter = LevelMeter(8)
-        self.fader = QSlider(Qt.Vertical)
+        self.fader = ResetSlider(Qt.Vertical, 1000, f"Channel {name} volume")
         self.fader.setRange(0, 1000)
         self.fader.setValue(1000)
         self.fader.setMinimumHeight(72)
-        self.fader.setToolTip(f"Channel {name} volume")
         self.fader.valueChanged.connect(self._fader)
         frow.addWidget(self.meter)
         frow.addWidget(self.fader)
@@ -1829,32 +1898,37 @@ class MixerPanel(QFrame):
         g.addWidget(self.master_meter)
         # ---- crossfader bar (under the decks) ----
         self.xf_bar = QWidget()
-        xb = QHBoxLayout(self.xf_bar)
-        xb.setContentsMargins(4, 0, 4, 0)
+        # three equal-stretch columns: the crossfader sits dead centre, between the decks
+        grid_xf = QGridLayout(self.xf_bar)
+        grid_xf.setContentsMargins(4, 0, 4, 0)
+        grid_xf.setColumnStretch(0, 1)
+        grid_xf.setColumnStretch(2, 1)
+        xb = QHBoxLayout()
         xb.setSpacing(6)
-        xb.addStretch(1)
         la = QLabel("A")
         la.setStyleSheet(f"color: {DECK_COLORS['A'].name()}; font-weight: 900;")
         xb.addWidget(la)
-        self.xf = QSlider(Qt.Horizontal)
+        self.xf = ResetSlider(Qt.Horizontal, 0, "Crossfader")
         self.xf.setRange(-100, 100)
         self.xf.setFixedWidth(220)
-        self.xf.setToolTip("Crossfader (double-click: centre)")
         self.xf.valueChanged.connect(self._xf)
-        self.xf.mouseDoubleClickEvent = lambda _ev: self.xf.setValue(0)
         xb.addWidget(self.xf)
         lb = QLabel("B")
         lb.setStyleSheet(f"color: {DECK_COLORS['B'].name()}; font-weight: 900;")
         xb.addWidget(lb)
-        xb.addStretch(1)
+        grid_xf.addLayout(xb, 0, 1)
+        hp = QHBoxLayout()
+        hp.setSpacing(6)
+        hp.addStretch(1)
         for attr, default, tip, txt in (("cue_mix", 0, "Headphones: cue ↔ master", "MIX"),
                                         ("phones", 80, "Headphone volume", "VOL")):
             k = Knob(default, 24, tip)
             setattr(self, attr, k)
             t = QLabel(txt)
             t.setStyleSheet("font-size: 9px; color: #8d8f97; font-weight: 800;")
-            xb.addWidget(t)
-            xb.addWidget(k)
+            hp.addWidget(t)
+            hp.addWidget(k)
+        grid_xf.addLayout(hp, 0, 2)
         self.cue_mix.valueChanged.connect(lambda v: setattr(eng, "cue_mix", v / 100))
         self.phones.valueChanged.connect(lambda v: setattr(eng, "phones_volume", v / 100))
         # ---- recorder (global row) ----
@@ -2631,6 +2705,10 @@ class DJPanel(QWidget):
 
         self.learner = MixLearner(main_window.db, self.automix)
         self.automix.learner = self.learner
+        from ..dj.rehearsal import RehearsalStore
+
+        self.rehearsals = RehearsalStore(main_window.db)
+        self.automix.rehearsals = self.rehearsals
         self.controller: Controller | None = None
         self.session = time.strftime("%Y-%m-%d ") + uuid.uuid4().hex[:6]
         self._logged: dict[str, tuple[str, float]] = {}
@@ -2719,7 +2797,8 @@ class DJPanel(QWidget):
         hl.addWidget(self.keys_chk)
         act.setDefaultWidget(holder)
         menu.addAction(act)
-        set_wave_theme(self.settings.value("dj_wave_theme", "Spectrum"))
+        set_wave_theme(self.settings.value("dj_wave_theme2", "Rainbow"))
+        set_wave_saturation(float(self.settings.value("dj_wave_sat", 1.0)))
         wmenu = menu.addMenu("Waveform colours")
         from PySide6.QtGui import QActionGroup
 
@@ -2731,6 +2810,23 @@ class DJPanel(QWidget):
             a.setToolTip(WAVE_THEME_TIPS[name])
             grp.addAction(a)
         wmenu.setToolTipsVisible(True)
+        wmenu.addSeparator()
+        sat_holder = QWidget()
+        sl = QHBoxLayout(sat_holder)
+        sl.setContentsMargins(10, 3, 10, 3)
+        sl.addWidget(QLabel("Saturation"))
+        self.sat_slider = ResetSlider(Qt.Horizontal, 100, "Colour saturation (100 % = natural)")
+        self.sat_slider.setRange(0, 200)
+        self.sat_slider.setValue(int(round(_theme["sat"] * 100)))
+        self.sat_slider.setMinimumWidth(140)
+        self.sat_lbl = QLabel(f"{self.sat_slider.value()} %")
+        self.sat_lbl.setMinimumWidth(42)
+        self.sat_slider.valueChanged.connect(self.set_wave_saturation)
+        sl.addWidget(self.sat_slider)
+        sl.addWidget(self.sat_lbl)
+        sat_act = QWidgetAction(wmenu)
+        sat_act.setDefaultWidget(sat_holder)
+        wmenu.addAction(sat_act)
         menu.addAction("Keyboard shortcuts…", lambda: QMessageBox.information(
             self, "Keyboard shortcuts", f"<pre style='font-size:12px'>{HELP}</pre>"))
         b_opts.setMenu(menu)
@@ -2746,12 +2842,21 @@ class DJPanel(QWidget):
         self.stream_lbl.setMaximumWidth(210)
         self.midi_combo.setMinimumWidth(130)
         self.midi_combo.setMaximumWidth(220)
-        for w in (self.stream_lbl, self.b_stream, QLabel("View:"), self.view_combo, b_opts, b_hist):
+        b_ts = QToolButton()
+        b_ts.setText("⏱ Time-Shift")
+        b_ts.setToolTip("Mix the next transition now on your headphones; auto-mix plays it live later")
+        b_ts.clicked.connect(lambda: self.open_timeshift())
+        for w in (self.stream_lbl, self.b_stream, b_ts, QLabel("View:"), self.view_combo, b_opts, b_hist):
             bar.addWidget(w)
         outer.addWidget(bar)
 
         # ---- global row: FX 1 · clock / auto-mix · main level · FX 2 · recorder -------------
         self.decks = {n: DeckPanel(n, self, mirrored=n in "BD") for n in "ABCD"}
+        self.zoom_sync = self.settings.value("dj_zoom_sync", "true") == "true"
+        span0 = float(self.settings.value("dj_zoom_span", 8.0))
+        for p in self.decks.values():
+            p.zoom.set_span(span0)
+            _sync_check(p.b_zsync, self.zoom_sync)
         self.mixer = MixerPanel(self)
         self.fx = [FXPanel(self, 0), FXPanel(self, 1)]
         self.global_w = QWidget()
@@ -3623,9 +3728,46 @@ class DJPanel(QWidget):
             self.start_audio(quiet=True)
             self.main.status_label.setText("Audio device stopped responding - reconnected")
 
+    def open_timeshift(self, out_idx: int | None = None, in_idx: int | None = None):
+        from .timeshift import TimeShiftWindow
+
+        w = getattr(self, "_timeshift", None)
+        if w is not None and w.isVisible():
+            w.raise_()
+            w.activateWindow()
+            return w
+        self._timeshift = TimeShiftWindow(self, out_idx, in_idx)
+        self._timeshift.show()
+        return self._timeshift
+
+    def set_wave_saturation(self, v: int):
+        set_wave_saturation(v / 100.0)
+        self.settings.setValue("dj_wave_sat", _theme["sat"])
+        self.sat_lbl.setText(f"{v} %")
+        for w in self.findChildren(QWidget):
+            if isinstance(w, (Waveform, MarkerWave)):
+                w.update()
+
+    def zoom_waveforms(self, deck: str, factor: float):
+        """- / + on a deck: zoom its waveform (both decks with sync zoom on)."""
+        span = self.decks[deck].zoom.span * factor
+        for n, p in self.decks.items():
+            if n == deck or self.zoom_sync:
+                p.zoom.set_span(span)
+        self.settings.setValue("dj_zoom_span", self.decks[deck].zoom.span)
+
+    def set_zoom_sync(self, on: bool):
+        self.zoom_sync = bool(on)
+        self.settings.setValue("dj_zoom_sync", "true" if on else "false")
+        for p in self.decks.values():
+            _sync_check(p.b_zsync, on)
+        if on:                                    # line the others up with deck A
+            for p in self.decks.values():
+                p.zoom.set_span(self.decks["A"].zoom.span)
+
     def set_wave_theme(self, name: str):
         set_wave_theme(name)
-        self.settings.setValue("dj_wave_theme", _theme["name"])
+        self.settings.setValue("dj_wave_theme2", _theme["name"])
         for w in self.findChildren(QWidget):
             if isinstance(w, (Waveform, MarkerWave)):
                 w.update()
@@ -3666,6 +3808,9 @@ class DJPanel(QWidget):
 
     def shutdown(self):
         self._closing = True
+        ts = getattr(self, "_timeshift", None)
+        if ts is not None:
+            ts.close()
         QApplication.instance().removeEventFilter(self.deck_keys)
         self.timer.stop()
         self.dev_timer.stop()

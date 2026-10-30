@@ -507,3 +507,77 @@ def test_waveform_themes_render_saturated_colours():
         assert all(c.max() - c.min() > 180 for c in rgb)          # saturated, not washed out
     finally:
         DW.set_wave_theme("Spectrum")
+
+
+def test_timeshift_window_rehearses_on_the_preview_only(tmp_data_dir, monkeypatch):
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    for n, bpm in enumerate((124.0, 124.0)):
+        write_audio(str(music / f"t{n}.flac"), synth_track(bpm, 60, chord=(57, 60, 64)))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+    def wait(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        wait(50)
+    w.open_dj()
+    dj = w.dj
+    live = dj.engine
+    ts = dj.open_timeshift(0, 1)
+    assert live.preview is ts.pv
+    for _ in range(200):
+        if ts.pv.decks["A"].loaded and ts.pv.decks["B"].loaded:
+            break
+        live.render(512)                       # the preview runs inside the live engine
+        wait(20)
+    assert ts.pv.decks["A"].loaded and ts.pv.decks["B"].loaded
+    # place an OUT marker on the outgoing in the zoomable waveform: saved with the track
+    g = ts.pv.decks["A"].grid
+    ts._marker_moved("A", "out", g.time_of_beat(48))
+    assert abs(db.get_markers(ts.paths["A"])[1] - g.time_of_beat(48)) < 1e-6
+    ts.rehearse()
+    ts.session.drop_now()
+    for _ in range(400):
+        live.render(512)
+        if ts.session.mode == "recording":
+            break
+    assert ts.session.mode == "recording"
+    # the DJ mixes on the preview mixer: incoming up, outgoing down
+    ts.faders["B"].setValue(1000)
+    for _ in range(100):
+        live.render(512)
+    ts.faders["A"].setValue(0)
+    for _ in range(int(6 * 44100 / 512)):
+        live.render(512)
+        if ts.session.mode == "done":
+            break
+    ts._tick()
+    r = dj.rehearsals.get(ts.paths["A"], ts.paths["B"])
+    assert r is not None and r.beats >= 4
+    assert r.value("in_vol", r.beats) > 0.9 and r.value("out_vol", r.beats) < 0.05
+    # the live decks never moved
+    assert not any(d.playing for d in live.decks.values())
+    ts.close()
+    assert live.preview is None
+    dj.shutdown()
+    w.close()
