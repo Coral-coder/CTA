@@ -172,6 +172,10 @@ def pytest_unconfigure(config):
     import os
     import sys
 
+    import threading
+
+    alive = [t.name for t in threading.enumerate() if t is not threading.main_thread()]
+    sys.stdout.write(f"\n[cta] pytest exit status {_EXIT_STATUS['code']}; threads still running: {alive}\n")
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(_EXIT_STATUS["code"])

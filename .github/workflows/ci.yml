@@ -75,7 +75,13 @@ jobs:
         env:
           CTA_MODEL_PATH: ${{ github.workspace }}/build_models/discogs-effnet-bsdynamic-1.onnx
           QT_QPA_PLATFORM: offscreen
-        run: pytest -v --durations=15
+        shell: bash
+        run: |
+          set +e
+          pytest -v --durations=15
+          code=$?
+          echo "pytest process exit code: $code"
+          exit $code
 
   build:
     name: Build (${{ matrix.target }})
