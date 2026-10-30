@@ -68,6 +68,32 @@ def test_engine_lines_up_master_and_headphones():
     assert eng._pdelay.frames == 0 and abs(eng.display_latency - 0.21) < 1e-9
 
 
+def test_choose_the_clock_who_follows_it_and_adjust_it():
+    from types import SimpleNamespace
+
+    from cta.dj.engine import SR, Engine
+    from cta.dj.outputs import Delay
+
+    eng = Engine()
+    eng.phones_chans = (2, 3)
+    eng.master_delay_s, eng.phones_delay_s = 0.01, 0.01           # wired main and headphones
+    bt = SimpleNamespace(label="JBL", effective_delay=0.20, align=Delay(SR))   # a Bluetooth speaker
+    eng.extra_outputs = [bt]
+    f = lambda s_: int(round(s_ * SR))  # noqa: E731
+    eng.update_alignment()                                         # auto: everything waits for the speaker
+    assert eng._mdelay.frames == f(0.19) and eng._pdelay.frames == f(0.19) and bt.align.frames == 0
+    eng.sync_outputs = {"master", "extra:JBL"}                     # headphones: no added delay
+    eng.update_alignment()
+    assert eng._pdelay.frames == 0 and eng._mdelay.frames == f(0.19)
+    eng.clock_adjust_s = 0.03                                      # by ear: the speaker was early
+    eng.update_alignment()
+    assert eng._mdelay.frames == f(0.22) and bt.align.frames == f(0.03)
+    eng.clock, eng.clock_adjust_s, eng.sync_outputs = "master", 0.0, None   # the main output keeps time
+    eng.update_alignment()
+    assert eng._mdelay.frames == 0 and eng._pdelay.frames == 0 and bt.align.frames == 0
+    assert abs(eng.display_latency - 0.01) < 1e-9
+
+
 def test_audio_dialog_scans_live_and_suggests_bluetooth(tmp_path, monkeypatch):
     """Opening Audio and Rescan never stop the music: devices are found by a
     helper process. New Bluetooth speakers can join the master, in sync."""

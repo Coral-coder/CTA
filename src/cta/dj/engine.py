@@ -231,6 +231,12 @@ class Engine:
         Engine._instances.add(self)
         # time-shift preview: a second engine rendered inside this one's audio
         # callback (its own decks; heard on the headphones, or the main output)
+        # output clock: which output keeps time ("auto" = the slowest), which
+        # outputs follow it (None = all) and the DJ's fine adjustment
+        self.clock = "auto"
+        self.sync_outputs: set[str] | None = None
+        self.clock_adjust_s = 0.0
+        self.output_delay_s: dict[str, float] = {}
         self.preview: Engine | None = None
         self.preview_route = "phones"          # phones | master
         self.preview_level = 1.0
@@ -1115,20 +1121,36 @@ class Engine:
         p = self.phones_delay_s if self.phones_delay_s is not None else self.reported_latency(phones=True)
         return m, p
 
-    def update_alignment(self):
-        """Delay the faster output so master and headphones play together, and
-        set how late positions are drawn."""
+    def output_latencies(self) -> dict[str, float]:
+        """How late each output plays (seconds): "master", "phones" (when used)
+        and "extra:<device>" for every extra speaker."""
         m, p = self.output_delays()
-        phones_used = self.phones_chans is not None
-        extras = tuple(self.extra_outputs)
-        # everything waits for the slowest output, so all speakers (and the
-        # headphones) play the same beat at the same moment
-        target = max([m] + ([p] if phones_used else []) + [o.effective_delay for o in extras])
-        self._mdelay.frames = int(round((target - m) * SR))
-        self._pdelay.frames = int(round((target - p) * SR)) if phones_used else 0
-        for o in extras:
-            o.align.frames = int(round((target - o.effective_delay) * SR))
-        self.display_latency = target
+        lat = {"master": m}
+        if self.phones_chans is not None:
+            lat["phones"] = p
+        for o in self.extra_outputs:
+            lat[f"extra:{o.label}"] = o.effective_delay
+        return lat
+
+    def update_alignment(self):
+        """Line the outputs up with the clock output: every output set to
+        follow the clock is held back until it plays the same beat at the same
+        moment as the clock (+ the DJ's adjustment); the others play at once.
+        Waveforms are drawn as late as the main output plays."""
+        lat = self.output_latencies()
+        synced = [k for k in lat if self.sync_outputs is None or k in self.sync_outputs]
+        if self.clock in lat:
+            base = lat[self.clock]
+        else:                                   # auto: the slowest output that follows the clock
+            base = max((lat[k] for k in synced), default=lat["master"])
+        target = max(0.0, base + self.clock_adjust_s)
+        delay = {k: (max(0.0, target - v) if k in synced else 0.0) for k, v in lat.items()}
+        self._mdelay.frames = int(round(delay["master"] * SR))
+        self._pdelay.frames = int(round(delay.get("phones", 0.0) * SR))
+        for o in self.extra_outputs:
+            o.align.frames = int(round(delay[f"extra:{o.label}"] * SR))
+        self.output_delay_s = delay
+        self.display_latency = lat["master"] + delay["master"]
 
     def _open(self, sd, device, block, master_chans, phones_chans):
         info = sd.query_devices(device, "output")

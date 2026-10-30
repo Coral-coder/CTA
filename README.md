@@ -158,6 +158,12 @@ the bar between them to give the decks more or less room.
     remembered speaker that comes back rejoins by itself; one that drops
     out is removed without touching the rest; a newly paired Bluetooth
     device shows an **Add … as output** button in the status bar.
+  - **Clock (keeps time):** pick the output everything lines up with, or
+    **Auto** (the slowest, usually a Bluetooth speaker). **Sync to the
+    clock** chooses which outputs wait for it; untick your headphones to hear
+    them with no added delay. **Clock adjust** (± ms, with −10 / −1 / +1 /
+    +10 buttons) fine-tunes it by ear while the music plays; Cancel puts it
+    back.
   - Master and headphones can each go to **any connected device**, for
     example the DDJ-T1's outputs, the laptop jack or a Bluetooth speaker.
     The channel pairs offered match each device.
@@ -359,8 +365,13 @@ Under the hood:
     a cue/master mix.
   - A basic map (play, cue, jog, tempo, load, browse) works straight away.
     **Controller setup…** then walks you through every control once ("move
-    the deck A tempo fader…"), so the mapping matches your unit exactly. It
-    is saved, and LEDs follow the deck state.
+    the deck A tempo fader…"). CTA shows what it heard and waits: press
+    **Space** to keep it and go on (**Backspace** listens again, **S** or
+    Space with nothing heard keeps what is set). Steps you don't confirm keep
+    their old settings, so a fader that keeps sending can't run through the
+    list. **Export…** saves the mapping to a file and **Import…** loads one
+    (it is then used every time that controller connects). LEDs follow the
+    deck state.
   - Jog wheel: touch the top to scratch, turn the outer ring to nudge, or
     search when paused.
   - Any other MIDI controller can be mapped with the same wizard.

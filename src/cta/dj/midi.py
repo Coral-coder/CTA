@@ -135,6 +135,18 @@ def save_mapping(device: str, bindings: list[Binding], learned: bool = True):
         json.dump({"device": device, "learned": learned, "bindings": [asdict(b) for b in bindings]}, f, indent=1)
 
 
+def export_mapping(path: str, device: str, bindings: list[Binding]):
+    """Write a mapping file to share or keep (same format as the saved one)."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"device": device, "learned": True, "bindings": [asdict(b) for b in bindings]}, f, indent=1)
+
+
+def import_mapping(path: str) -> list[Binding]:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return [Binding(**b) for b in data["bindings"]]
+
+
 # --------------------------------------------------------------------------
 # message decoding
 # --------------------------------------------------------------------------

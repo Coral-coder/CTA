@@ -50,7 +50,7 @@ from ..dj.automix import AutoMix, AutoMixSettings
 from ..dj.engine import SR, Engine, TrackInfo, list_output_devices
 from ..dj.fx import BEAT_DIVS, FX_TYPES
 from ..dj.loader import load_track
-from ..dj.midi import Controller, Learner, learn_steps
+from ..dj.midi import DECK_ACTIONS, GLOBAL_ACTIONS, Binding, Controller, Learner, learn_steps
 from ..dj.recorder import Recorder
 from ..keys import camelot_str, key_name
 from ..mixer import suggest_next
@@ -2150,6 +2150,39 @@ class AudioSettings(QDialog):
         self.scan_lbl = QLabel("")
         self.scan_lbl.setStyleSheet("color: #9a9ba3;")
         form.addRow("", self.scan_lbl)
+        # ---- sync: which output keeps time, which follow it, fine adjustment ----
+        self.clock = QComboBox()
+        self.clock.setToolTip("The output everything else lines up with. Auto: the slowest one (usually a "
+                              "Bluetooth speaker), so all of them play the same beat together.")
+        form.addRow("Clock (keeps time)", self.clock)
+        self.sync_list = QListWidget()
+        self.sync_list.setMaximumHeight(84)
+        self.sync_list.setToolTip("Ticked outputs wait for the clock so they play in time with it. "
+                                  "Untick one to hear it without any added delay (e.g. your headphones).")
+        self.sync_list.itemChanged.connect(lambda _it: self._clock_live())
+        form.addRow("Sync to the clock", self.sync_list)
+        arow = QHBoxLayout()
+        self.adjust = QSpinBox()
+        self.adjust.setRange(-1000, 1000)
+        self.adjust.setSingleStep(5)
+        self.adjust.setSuffix(" ms")
+        self.adjust.setToolTip("Fine-tune by ear while the music plays: + holds the synced outputs back "
+                               "(they were early), − brings them forward (they were late)")
+        self.adjust.setValue(int(float(settings.value("dj_clock_adjust_ms", 0) or 0)))
+        self.adjust.valueChanged.connect(lambda _v: self._clock_live())
+        arow.addWidget(self.adjust)
+        for txt, d in (("−10", -10), ("−1", -1), ("+1", 1), ("+10", 10)):
+            b = _btn(txt, tip=f"{d:+d} ms", h=24)
+            b.clicked.connect(lambda _=False, d=d: self.adjust.setValue(self.adjust.value() + d))
+            arow.addWidget(b)
+        self.clock_info = QLabel("")
+        self.clock_info.setStyleSheet("color: #9a9ba3;")
+        arow.addWidget(self.clock_info, 1)
+        form.addRow("Clock adjust", arow)
+        self._clock_before = (self.s.value("dj_clock", "auto"), self.s.value("dj_sync_outputs", ""),
+                              self.s.value("dj_clock_adjust_ms", 0))
+        self._fill_clock()
+        self.clock.currentIndexChanged.connect(lambda _i: self._clock_live())
         self.rec_dir = QPushButton(settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music",
                                                                           "CTA Recordings")))
         self.rec_dir.clicked.connect(self._pick_dir)
@@ -2171,6 +2204,81 @@ class AudioSettings(QDialog):
         self.dev.currentIndexChanged.connect(self._dev_changed)
         self.pdev.currentIndexChanged.connect(self._dev_changed)
         self.rescan(force=False)
+
+    # ---- clock ------------------------------------------------------------------------------
+    def _outputs(self) -> list[tuple[str, str]]:
+        """(id, name) of every output in use."""
+        outs = [("master", f"Main output ({self.dev.currentText() or 'default'})")]
+        if self.pdev.currentData() or not self.phones.currentText().lower().startswith("off"):
+            outs.append(("phones", "Headphones"))
+        for e in self.extras:
+            outs.append((f"extra:{e['label']}", e["label"]))
+        return outs
+
+    def _fill_clock(self):
+        import json as _json
+
+        cur = self.clock.currentData() or self.s.value("dj_clock", "auto")
+        try:
+            raw = self.s.value("dj_sync_outputs", "") or ""
+            synced = None if raw in ("", None) else set(_json.loads(raw))
+        except ValueError:
+            synced = None
+        prev: set = set()
+        if self.sync_list.count():               # keep what was just ticked in this dialog
+            prev = {self.sync_list.item(i).data(Qt.UserRole) for i in range(self.sync_list.count())}
+            synced = {self.sync_list.item(i).data(Qt.UserRole) for i in range(self.sync_list.count())
+                      if self.sync_list.item(i).checkState() == Qt.Checked}
+        self.clock.blockSignals(True)
+        self.sync_list.blockSignals(True)
+        self.clock.clear()
+        self.clock.addItem("Auto - the slowest output", "auto")
+        self.sync_list.clear()
+        from PySide6.QtWidgets import QListWidgetItem
+
+        for oid, name in self._outputs():
+            self.clock.addItem(name, oid)
+            it = QListWidgetItem(name)
+            it.setData(Qt.UserRole, oid)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            new = bool(prev) and oid not in prev            # an output added just now follows the clock
+            it.setCheckState(Qt.Checked if synced is None or oid in synced or new else Qt.Unchecked)
+            self.sync_list.addItem(it)
+        i = self.clock.findData(cur)
+        self.clock.setCurrentIndex(max(i, 0))
+        self.clock.blockSignals(False)
+        self.sync_list.blockSignals(False)
+
+    def _clock_values(self):
+        oids = [self.sync_list.item(i).data(Qt.UserRole) for i in range(self.sync_list.count())]
+        synced = [o for i, o in enumerate(oids) if self.sync_list.item(i).checkState() == Qt.Checked]
+        return self.clock.currentData() or "auto", (None if len(synced) == len(oids) else synced), \
+            self.adjust.value()
+
+    def _clock_live(self):
+        """Clock changes are heard at once (the music keeps playing)."""
+        import json as _json
+
+        clock, synced, adj = self._clock_values()
+        self.s.setValue("dj_clock", clock)
+        self.s.setValue("dj_sync_outputs", "" if synced is None else _json.dumps(synced))
+        self.s.setValue("dj_clock_adjust_ms", adj)
+        if self.dj is not None:
+            self.dj.apply_clock()
+            d = self.dj.engine.output_delay_s
+            names = dict(self._outputs())
+            self.clock_info.setText("  ".join(f"{names.get(k, k).split(' (')[0]}: +{v * 1000:.0f} ms"
+                                              for k, v in d.items()))
+
+    def reject(self):
+        # put the clock back as it was
+        c, so, adj = self._clock_before
+        self.s.setValue("dj_clock", c)
+        self.s.setValue("dj_sync_outputs", so)
+        self.s.setValue("dj_clock_adjust_ms", adj)
+        if self.dj is not None:
+            self.dj.apply_clock()
+        super().reject()
 
     def _delay_row(self, form, label, which):
         row = QHBoxLayout()
@@ -2236,6 +2344,8 @@ class AudioSettings(QDialog):
 
     # ---- extra master outputs ------------------------------------------------------------------------
     def _extras_refresh(self):
+        if hasattr(self, "sync_list"):
+            self._fill_clock()
         row = self.extra_list.currentRow()
         self.extra_list.clear()
         present = {r["label"] for r in self.records}
@@ -2291,6 +2401,8 @@ class AudioSettings(QDialog):
         return d[1] if d else 2
 
     def _dev_changed(self, *_):
+        if hasattr(self, "sync_list"):
+            self._fill_clock()
         from ..dj.outputs import BLUETOOTH_GUESS_MS, is_bluetooth
 
         for combo, chans, key, extra in ((self.master, self._channels(self.dev), "dj_master", []),
@@ -2449,6 +2561,12 @@ class TapCalibration(QDialog):
 
 
 class LearnWizard(QDialog):
+    """Controller setup, one control at a time. Move or press the control for
+    the step shown; CTA shows what it heard; press SPACE to keep it and go on
+    (Backspace: listen again, S or Space with nothing heard: keep what is set).
+    Nothing changes until you confirm a step, so a fader that keeps sending
+    while you move it can never run through the list."""
+
     got = Signal(object)
 
     def __init__(self, controller: Controller, decks=("A", "B"), parent=None):
@@ -2458,10 +2576,14 @@ class LearnWizard(QDialog):
         self.decks = decks
         self.result = {(b.action, b.deck): b for b in controller.bindings}
         self.learner = Learner()
+        self.candidate: Binding | None = None
+        self._ignore: tuple[tuple, float] | None = None     # (control, until) just confirmed
+        self._recent: dict[tuple, list] = {}
         lay = QVBoxLayout(self)
         self.adv = QCheckBox("Include hot cues, loops, beat jump, filter and FX controls")
         self.adv.setChecked(True)
         self.adv.toggled.connect(self._rebuild)
+        self.adv.setFocusPolicy(Qt.NoFocus)
         lay.addWidget(self.adv)
         self.prog = QProgressBar()
         lay.addWidget(self.prog)
@@ -2470,20 +2592,31 @@ class LearnWizard(QDialog):
         self.prompt.setWordWrap(True)
         lay.addWidget(self.prompt)
         self.heard = QLabel("")
+        self.heard.setStyleSheet("font-size: 14px; padding: 4px 12px;")
         lay.addWidget(self.heard)
+        keys = QLabel("<b>SPACE</b> keep it and go on  ·  <b>Backspace</b> listen again  ·  "
+                      "<b>S</b> skip (keep what is set)  ·  <b>←</b> back")
+        keys.setStyleSheet("color: #8d8f97; padding: 0 12px;")
+        lay.addWidget(keys)
         row = QHBoxLayout()
-        for txt, fn in (("Back", self._back), ("Skip", self._next)):
+        for txt, fn in (("← Back", self._back), ("Listen again", self._retry), ("Skip", self._next),
+                        ("Keep && next (Space)", self._confirm)):
             b = QPushButton(txt)
             b.clicked.connect(fn)
+            b.setFocusPolicy(Qt.NoFocus)        # Space belongs to the wizard, not a focused button
+            b.setAutoDefault(False)
             row.addWidget(b)
         row.addStretch()
-        b = QPushButton("Finish && save")
-        b.clicked.connect(self._finish)
-        row.addWidget(b)
+        for txt, fn in (("Import…", self._import), ("Export…", self._export), ("Finish && save", self._finish)):
+            b = QPushButton(txt)
+            b.clicked.connect(fn)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.setAutoDefault(False)
+            row.addWidget(b)
         lay.addLayout(row)
         self.got.connect(self._on_event)
         controller.learn_cb = lambda ev: self.got.emit(ev)
-        self.resize(560, 240)
+        self.resize(640, 260)
         self._rebuild()
 
     def _rebuild(self, *_):
@@ -2493,8 +2626,11 @@ class LearnWizard(QDialog):
         self._show()
 
     def _show(self):
+        self.candidate = None
+        self.learner = Learner()
         if self.i >= len(self.steps):
-            self.prompt.setText("All done - click <b>Finish & save</b>.")
+            self.prompt.setText("All done - click <b>Finish & save</b> (then <b>Export…</b> to keep a copy).")
+            self.heard.setText("")
             self.prog.setValue(len(self.steps))
             return
         action, deck, text = self.steps[self.i]
@@ -2502,27 +2638,94 @@ class LearnWizard(QDialog):
             extra = "Move it slowly from the TOP to the BOTTOM."
         elif action in ("jog", "browse"):
             extra = "Turn it a little clockwise."
-        elif action in ("volume", "eq_high", "eq_mid", "eq_low", "gain", "crossfader", "master_volume",
-                        "cue_mix", "phones_volume", "filter", "fx1_wet", "fx1_amount", "fx2_wet", "fx2_amount"):
-            extra = "Move it a little."
+        elif (DECK_ACTIONS.get(action) or GLOBAL_ACTIONS.get(action))[0] == "button":
+            extra = "Press it once."
         else:
-            extra = "Press it."
+            extra = "Move it a little."
         have = self.result.get((action, deck))
-        cur = f"<br><small>currently: {have.type} ch{have.ch + 1} #{have.num}</small>" if have else ""
-        self.prompt.setText(f"<b>{text}</b><br><small>{extra}</small>{cur}")
+        cur = f"<br><small>now set to: {have.type} ch{have.ch + 1} #{have.num}</small>" if have else \
+            "<br><small>not set yet</small>"
+        self.prompt.setText(f"<b>{self.i + 1}/{len(self.steps)} · {text}</b><br><small>{extra}</small>{cur}")
+        self.heard.setText("Waiting for the control… (Space to skip)")
         self.prog.setValue(self.i)
-        self.learner = Learner()
+
+    @staticmethod
+    def _id(b) -> tuple:
+        return (b.type if b.type != "cc14" else "cc", b.ch, b.num)
 
     def _on_event(self, ev):
-        self.heard.setText(f"heard: {ev.type} ch{ev.ch + 1} #{ev.num} = {ev.value}")
+        import time as _t
+
         if self.i >= len(self.steps):
             return
+        now = _t.monotonic()
+        cid = (ev.type if ev.type != "cc14" else "cc", ev.ch, ev.num)
+        if self._ignore is not None and cid == self._ignore[0] and now < self._ignore[1]:
+            return                                  # the control you just confirmed, still moving
+        rec = self._recent.setdefault(cid, [])
+        rec.append((now, ev.value))
+        del rec[:-12]
+        if self.candidate is not None:
+            if self._id(self.candidate) == cid:
+                self.heard.setText(self._describe(self.candidate) + f"  = {ev.value}   - press SPACE to keep it")
+            return                                  # one control per step until you confirm or retry
         action, deck, _ = self.steps[self.i]
+        kind = (DECK_ACTIONS.get(action) or GLOBAL_ACTIONS.get(action))[0]
+        if kind == "button" and ev.type != "note":
+            # a fader sends a stream of different values; a button only full on / off
+            vals = {v for t, v in rec if now - t < 0.6}
+            if ev.value != 127 or len(vals) > 2:
+                return
         b = self.learner.offer(action, ev)
-        if b is not None:
-            b.deck = deck
-            self.result[(action, deck)] = b
-            QTimer.singleShot(350, self._next)
+        if b is None:
+            self.heard.setText(f"heard {ev.type} ch{ev.ch + 1} #{ev.num} = {ev.value} …")
+            return
+        b.deck = deck
+        self.candidate = b
+        clash = [k for k, v in self.result.items() if self._id(v) == self._id(b) and k != (action, deck)]
+        warn = ""
+        if clash:
+            a2, d2 = clash[0]
+            warn = f"<br><span style='color:#ffb547'>already used for {a2}{' ' + d2 if d2 else ''} - Space uses " \
+                   f"it for both, Backspace to pick another</span>"
+        self.heard.setText(f"<b>Got: {self._describe(b)}</b> - press <b>SPACE</b> to keep it{warn}")
+
+    @staticmethod
+    def _describe(b) -> str:
+        kind = {"cc14": "14-bit fader", "cc": "control", "note": "button"}.get(b.type, b.type)
+        extra = (" (relative)" if b.relative else "") + (" (inverted)" if b.invert else "")
+        return f"{kind} ch{b.ch + 1} #{b.num}{extra}"
+
+    def keyPressEvent(self, ev):
+        k = ev.key()
+        if ev.isAutoRepeat():
+            return
+        if k == Qt.Key_Space:
+            self._confirm()
+        elif k in (Qt.Key_Backspace, Qt.Key_Delete):
+            self._retry()
+        elif k == Qt.Key_S:
+            self._next()
+        elif k == Qt.Key_Left:
+            self._back()
+        elif k == Qt.Key_Escape:
+            super().keyPressEvent(ev)
+
+    def _confirm(self):
+        import time as _t
+
+        if self.i >= len(self.steps):
+            return
+        if self.candidate is not None:
+            action, deck, _ = self.steps[self.i]
+            self.result[(action, deck)] = self.candidate
+            self._ignore = (self._id(self.candidate), _t.monotonic() + 1.0)
+        self._next()
+
+    def _retry(self):
+        self.candidate = None
+        self.learner = Learner()
+        self.heard.setText("Listening again… move or press the control.")
 
     def _next(self):
         self.i = min(self.i + 1, len(self.steps))
@@ -2535,6 +2738,31 @@ class LearnWizard(QDialog):
     def _finish(self):
         self.ctl.set_bindings(list(self.result.values()), learned=True)
         self.accept()
+
+    def _export(self):
+        from ..dj.midi import export_mapping
+
+        path, _ = QFileDialog.getSaveFileName(self, "Export controller mapping",
+                                              f"{self.ctl.device or 'controller'}.json", "Mapping (*.json)")
+        if path:
+            export_mapping(path, self.ctl.device, list(self.result.values()))
+            self.heard.setText(f"Exported to {path}")
+
+    def _import(self):
+        from ..dj.midi import import_mapping
+
+        path, _ = QFileDialog.getOpenFileName(self, "Import controller mapping", "", "Mapping (*.json)")
+        if not path:
+            return
+        try:
+            bs = import_mapping(path)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Import", f"Could not read that mapping:\n{e}")
+            return
+        self.result = {(b.action, b.deck): b for b in bs}
+        self.ctl.set_bindings(bs, learned=True)        # used from now on, every time it connects
+        self.heard.setText(f"Imported {len(bs)} controls from {path} - saved for this controller")
+        self._show()
 
     def done(self, r):
         self.ctl.learn_cb = None
@@ -3087,6 +3315,7 @@ class DJPanel(QWidget):
             eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_device=pdev)
             if not eng.extra_outputs:
                 self.apply_extras()
+            self.apply_clock()
             if eng.phones_chans is None:
                 phones = "no separate headphones"
             elif eng._pstream is not None:
@@ -3114,6 +3343,20 @@ class DJPanel(QWidget):
         elif not self.engine.running:
             self.start_audio()
 
+    def apply_clock(self):
+        """Which output keeps time, which follow it, and the DJ's adjustment."""
+        import json as _json
+
+        eng = self.engine
+        eng.clock = str(self.settings.value("dj_clock", "auto") or "auto")
+        raw = self.settings.value("dj_sync_outputs", "") or ""
+        try:
+            eng.sync_outputs = None if raw in ("", None) else set(_json.loads(raw))
+        except ValueError:
+            eng.sync_outputs = None
+        eng.clock_adjust_s = float(self.settings.value("dj_clock_adjust_ms", 0) or 0) / 1000.0
+        eng.update_alignment()
+
     def apply_audio_settings(self, dlg=None):
         """Apply the audio settings. Only a new main sound card, channels or
         buffer restart the audio; delays and extra speakers change live."""
@@ -3135,6 +3378,7 @@ class DJPanel(QWidget):
                 setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
             eng.update_alignment()
         self.apply_extras()
+        self.apply_clock()
 
     # ---- extra master outputs (more speakers, in sync) -------------------------------------------
     def wanted_extras(self) -> list[dict]:
