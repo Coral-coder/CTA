@@ -130,9 +130,54 @@ class ResetSlider(QSlider):
         super().__init__(orientation)
         self.default = default
         if tip:
-            self.setToolTip(tip + "\nDouble-click to reset")
+            self.setToolTip(tip + "\nDrag from where it is (Shift: fine) · double-click to reset")
+
+    # drag from where it is - clicking the track never jumps the handle to the
+    # mouse (a fader you grab mid-mix must not leap); Shift = fine
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._drag = (self._along(ev), float(self.value()))
+            self._fine = bool(ev.modifiers() & Qt.ShiftModifier)
+            self.setSliderDown(True)
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def _along(self, ev) -> float:
+        """Mouse position along the slider, growing in the direction of 'more'."""
+        p = ev.position()
+        if self.orientation() == Qt.Horizontal:
+            v = p.x()
+        else:
+            v = -p.y()                                  # up = more
+        return -v if self.invertedAppearance() else v
+
+    def mouseMoveEvent(self, ev):
+        drag = getattr(self, "_drag", None)
+        if drag is None:
+            return
+        fine = bool(ev.modifiers() & Qt.ShiftModifier)
+        if fine != self._fine:                          # Shift mid-drag: carry on from here
+            self._fine = fine
+            self._drag = (self._along(ev), float(self.value()))
+            return
+        a0, v0 = drag
+        length = max((self.width() if self.orientation() == Qt.Horizontal else self.height()) - 16, 20)
+        scale = (self.maximum() - self.minimum()) / length * (0.2 if fine else 1.0)
+        v = v0 + (self._along(ev) - a0) * scale
+        self.setValue(int(round(min(max(v, self.minimum()), self.maximum()))))
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        if getattr(self, "_drag", None) is not None:
+            self._drag = None
+            self.setSliderDown(False)
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
 
     def mouseDoubleClickEvent(self, _ev):
+        self._drag = None
         self.setValue(self.default)
 
 
@@ -3176,6 +3221,7 @@ class DJPanel(QWidget):
 
         self.rehearsals = RehearsalStore(main_window.db)
         self.automix.rehearsals = self.rehearsals
+        self.automix.rehearsal_fill = self.settings.value("ts_fill", "true") == "true"
         self.controller: Controller | None = None
         self.session = time.strftime("%Y-%m-%d ") + uuid.uuid4().hex[:6]
         self._logged: dict[str, tuple[str, float]] = {}

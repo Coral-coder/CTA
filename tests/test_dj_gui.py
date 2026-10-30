@@ -632,3 +632,40 @@ def test_knobs_turn_with_vertical_drag_and_never_jump():
     ev(QEvent.MouseButtonRelease, 2, 6)
     ev(QEvent.MouseMove, 2, -500)                 # not held: nothing
     assert k.value() == 45
+
+
+def test_faders_and_crossfader_drag_from_where_they_are():
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    from cta.gui.dj_window import ResetSlider
+
+    def drag(sl, pts, mods=Qt.NoModifier):
+        for i, (x, y) in enumerate(pts):
+            kind = QEvent.MouseButtonPress if i == 0 else (
+                QEvent.MouseButtonRelease if i == len(pts) - 1 else QEvent.MouseMove)
+            btn = Qt.LeftButton if kind != QEvent.MouseMove else Qt.NoButton
+            held = Qt.NoButton if kind == QEvent.MouseButtonRelease else Qt.LeftButton
+            p = QPointF(x, y)
+            app.sendEvent(sl, QMouseEvent(kind, p, p, btn, held, mods))
+
+    fader = ResetSlider(Qt.Vertical, 1000)
+    fader.setRange(0, 1000)
+    fader.resize(20, 216)                          # 200 px of travel = the whole range
+    fader.setValue(500)
+    drag(fader, [(10, 200), (10, 200)])            # click near the bottom: no jump
+    assert fader.value() == 500
+    drag(fader, [(10, 100), (10, 60), (10, 60)])   # 40 px up: +200
+    assert fader.value() == 700
+    xf = ResetSlider(Qt.Horizontal, 0)
+    xf.setRange(-100, 100)
+    xf.resize(216, 20)
+    drag(xf, [(5, 10), (55, 10), (55, 10)])        # grabbed at the far left, 50 px right: +50
+    assert xf.value() == 50
+    tempo = ResetSlider(Qt.Vertical, 0)
+    tempo.setRange(-1000, 1000)
+    tempo.setInvertedAppearance(True)              # down = faster, like a turntable
+    tempo.resize(20, 216)
+    drag(tempo, [(10, 100), (10, 110), (10, 110)])
+    assert tempo.value() == 100

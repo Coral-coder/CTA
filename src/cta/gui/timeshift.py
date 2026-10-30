@@ -56,7 +56,8 @@ class LanesView(QWidget):
         r = self.r
         if r is None or r.beats <= 0:
             p.setPen(QColor(110, 112, 120))
-            p.drawText(self.rect(), Qt.AlignCenter, "Rehearse a transition: your moves appear here")
+            p.drawText(self.rect(), Qt.AlignCenter,
+                       "Mix the two decks (or press Rehearse): your moves appear here")
             return
         span = max(r.beats, 1.0)
         for bar in range(0, int(span) + 1, 4):
@@ -210,8 +211,27 @@ class TimeShiftWindow(QDialog):
         lay.addWidget(mix)
 
         # ---- rehearsal ---------------------------------------------------------------------
-        rec = QGroupBox("REHEARSE THE TRANSITION")
+        rec = QGroupBox("RECORD THE TRANSITION")
         rl = QVBoxLayout(rec)
+        trow = QHBoxLayout()
+        st = dj.settings
+        self.auto_rec = QCheckBox("Record whenever I mix the two decks")
+        self.auto_rec.setToolTip("On: starting the incoming while the outgoing plays records the transition, "
+                                 "saved for auto-mix.\nOff: just mix and listen - nothing is recorded "
+                                 "(● Rehearse still records).")
+        self.auto_rec.setChecked(st.value("ts_auto_record", "true") == "true")
+        self.auto_rec.toggled.connect(self._auto_rec_toggled)
+        self.fill = QCheckBox("Controls I didn't touch follow auto-mix")
+        self.fill.setToolTip("On: only what you moved is replayed; auto-mix does the rest (e.g. its bass swap).\n"
+                             "Off: the transition plays exactly as recorded.")
+        self.fill.setChecked(st.value("ts_fill", "true") == "true")
+        self.fill.toggled.connect(self._fill_toggled)
+        trow.addWidget(self.auto_rec)
+        trow.addWidget(self.fill)
+        trow.addStretch(1)
+        rl.addLayout(trow)
+        self.session.auto_record = self.auto_rec.isChecked()
+        self.session.fill = self.fill.isChecked()
         row = QHBoxLayout()
         self.b_rec = QPushButton("● Rehearse")
         self.b_rec.setToolTip("The outgoing plays from 8 bars before its OUT marker; the incoming drops in on the "
@@ -303,6 +323,8 @@ class TimeShiftWindow(QDialog):
             return
         self.pv.load_track(deck, lt, only_if_stopped=False)
         self.pv.set(deck, volume=1.0)
+        if deck == "B":                          # the incoming follows the outgoing, beat for beat
+            self.pv.set("B", sync=True, keylock=True)
         self.paths[deck] = lt.info.path
         self.titles[deck].setText(f"{lt.info.artist + ' - ' if lt.info.artist else ''}{lt.info.title}"
                                   f"   ·  {lt.grid.bpm:.1f} BPM")
@@ -394,6 +416,15 @@ class TimeShiftWindow(QDialog):
         if not (self.paths["A"] and self.paths["B"]):
             return None
         return self.store.find(self.paths["A"], self.paths["B"])
+
+    def _auto_rec_toggled(self, on: bool):
+        self.session.auto_record = bool(on)
+        self.dj.settings.setValue("ts_auto_record", "true" if on else "false")
+
+    def _fill_toggled(self, on: bool):
+        self.session.fill = bool(on)
+        self.dj.automix.rehearsal_fill = bool(on)
+        self.dj.settings.setValue("ts_fill", "true" if on else "false")
 
     def _use_toggled(self, on: bool):
         r = self._current()

@@ -101,6 +101,31 @@ class _Transition:
         return 0.0
 
 
+def _ramp(v: float) -> float:
+    return float(np.clip(v, 0.0, 1.0))
+
+
+def blend_values(x: float, beats: float, swap_beat: float, tail_beats: float, bass_swap: bool = True) -> dict:
+    """Auto-mix's EQ blend at beat x: levels and EQs of the incoming and the
+    outgoing. The incoming comes in highs first with mids under and bass cut;
+    the outgoing eases off (highs, mids, a little level) through the second
+    half of the build-up; the basses swap on the downbeat; then the outgoing
+    fades away over the tail - a real crossfade, never a sudden drop."""
+    beats = max(beats, 1.0)
+    sw = min(swap_beat, beats)
+    fade_in = min(float(np.clip(0.4 * beats, 4.0, 32.0)), max(sw, 4.0))
+    swap = _ramp((x - sw) / 0.5 + 0.5) if bass_swap else _ramp(x / beats)
+    pre = _ramp((x - 0.5 * sw) / max(0.5 * sw, 1.0))        # second half before the swap
+    post = _ramp((x - sw) / max(beats + tail_beats - sw, 4.0))
+    return {
+        "in_vol": float(np.sin(_ramp(x / fade_in) * np.pi / 2)),
+        "in_eq": (swap, 0.5 + 0.5 * _ramp(x / max(sw, 1.0)), 1.0),
+        "out_eq": (1.0 - swap, float(np.clip(1.0 - 0.3 * pre - 0.5 * post, 0, 1)),
+                   float(np.clip(1.0 - 0.35 * pre - 0.5 * post, 0, 1))),
+        "out_vol": float((1.0 - 0.2 * pre) * np.cos(post * np.pi / 2)),
+    }
+
+
 SHORT_BLEND_GENRES = {"Hip Hop", "Pop", "Rock", "Funk / Soul", "Latin", "Reggae", "Folk, World, & Country",
                       "Blues", "Jazz", "Brass & Military", "Children's", "Stage & Screen"}
 
@@ -129,6 +154,7 @@ class AutoMix:
         self.learner = None                  # MixLearner: the DJ's own transition habits
         self.resume_after_manual = False     # the DJ took over a blend: carry on after it
         self.rehearsals = None               # RehearsalStore: transitions the DJ mixed ahead of time
+        self.rehearsal_fill = True           # untouched controls of a recorded mix follow auto-mix
         self._resume_t = None
         self._sync_loads = synchronous_loads
         self._loading_item: dict = {}
@@ -443,8 +469,8 @@ class AutoMix:
         if r is not None and r.out_start_beat > now_beat + 1.0:
             # the DJ mixed this one ahead of time: same beat, same moves
             return _Transition(m.name, din_name, r.out_start_beat, r.beats, in_start_beat=r.in_start_beat,
-                               swap_beat=r.beats, style="rehearsed", reason="your time-shifted mix",
-                               fixed_length=True, rehearsal=r)
+                               swap_beat=float(np.floor(r.beats / 8.0) * 4.0) or r.beats / 2,
+                               style="rehearsed", reason="your time-shifted mix", fixed_length=True, rehearsal=r)
         ratio = e.sync_ratio(m.bpm, din.grid.bpm)
         gap = abs(ratio - 1.0) * 100
         harmonic = compatibility(m.effective_key, din.info.key) if din.info.key >= 0 else 1.0
@@ -519,6 +545,15 @@ class AutoMix:
         tr = self.tr
         din, dout = e.decks[tr.in_deck], e.decks[tr.out_deck]
         if not tr.started:
+            # a mix recorded (Mix Ahead) after this transition was planned takes over
+            if tr.style != "rehearsed" and self.rehearsals is not None and not tr.fixed_length:
+                try:
+                    r = self.rehearsals.get(dout.info.path, din.info.path)
+                except Exception:  # noqa: BLE001
+                    r = None
+                if r is not None and r.out_start_beat > mb + 1.0:
+                    self.tr = tr = self._make_plan(e, m, tr.in_deck, mb)
+                    log.info("auto-mix: using the mix recorded ahead for %s", din.info.title)
             # hold the groove: engage the outgoing loop when we reach it
             if tr.loop and not tr.loop_set and mb >= tr.loop[0] - 0.05:
                 g = dout.grid
@@ -545,7 +580,9 @@ class AutoMix:
             if tr.rehearsal is not None:
                 from .rehearsal import apply
 
-                apply(tr.rehearsal, 0.0, din, dout)
+                apply(tr.rehearsal, 0.0, din, dout, e,
+                      blend_values(0.0, tr.beats, tr.swap_beat, 0.0, self.s.bass_swap) if self.rehearsal_fill
+                      else None)
             if tr.in_loop is not None:
                 g = din.grid
                 din.loop = (g.time_of_beat(tr.in_loop[0]) * SR, g.time_of_beat(tr.in_loop[1]) * SR)
@@ -577,7 +614,9 @@ class AutoMix:
         if tr.style == "rehearsed":
             from .rehearsal import apply
 
-            apply(tr.rehearsal, x, din, dout)
+            # your recorded moves; whatever you did not touch follows auto-mix's blend
+            apply(tr.rehearsal, x, din, dout, e,
+                  blend_values(x, tr.beats, tr.swap_beat, 0.0, self.s.bass_swap) if self.rehearsal_fill else None)
         elif tr.style == "echo_out":
             self._echo_out(e, tr, din, dout, x)
         else:
@@ -628,23 +667,10 @@ class AutoMix:
         return float(np.clip(v, 0.0, 1.0))
 
     def _blend(self, tr: _Transition, din, dout, x: float):
-        """EQ mixing like a DJ: the incoming comes in highs first with mids
-        under and bass cut; the outgoing eases off (highs, mids, a little
-        level) through the second half of the build-up; the basses swap on
-        the downbeat; then the outgoing fades away over the tail - a real
-        crossfade, never a sudden drop."""
-        beats = max(tr.beats, 1.0)
-        sw = min(tr.swap_beat, beats)
-        fade_in = min(float(np.clip(0.4 * beats, 4.0, 32.0)), max(sw, 4.0))
-        din.volume = float(np.sin(self._ramp(x / fade_in) * np.pi / 2))
-        swap = self._ramp((x - sw) / 0.5 + 0.5) if self.s.bass_swap else self._ramp(x / beats)
-        mid_in = 0.5 + 0.5 * self._ramp(x / max(sw, 1.0))
-        din.eq = np.array([swap, mid_in, 1.0])
-        pre = self._ramp((x - 0.5 * sw) / max(0.5 * sw, 1.0))        # second half before the swap
-        post = self._ramp((x - sw) / max(beats + tr.tail_beats - sw, 4.0))
-        dout.eq = np.array([1.0 - swap, float(np.clip(1.0 - 0.3 * pre - 0.5 * post, 0, 1)),
-                            float(np.clip(1.0 - 0.35 * pre - 0.5 * post, 0, 1))])
-        dout.volume = float((1.0 - 0.2 * pre) * np.cos(post * np.pi / 2))
+        """EQ mixing like a DJ (see blend_values)."""
+        v = blend_values(x, tr.beats, tr.swap_beat, tr.tail_beats, self.s.bass_swap)
+        din.volume, din.eq = v["in_vol"], np.array(v["in_eq"])
+        dout.volume, dout.eq = v["out_vol"], np.array(v["out_eq"])
 
     def _echo_out(self, e: Engine, tr: _Transition, din, dout, x: float):
         """Clash-safe: the outgoing track echoes away on the last bar, the next
@@ -681,6 +707,8 @@ class AutoMix:
         dout.sync = False
         dout.rate_override = None
         dout.filter = 0.0
+        if tr.style == "rehearsed":
+            e.crossfader = 0.0                 # the playing deck is unaffected; the next blend starts centred
         if tr.style != "rehearsed":            # a rehearsed mix ends where the DJ left the incoming
             din.volume = 1.0
             din.eq = np.ones(3)

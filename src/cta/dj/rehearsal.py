@@ -45,6 +45,14 @@ class Rehearsal:
     created: float = field(default_factory=time.time)
     enabled: bool = True
 
+    def touched(self, lane: str) -> bool:
+        """Did the DJ move this control during the recording?"""
+        pts = self.lanes.get(lane) or []
+        if not pts:
+            return False
+        vs = [p[1] for p in pts]
+        return max(vs) - min(vs) > 0.02 or abs(vs[0] - DEFAULTS[lane]) > 0.02
+
     def value(self, lane: str, x: float) -> float:
         pts = self.lanes.get(lane)
         if not pts:
@@ -64,18 +72,34 @@ class Rehearsal:
                    created=float(d.get("created", 0)), enabled=bool(d.get("enabled", True)))
 
 
-def apply(r: Rehearsal, x: float, din, dout):
-    """Put the rehearsed moves at beat x onto the live decks. The crossfader
-    move is folded into the two channel levels, so the live crossfader (and
-    which side each deck is on) does not matter."""
-    xf = r.value("xf", x)
-    # engine gain = volume^2 * crossfader: fold the crossfader into the fader
-    dout.volume = float(np.clip(r.value("out_vol", x) * np.sqrt(xf_gain(xf, -1)), 0.0, 1.0))
-    din.volume = float(np.clip(r.value("in_vol", x) * np.sqrt(xf_gain(xf, 1)), 0.0, 1.0))
-    dout.eq = np.array([r.value("out_low", x), r.value("out_mid", x), r.value("out_high", x)])
-    din.eq = np.array([r.value("in_low", x), r.value("in_mid", x), r.value("in_high", x)])
-    dout.filter = r.value("out_filter", x)
-    din.filter = r.value("in_filter", x)
+def apply(r: Rehearsal, x: float, din, dout, eng=None, base: dict | None = None):
+    """Put the recorded moves at beat x onto the decks. Controls the DJ did
+    not touch follow `base` (auto-mix's own blend at that beat), so a mix
+    recorded with only the crossfader still gets auto-mix's EQ work.
+    The crossfader really moves (mirrored when the outgoing is on the right);
+    with both decks on the same side it is folded into the channel levels."""
+    lv = any(r.touched(k) for k in ("xf", "out_vol", "in_vol"))
+    if lv:
+        xf = r.value("xf", x)
+        ov, iv = r.value("out_vol", x), r.value("in_vol", x)
+        if eng is not None and dout.xf_side != din.xf_side and dout.xf_side != 0:
+            eng.crossfader = float(np.clip(xf * -dout.xf_side, -1.0, 1.0))
+            dout.volume, din.volume = float(np.clip(ov, 0, 1)), float(np.clip(iv, 0, 1))
+        else:                   # engine gain = volume^2 * crossfader: fold it into the faders
+            dout.volume = float(np.clip(ov * np.sqrt(xf_gain(xf, -1)), 0.0, 1.0))
+            din.volume = float(np.clip(iv * np.sqrt(xf_gain(xf, 1)), 0.0, 1.0))
+    elif base is not None:
+        dout.volume, din.volume = base["out_vol"], base["in_vol"]
+    eq_out = list(base["out_eq"]) if base is not None else [1.0, 1.0, 1.0]
+    eq_in = list(base["in_eq"]) if base is not None else [1.0, 1.0, 1.0]
+    for i, band in enumerate(("low", "mid", "high")):
+        if r.touched(f"out_{band}") or base is None:
+            eq_out[i] = r.value(f"out_{band}", x)
+        if r.touched(f"in_{band}") or base is None:
+            eq_in[i] = r.value(f"in_{band}", x)
+    dout.eq, din.eq = np.array(eq_out), np.array(eq_in)
+    dout.filter = r.value("out_filter", x) if r.touched("out_filter") else 0.0
+    din.filter = r.value("in_filter", x) if r.touched("in_filter") else 0.0
 
 
 class RehearsalStore:
@@ -147,6 +171,9 @@ class Session:
         self.result: Rehearsal | None = None
         self._quiet = 0.0
         self._last: dict[str, float] = {}
+        self._b_was = False
+        self.auto_record = True          # mixing the two preview decks records the transition
+        self.fill = True                 # replay: controls not touched follow auto-mix
         eng.hooks.append(self._hook)
 
     # ---- control (UI thread; applied in the audio thread) ---------------------------
@@ -207,9 +234,23 @@ class Session:
 
     # ---- audio thread ----------------------------------------------------------------
     def _hook(self, e, n: int):
-        if self.mode in ("idle", "done"):
-            return
         a, b = e.decks[self.OUT], e.decks[self.IN]
+        started = b.playing and not self._b_was
+        self._b_was = b.playing
+        if self.mode in ("idle", "done"):
+            # just mixing on the preview records it: the incoming starting while
+            # the outgoing plays is the start of a transition
+            if started and a.playing and a.grid and b.grid and self.auto_record:
+                self.replaying = None
+                self.result = None
+                self.lanes = {k: [] for k in LANES}
+                self._last = {}
+                self.out_start_beat = a.grid.beat_at(a.time)
+                self.in_start_beat = b.grid.beat_at(b.time)
+                self.mode = "recording"
+                self._quiet = 0.0
+            else:
+                return
         if not (a.grid and b.grid):
             return
         ab = a.grid.beat_at(a.time)
@@ -225,7 +266,11 @@ class Session:
                 return
         self.x = b.grid.beat_at(b.time) - self.in_start_beat
         if self.mode == "replay":
-            apply(self.replaying, self.x, b, a)
+            from .automix import blend_values
+
+            r = self.replaying
+            sw = float(np.floor(r.beats / 8.0) * 4.0) or r.beats / 2
+            apply(r, self.x, b, a, e, blend_values(self.x, r.beats, sw, 0.0) if self.fill else None)
             if self.x >= self.replaying.beats:
                 a.playing = False
                 self.mode = "done"

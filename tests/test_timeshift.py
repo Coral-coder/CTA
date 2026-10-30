@@ -112,3 +112,72 @@ def test_automix_replays_the_rehearsal_live(tmp_path):
     # and the incoming fader followed the rehearsal (half way up after 4 beats)
     mid = min(seen, key=lambda s: abs(s[0] - 4.0))
     assert abs(mid[1] - r.value("in_vol", mid[0])) < 0.05
+
+
+def test_mixing_the_preview_records_itself_and_can_be_switched_off():
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    pv = Engine()
+    _load(pv, "A", t1)
+    _load(pv, "B", t2)
+    s = Session(pv)
+    a = pv.decks["A"]
+    pv.set("B", sync=True, keylock=True)
+    pv.set_playing("A", True)
+    for _ in range(int(2 * SR / 512)):
+        pv.render(512)
+    s.auto_record = False                          # "just mix": nothing is recorded
+    pv.set_playing("B", True)
+    pv.render(512)
+    assert s.mode == "idle"
+    pv.set_playing("B", False)
+    pv.render(512)
+    s.auto_record = True
+    pv.set_playing("B", True)                      # bring the incoming in: recording starts by itself
+    pv.render(512)
+    assert s.mode == "recording"
+    for _ in range(int(20 * SR / 512)):
+        pv.render(512)
+        pv.crossfader = float(np.clip(-1 + s.x / 4.0, -1, 1))   # the DJ swings the crossfader over 8 beats
+        a.volume = 1.0 if s.x < 8 else 0.0
+        if s.mode == "done":
+            break
+    assert s.mode == "done" and s.result is not None
+    r = s.result
+    assert r.touched("xf") and not r.touched("in_low")
+    s.close()
+
+    # replay: the crossfader really moves; the untouched EQ follows auto-mix's blend
+    from cta.dj.automix import blend_values
+
+    din, dout = SimpleNamespace(xf_side=1), SimpleNamespace(xf_side=-1)
+    eng = SimpleNamespace(crossfader=0.0)
+    base = blend_values(1.0, r.beats, 8.0, 0.0)
+    apply(r, 1.0, din, dout, eng, base)
+    assert eng.crossfader < -0.5 and din.eq[0] == base["in_eq"][0]
+    # the outgoing on the right-hand deck: the move is mirrored
+    din2, dout2 = SimpleNamespace(xf_side=-1), SimpleNamespace(xf_side=1)
+    apply(r, 1.0, din2, dout2, eng, base)
+    assert eng.crossfader > 0.5
+    # fill off: exactly what was recorded
+    apply(r, 1.0, din, dout, eng, None)
+    assert din.eq[0] == r.value("in_low", 1.0)
+
+
+def test_a_mix_recorded_after_auto_mix_planned_is_still_used(tmp_path):
+    from cta.db import Database
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    store = RehearsalStore(Database(str(tmp_path / "x.db")))
+    eng = Engine()
+    tracks = {"one": t1, "two": t2}
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4), synchronous_loads=True)
+    am.rehearsals = store
+    am.set_queue(["one", "two"])
+    am.start()
+    for _ in range(int(2 * SR / 1024)):
+        eng.render(1024)
+    assert am.tr is not None and am.tr.style != "rehearsed"      # planned before any recording
+    store.put(_rehearse(t1, t2))                                  # the DJ mixes it ahead now
+    eng.render(1024)
+    assert am.tr.style == "rehearsed"

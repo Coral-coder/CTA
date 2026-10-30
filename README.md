@@ -90,8 +90,9 @@ the bar between them to give the decks more or less room.
   wheel no longer zooms). **⛓ Sync zoom** keeps both decks at the same zoom.
   Double-click the overview to open the whole track, zoomable, with its
   markers.
-- **Knobs turn like hardware:** drag up for more, down for less, from where the
-  knob is (a click never jumps it); hold Shift for fine moves.
+- **Every control drags from where it is:** knobs (up = more, down = less),
+  channel faders, the crossfader and the tempo faders. A click never jumps a
+  control to the mouse; hold Shift for fine moves.
 - **Double-click resets** any knob, fader, the crossfader (centre) and the
   tempo fader.
 - **Oscilloscope** next to the MAIN level shows the master output (triggered,
@@ -112,6 +113,14 @@ the bar between them to give the decks more or less room.
     the incoming drops in on the OUT marker (or **Drop incoming now**) in
     phase. Mix it: every move is recorded on the beat until the outgoing is
     gone. **▶ Play back** lets you hear it as the room will.
+  - **Just mixing records:** with **Record whenever I mix the two decks** on,
+    starting the incoming while the outgoing plays records the transition
+    (saved for auto-mix by itself). Turn it off to simply mix and listen.
+  - **Controls I didn't touch follow auto-mix** (on by default): only what you
+    moved is replayed, auto-mix does the rest (its bass swap, the fades).
+    Your crossfader moves really move the crossfader.
+  - A mix recorded after auto-mix already planned that transition is still
+    used, as long as the transition has not started yet.
   - When the live set reaches those two tracks, auto-mix starts the incoming
     on the same beat and replays your moves. Untick **Auto-mix plays this
     transition live** to keep it without using it.
