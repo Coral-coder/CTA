@@ -495,6 +495,15 @@ GitHub Releases. When a new version is out, you can **Update now**, **Later**
 or **Skip this version**. You can also click **Check for Updates** in the
 toolbar at any time, or turn automatic checks off in Settings.
 
+**Signed and notarized Mac builds.** When the repository has the signing
+secrets (`DEVELOPER_ID_P12`, `DEVELOPER_ID_P12_PASSWORD`, and the App Store
+Connect key `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8` — all handed out by
+the **Dev_deploy_setup** hub: *Create Developer ID certificate* and *Set up
+app repo*, `repos` = `CTA`), every release is signed with the hardened runtime,
+notarized by Apple and stapled: it opens without the right-click dance and
+updates itself in place. The updater then only accepts a new version signed
+by the same team. Without the secrets the build is unsigned, as before.
+
 **Mac:** an app opened straight from Downloads runs from a hidden, read-only
 copy, which can't be updated in place. CTA then installs the update to
 **/Applications** (or **~/Applications**) and clears macOS's quarantine flag,

@@ -132,6 +132,40 @@ jobs:
       - name: Build executable
         run: pyinstaller --noconfirm --clean packaging/cta.spec
 
+      # ---- macOS: Developer ID signature (hardened runtime) when the secrets are there ----
+      # DEVELOPER_ID_P12 / DEVELOPER_ID_P12_PASSWORD come from Dev_deploy_setup
+      # (Actions -> Create Developer ID certificate, or Set up app repo). Without them the
+      # app is built ad-hoc signed, as before (right-click -> Open on first launch).
+      - name: Sign (macOS)
+        if: runner.os == 'macOS'
+        env:
+          DEVELOPER_ID_P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          DEVELOPER_ID_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$DEVELOPER_ID_P12" ]; then
+            echo "::warning::No DEVELOPER_ID_P12 secret: building an unsigned (ad-hoc) app. Run 'Create Developer ID certificate' in Dev_deploy_setup for this repo."
+            codesign --force --deep --sign - dist/CTA.app
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/sign.keychain-db"
+          kpass=$(openssl rand -hex 16)
+          printf '%s' "$DEVELOPER_ID_P12" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security create-keychain -p "$kpass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kpass" "$keychain"
+          security import "$RUNNER_TEMP/devid.p12" -k "$keychain" -P "$DEVELOPER_ID_P12_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kpass" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/devid.p12"
+          id=$(security find-identity -v -p codesigning "$keychain" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.+)"/\1/')
+          if [ -z "$id" ]; then echo "::error::The .p12 holds no 'Developer ID Application' identity"; exit 1; fi
+          echo "Signing as: $id"
+          bash packaging/sign_mac.sh dist/CTA.app "$id" packaging/entitlements.plist
+          echo "SIGN_ID=$id" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
       # ---- verify the frozen build actually works before shipping it ----
       - name: Self-test (Windows)
         if: runner.os == 'Windows'
@@ -208,7 +242,11 @@ jobs:
           ditto dist/CTA.app "$t/install/CTA.app"
           ditto dist/CTA.app "$t/new/CTA.app"
           echo NEWBUILD > "$t/new/CTA.app/Contents/Resources/marker.txt"
-          codesign --force --deep --sign - "$t/new/CTA.app"
+          if [ -n "${SIGN_ID:-}" ]; then
+            bash packaging/sign_mac.sh "$t/new/CTA.app" "$SIGN_ID" packaging/entitlements.plist
+          else
+            codesign --force --deep --sign - "$t/new/CTA.app"
+          fi
           ditto -c -k --keepParent "$t/new/CTA.app" "$t/update.zip"
           "$t/install/CTA.app/Contents/MacOS/CTA" update --from-zip "$t/update.zip" --no-relaunch
           log="$CTA_DATA_DIR/update.log"
@@ -225,11 +263,45 @@ jobs:
           Copy-Item README.md, THIRD_PARTY_NOTICES.md dist\CTA\
           Compress-Archive -Path dist\CTA -DestinationPath "CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
 
+      # ---- macOS: notarize with the App Store Connect key, staple, then zip ----
+      - name: Notarize (macOS)
+        if: runner.os == 'macOS' && env.SIGN_ID != ''
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -e
+          if [ -z "$ASC_KEY_P8" ] || [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ]; then
+            echo "::warning::Signed but not notarized: ASC_KEY_ID / ASC_ISSUER_ID / ASC_KEY_P8 missing (run Set up app repo in Dev_deploy_setup)"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/asc"
+          if printf '%s' "$ASC_KEY_P8" | grep -q BEGIN; then printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/key.p8"
+          else printf '%s' "$ASC_KEY_P8" | base64 --decode > "$RUNNER_TEMP/asc/key.p8"; fi
+          ditto -c -k --sequesterRsrc --keepParent dist/CTA.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --key "$RUNNER_TEMP/asc/key.p8" \
+            --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --wait --timeout 40m | tee "$RUNNER_TEMP/notary.log"
+          if ! grep -q 'status: Accepted' "$RUNNER_TEMP/notary.log"; then
+            sub=$(grep -m1 -oE 'id: [0-9a-f-]+' "$RUNNER_TEMP/notary.log" | head -1 | cut -d' ' -f2)
+            [ -n "$sub" ] && xcrun notarytool log "$sub" --key "$RUNNER_TEMP/asc/key.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" || true
+            echo "::error::Notarization was not accepted"; exit 1
+          fi
+          xcrun stapler staple dist/CTA.app
+          spctl --assess --type execute --verbose=2 dist/CTA.app
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/notarize.zip"
+          echo "### macOS: signed as $SIGN_ID and notarized" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          codesign --force --deep --sign - dist/CTA.app
+          if [ -z "${SIGN_ID:-}" ]; then codesign --force --deep --sign - dist/CTA.app; fi
           ditto -c -k --sequesterRsrc --keepParent dist/CTA.app "CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
+
+      - name: Remove the signing keychain (macOS)
+        if: always() && runner.os == 'macOS'
+        run: |
+          if [ -n "${KEYCHAIN:-}" ] && [ -f "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN" || true; fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -266,6 +338,6 @@ jobs:
           body: |
             ## Download
             - **Windows 10/11 (x64)**: `CTA-*-windows-x64.zip` → unzip anywhere → run `CTA.exe`
-            - **macOS (Apple Silicon)**: `CTA-*-macos-arm64.zip` → unzip → right-click `CTA.app` → Open (first launch only; the app is not notarised)
+            - **macOS (Apple Silicon)**: `CTA-*-macos-arm64.zip` → unzip → drag `CTA.app` to Applications → open. (If this build is unsigned, right-click → Open the first time.)
 
             The AI model is bundled; AI inference uses the GPU through DirectML (Windows) or CoreML (macOS) and falls back to the CPU automatically.

@@ -296,6 +296,39 @@ def _cli_path(app_root: str) -> str:
     return os.path.join(app_root, "cta-cli")
 
 
+def _mac_signature(app: str) -> dict | None:
+    """{'authority': [...], 'team': 'XXXX'} of a signed Mac app bundle, or None."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        r = subprocess.run(["codesign", "-dvv", app], capture_output=True, text=True, timeout=60)
+    except Exception:  # noqa: BLE001
+        return None
+    out = r.stdout + r.stderr
+    auth = re.findall(r"^Authority=(.+)$", out, re.M)
+    team = re.search(r"^TeamIdentifier=(.+)$", out, re.M)
+    if not auth or not team or team.group(1).strip() in ("", "not set"):
+        return None
+    return {"authority": auth, "team": team.group(1).strip()}
+
+
+def check_signature(new_root: str) -> str:
+    """macOS: when the running app carries a Developer ID signature, the new
+    one must too - valid, and from the same team - or the update is refused.
+    (An unsigned / ad-hoc install accepts any build, as before.)"""
+    mine = _mac_signature(install_root() or "")
+    if mine is None or not any(a.startswith("Developer ID") for a in mine["authority"]):
+        return "unsigned"
+    theirs = _mac_signature(new_root)
+    if theirs is None or theirs["team"] != mine["team"]:
+        raise UpdateError("the downloaded app is not signed by the same developer - update refused")
+    r = subprocess.run(["codesign", "--verify", "--deep", "--strict", new_root], capture_output=True, text=True,
+                       timeout=300)
+    if r.returncode != 0:
+        raise UpdateError(f"the downloaded app's signature does not verify: {(r.stderr or r.stdout)[-300:]}")
+    return f"signed by team {mine['team']}"
+
+
 def verify_build(new_root: str, expect_version: str | None) -> str:
     """Run the new build once; it must start and report its version."""
     exe = _cli_path(new_root)
@@ -450,6 +483,7 @@ def prepare_update(rel: Release, progress=None, cancelled=None) -> str:
     zpath = download_release(rel, progress, cancelled)
     new_root = extract(zpath, os.path.join(os.path.dirname(zpath), "payload"))
     os.remove(zpath)
+    log.info("update signature: %s", check_signature(new_root))
     verify_build(new_root, rel.version)
     return new_root
 
@@ -463,6 +497,7 @@ def prepare_from_zip(zpath: str, expect_version: str | None = None) -> str:
     shutil.rmtree(stage, ignore_errors=True)
     os.makedirs(stage)
     new_root = extract(zpath, os.path.join(stage, "payload"))
+    log.info("update signature: %s", check_signature(new_root))
     verify_build(new_root, expect_version)
     return new_root
 
