@@ -221,12 +221,16 @@ class _RehearsalShim:
 
     def __init__(self):
         self.items: dict[str, object] = {}
+        self.by_group: dict[str, object] = {}       # style group -> the template recording
 
     def get(self, out_path: str, in_path: str):
         r = self.items.get(f"{out_path}\n{in_path}")
         return r if r is not None and r.enabled else None
 
     find = get
+
+    def template(self, group: str):
+        return self.by_group.get(group)
 
 
 class Server:
@@ -440,11 +444,12 @@ class Server:
     def set_learned(self, prefs: dict):
         self.learned.prefs = dict(prefs or {})
 
-    def set_rehearsals(self, items: list[dict]):
+    def set_rehearsals(self, items: list[dict], templates: dict | None = None):
         from .rehearsal import Rehearsal, RehearsalStore
 
         self.rehearsals.items = {RehearsalStore.key(r["out_path"], r["in_path"]): Rehearsal.from_dict(r)
                                  for r in items}
+        self.rehearsals.by_group = {g: Rehearsal.from_dict(r) for g, r in (templates or {}).items()}
 
     # ---- preview (Mix Ahead) ---------------------------------------------------------------
     def create_preview(self):

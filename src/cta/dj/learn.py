@@ -28,6 +28,14 @@ class TransitionExample:
 
 
 def style_group(style: str, genre: str) -> str:
+    """The group a transition is learned under: the style family (House,
+    Trance, Drum & Bass, ... see cta.styles) when the AI named one, else the
+    old coarse long / club / short."""
+    from ..styles import family_of
+
+    fam = family_of(style)
+    if fam:
+        return fam
     s = (style or "").lower()
     if any(w in s for w in ("trance", "progressive", "psy")):
         return "long"
@@ -49,6 +57,8 @@ class MixLearner:
         self._active = None      # ongoing overlap
         self._quiet_since = None
         self.examples: list[TransitionExample] = self._load()
+        self.templates: dict[str, dict] = self._load_templates()   # group -> the numbers to use, no averaging
+        self.on_change = None    # the GUI: push the numbers to the audio process
 
     # ---- storage ---------------------------------------------------------------
     def _load(self) -> list[TransitionExample]:
@@ -61,12 +71,80 @@ class MixLearner:
     def _save(self):
         try:
             self.db.set_meta("learned_transitions", [asdict(x) for x in self.examples[-500:]])
+            self.db.set_meta("transition_templates", self.templates)
         except Exception:  # noqa: BLE001
             pass
+        if self.on_change is not None:
+            try:
+                self.on_change()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _load_templates(self) -> dict[str, dict]:
+        try:
+            return dict(self.db.get_meta("transition_templates", {}) or {})
+        except Exception:  # noqa: BLE001
+            return {}
 
     def forget(self):
         self.examples = []
+        self.templates = {}
         self._save()
+
+    # ---- the DJ perfecting what was learned --------------------------------------------
+    def groups(self) -> list[str]:
+        return sorted({x.style_group for x in self.examples} | set(self.templates))
+
+    def update(self, i: int, **fields):
+        """Edit one example (bars, out_offset, in_lead, style_group)."""
+        x = self.examples[i]
+        for k, v in fields.items():
+            if hasattr(x, k):
+                setattr(x, k, type(getattr(x, k))(v))
+        self._save()
+
+    def remove(self, i: int):
+        del self.examples[i]
+        self._save()
+
+    def set_template(self, group: str, bars: float, out_offset: float, in_lead: float):
+        """From now on every transition of this group is mixed exactly like this
+        (the examples are kept, but not averaged in)."""
+        self.templates[group] = {"bars": int(max(1, round(bars))), "out_offset": float(out_offset),
+                                 "in_lead": float(in_lead)}
+        self._save()
+
+    def clear_template(self, group: str):
+        self.templates.pop(group, None)
+        self._save()
+
+    def export_json(self) -> str:
+        return json.dumps({"version": 1, "examples": [asdict(x) for x in self.examples],
+                           "templates": self.templates}, indent=1)
+
+    def import_json(self, text: str) -> int:
+        """Merge an export (examples are deduplicated on their timestamp); returns how many were new."""
+        data = json.loads(text)
+        if isinstance(data, list):                        # an older plain list of examples
+            data = {"examples": data}
+        have = {x.ts for x in self.examples}
+        n = 0
+        for row in data.get("examples", []):
+            try:
+                ex = TransitionExample(**{k: row[k] for k in TransitionExample.__dataclass_fields__})
+            except (KeyError, TypeError):
+                continue
+            if ex.ts not in have:
+                self.examples.append(ex)
+                have.add(ex.ts)
+                n += 1
+        for g, t in (data.get("templates") or {}).items():
+            if isinstance(t, dict) and {"bars", "out_offset", "in_lead"} <= set(t):
+                self.templates[g] = {"bars": int(t["bars"]), "out_offset": float(t["out_offset"]),
+                                     "in_lead": float(t["in_lead"])}
+        self.examples.sort(key=lambda x: x.ts)
+        self._save()
+        return n
 
     # ---- observing -------------------------------------------------------------------
     @staticmethod
@@ -140,6 +218,9 @@ class MixLearner:
         return sum(1 for x in self.examples if group is None or x.style_group == group)
 
     def preferences(self, group: str) -> dict | None:
+        tpl = self.templates.get(group)
+        if tpl:
+            return {**tpl, "n": 0, "template": True}
         usable = [x for x in self.examples if x.bars >= 2.0]     # ignore blips from older versions
         ex = [x for x in usable if x.style_group == group]
         if len(ex) < MIN_EXAMPLES:
@@ -158,6 +239,9 @@ class MixLearner:
 def describe(prefs: dict | None) -> str:
     if not prefs:
         return ""
+    if prefs.get("template"):
+        return (f"your template: {prefs['bars']}-bar blends, "
+                f"incoming {prefs['in_lead']:+.0f} bars before its drop")
     return (f"learned from {prefs['n']} of your mixes: {prefs['bars']}-bar blends, "
             f"incoming {prefs['in_lead']:+.0f} bars before its drop")
 

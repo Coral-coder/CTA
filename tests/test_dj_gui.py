@@ -265,6 +265,34 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
         eng.render(512)
     assert abs(eng.decks[m.name].mix_out / SR - (o1 - bar)) < 0.01
     ed.refresh()
+    # add a marker by arming a button and clicking; clicks never move the deck
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+
+    ed.wave.fit()
+    ed.wave.resize(1000, 240)
+    t_play = eng.decks[m.name].time
+    x_in = ed.wave._x(2 * bar)                                   # before OUT (IN must come first)
+    ed.place_btns["in"].setChecked(True)
+    assert ed.wave.place == "in"
+    ev = QMouseEvent(QEvent.MouseButtonPress, QPointF(x_in, 100), QPointF(x_in, 100), Qt.LeftButton, Qt.LeftButton,
+                     Qt.NoModifier)
+    ed.wave.mousePressEvent(ev)
+    for _ in range(3):
+        eng.render(512)
+    assert ed.wave.place is None and not ed.place_btns["in"].isChecked()
+    assert abs(eng.decks[m.name].mix_in / SR - ed.wave._snap(2 * bar)) < 0.01
+    ev = QMouseEvent(QEvent.MouseButtonDblClick, QPointF(300, 100), QPointF(300, 100), Qt.LeftButton, Qt.LeftButton,
+                     Qt.NoModifier)
+    ed.wave.mouseDoubleClickEvent(ev)
+    for _ in range(3):
+        eng.render(512)
+    assert abs(eng.decks[m.name].time - t_play) < 0.2            # a double-click did not jump the deck
+    assert ed.wave.sections                                       # the section strip is there
+    ed._clear("in")
+    for _ in range(3):
+        eng.render(512)
+    assert eng.decks[m.name].mix_in is None
     ed.close()
         # PC side: QR/PIN dialog and tray
     dlg = DW.RemoteInfoDialog(dj)
@@ -764,3 +792,52 @@ def test_dragging_the_overview_scrubs():
         btn = Qt.LeftButton if kind != QEvent.MouseMove else Qt.NoButton
         app.sendEvent(w, QMouseEvent(kind, p, p, btn, held, Qt.NoModifier))
     assert [round(s_) for s_ in seeks] == [10, 30, 75]
+
+
+def test_learned_mixes_dialog_edits_templates_and_round_trips_a_file(tmp_data_dir, monkeypatch):
+    from PySide6.QtCore import QSettings, Qt
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.dj.learn import TransitionExample
+    from cta.gui.main_window import MainWindow
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        app.processEvents()
+    w.open_dj()
+    dj = w.dj
+    dj.learner.examples.append(TransitionExample(1.0, "House", "a", "b", 16.0, 0.0, 8.0, "outro", "intro"))
+    dj.learner._save()
+    dlg = dj.open_learned()
+    assert dlg.ex.rowCount() == 1
+    dlg.ex.item(0, 3).setText("24")                      # perfect it: 24 bars
+    assert dj.learner.examples[0].bars == 24.0
+    dlg.ex.selectRow(0)
+    dlg._template_from_example()
+    assert dj.learner.preferences("House")["bars"] == 24 and dlg.tpl.rowCount() == 1
+    out = tmp_data_dir / "mixes.json"
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(out), "")))
+    dlg.export()
+    assert out.exists()
+    dj.learner.forget()
+    dlg.refresh()
+    assert dlg.ex.rowCount() == 0 and dlg.tpl.rowCount() == 0
+    dlg.import_(str(out))
+    assert dlg.ex.rowCount() == 1 and dj.learner.preferences("House")["template"]
+    dlg.tpl.selectRow(0)
+    dlg._remove_template()
+    assert "House" not in dj.learner.templates and dlg.tpl.rowCount() == 0 and Qt is not None
+    dlg.close()
+    dj.shutdown()
+    w.close()

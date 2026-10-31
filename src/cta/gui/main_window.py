@@ -371,7 +371,7 @@ class MainWindow(QMainWindow):
         self.lib_view.setSortingEnabled(True)
         self.lib_view.sortByColumn(-1, Qt.AscendingOrder)
         self.lib_view.selectionModel().currentRowChanged.connect(self._on_lib_row)
-        self.lib_view.doubleClicked.connect(lambda ix: self.play(self.lib_model.lib_index(ix.row())))
+        self.lib_view.doubleClicked.connect(lambda ix: self.show_details(self.lib_model.lib_index(ix.row())))
         self.lib_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.lib_view.customContextMenuRequested.connect(self._lib_menu)
         self.lib_view.setDragEnabled(True)
@@ -569,7 +569,7 @@ class MainWindow(QMainWindow):
 
         self.sl_model = TrackListModel(["Mix", "Pitch"], self)
         self.sl_view = _table(self.sl_model)
-        self.sl_view.doubleClicked.connect(lambda ix: self.play(self.setlist[ix.row()]))
+        self.sl_view.doubleClicked.connect(lambda ix: self.show_details(self.setlist[ix.row()]))
         self.sl_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.sl_view.setDragEnabled(True)
         self.sl_view.setDragDropMode(QAbstractItemView.DragOnly)
@@ -910,6 +910,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._add_deck_actions(m, i)
         m.addSeparator()
+        m.addAction("Details…\t(double-click)", lambda: self.show_details(i))
         m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show in folder", lambda: self.reveal(i))
         m.addSeparator()
@@ -1067,6 +1068,17 @@ class MainWindow(QMainWindow):
     def play(self, i):
         if self.lib is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(self.lib.paths[i]))
+
+    def show_details(self, i):
+        """The track's details page (double-click): numbers, feel, song map, waveform."""
+        if self.lib is None or i is None or not (0 <= i < self.lib.n):
+            return None
+        from .details import TrackDetails
+
+        dlg = TrackDetails(self, i)
+        dlg.show()
+        self._details = dlg
+        return dlg
 
     def reveal(self, i):
         p = self.lib.paths[i]

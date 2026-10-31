@@ -58,6 +58,7 @@ class _Meta:
     title: str
     genre: str = ""
     long_form: bool = False          # trance / progressive: 16-bar phrases, long blends
+    family: str = ""                 # style family (cta.styles): how it is mixed
     out_end_bar: float | None = None   # user outro end marker (bar): blend lasts until here
 
     @property
@@ -112,8 +113,11 @@ def analyse_deck(d) -> _Meta:
         from .loader import waveform_bands
         bands = waveform_bands(d.audio, hop=256)
         d.bands = bands
+    from ..styles import family_of
+
     style = (getattr(d.info, "style", "") or "").lower()
-    long_form = any(w in style for w in ("trance", "progressive", "psy"))
+    family = family_of(style) or ""
+    long_form = family == "Trance" or any(w in style for w in ("trance", "progressive", "psy"))
     st = analyse(bands, g, phrase_origin=getattr(d, "phrase_origin", None),
                  phrase_bars=16 if long_form else 8)
     in_m = out_m = None
@@ -127,7 +131,8 @@ def analyse_deck(d) -> _Meta:
             if out_end <= out_m:
                 out_end = None
     return _Meta(structure=st, in_marker_bar=in_m, out_marker_bar=out_m, out_end_bar=out_end,
-                 title=d.info.title, genre=getattr(d.info, "genre", "") or "", long_form=long_form)
+                 title=d.info.title, genre=getattr(d.info, "genre", "") or "", long_form=long_form,
+                 family=family)
 
 
 def _ramp(v: float) -> float:
@@ -561,16 +566,27 @@ class AutoMix:
         gap = abs(ratio - 1.0) * 100
         harmonic = compatibility(m.effective_key, din.info.key) if din.info.key >= 0 else 1.0
         short = any(g in SHORT_BLEND_GENRES for g in (mo.genre, mi.genre))
+        family = mo.family or mi.family
+        from .learn import style_group
+
+        group = style_group(m.info.style, m.info.genre)
         learned = None
         if self.learner is not None and force_bars is None:
-            from .learn import style_group
-            learned = self.learner.preferences(style_group(m.info.style, m.info.genre))
-        plan = plan_transition(mo.structure, mi.structure, max_bars=force_bars or self.s.mix_bars,
+            learned = self.learner.preferences(group)
+        # a Mix Ahead recording the DJ made the template for this style: its moves, this pair's timing
+        tpl = None
+        if self.rehearsals is not None and force_bars is None and not immediate:
+            try:
+                tpl = self.rehearsals.template(group)
+            except Exception:  # noqa: BLE001
+                tpl = None
+        plan = plan_transition(mo.structure, mi.structure,
+                               max_bars=force_bars or (int(round(tpl.beats / 4)) if tpl else self.s.mix_bars),
                                harmonic=harmonic, tempo_gap_pct=gap,
                                out_marker_bar=mo.out_marker_bar, in_marker_bar=mi.in_marker_bar,
-                               genre_short=short and force_bars is None, learned=learned,
+                               genre_short=short and force_bars is None, learned=None if tpl else learned,
                                out_end_bar=mo.out_end_bar if force_bars is None else None,
-                               auto=force_bars is None and self.s.auto_length)
+                               auto=force_bars is None and self.s.auto_length and tpl is None, family=family)
         start = plan.out_start_bar * 4.0
         if immediate or start <= now_beat + 1.0:
             # too late for the planned spot (or "transition now"): next bar line
@@ -580,6 +596,10 @@ class AutoMix:
             loop = (plan.loop[0] * 4.0, plan.loop[1] * 4.0) if plan.loop else None
         style = plan.style if (loop or plan.style != "loop_blend") else "blend"
         in_loop = (plan.in_loop[0] * 4.0, plan.in_loop[1] * 4.0) if plan.in_loop else None
+        if tpl is not None and plan.style in ("blend", "loop_blend"):
+            return _Transition(m.name, din_name, start, tpl.beats, in_start_beat=plan.in_start_bar * 4.0,
+                               swap_beat=plan.swap_bar * 4.0, style="rehearsed", loop=loop,
+                               reason=f"your {group} template mix", fixed_length=True, rehearsal=tpl)
         return _Transition(m.name, din_name, start, plan.bars * 4.0, in_start_beat=plan.in_start_bar * 4.0,
                            swap_beat=plan.swap_bar * 4.0, style=style, loop=loop, reason=plan.reason,
                            fixed_length=force_bars is not None or plan.exact, in_loop=in_loop,

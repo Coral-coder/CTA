@@ -32,6 +32,8 @@ The AI model is bundled, so nothing needs to be installed.
 
 1. **Add Folder…** and pick your music folder. The first scan starts on its
    own. A progress bar shows files per second and the time remaining.
+   CTA starts in **DJ mode** (decks above the library); switch that off
+   under Settings if you only want the library.
 2. Click any track. The **Next Track** tab ranks every compatible track by:
    - **Tempo**: how far you'd have to move the pitch fader, within your
      ±% range. Half and double time count (87 ↔ 174).
@@ -63,6 +65,14 @@ The AI model is bundled, so nothing needs to be installed.
 
 Right-click a track to double or halve its BPM, or to set the key by hand.
 Your corrections are kept across re-scans.
+
+- **Double-click a track** for its **details page**: the numbers, how it
+  feels (energy, tone, busyness, style family), how it would sit after
+  what is playing (energy step, tempo change, key, style fit), a map of
+  its sections with the energy per bar and the first drop, and the full
+  waveform with its mix markers. Load it to a deck or add it to the
+  setlist from there. (The external player is still in the right-click
+  menu.)
 
 ## DJ Mode (Ctrl+D)
 
@@ -247,11 +257,19 @@ the bar between them to give the decks more or less room.
   - Three markers, saved with the track and snapped to the start of a bar:
     **IN** (where the track is mixed in), **OUT** (where it starts to mix
     out) and **OUT END** (where it is gone, which fixes the blend length).
-  - **✎ MARKERS** on each deck opens a zoomable full waveform with bar
-    numbers. Wheel to zoom, drag to scroll, drag a flag to move it, or nudge
-    it **−4 / +4 beats**. The **outro length** buttons (8, 16, 32, 64 or
-    128 bars) set OUT END for you; past the end of the track, auto-mix loops
-    the groove to last that long.
+  - **⚑** on each deck (or right-click the waveform → Edit markers) opens
+    a zoomable full waveform with bar numbers and a strip of the song's
+    sections (intro, groove, build, drop, breakdown, outro). **Add a
+    marker:** press **+ IN**, **+ OUT** or **+ OUT END**, then click where
+    it goes (the start of that bar). **Remove:** the **− IN / − OUT /
+    − OUT END** buttons, or **Remove** on the marker's row. Drag a flag to
+    move it, nudge it **−4 / +4 beats**, or **Set at playhead**. The
+    **outro length** buttons (8, 16, 32, 64 or 128 bars) set OUT END for
+    you; past the end of the track, auto-mix loops the groove to last that
+    long. **Clicking the waveform never moves the deck** - "Play from here"
+    is in the right-click menu. The intro (start → IN) is shaded green and
+    the outro blend (OUT → END) red, in the editor and on the deck's
+    overview strip.
   - Right-clicking the deck waveform still sets IN, OUT, OUT END or the cue
     on that bar.
 - **Beat 1 is found from the music itself.** In dance music, phrase changes
@@ -271,6 +289,26 @@ the bar between them to give the decks more or less room.
   carries on by itself a few seconds after your blend is done. After 3
   examples for a style, auto-mix mixes that style your way. The auto-mix
   panel shows how much it has learned and has a **Forget** button.
+- **Learned mixes & templates** (auto-mix menu): every learned transition
+  in a table you can **perfect** (edit bars, out offset, in lead, style),
+  delete, or **make the template** for its style - from then on every
+  transition of that style (House, Trance, Drum & Bass, …) is mixed with
+  exactly those numbers, no averaging. A **Mix Ahead recording** can be the
+  template too: pick it, choose the style, and its fader and EQ moves are
+  replayed for every transition of that style, timed by the planner for
+  the tracks at hand. **Export…** writes learned mixes, templates and
+  recordings to one JSON file; **Import…** merges such a file (from a
+  backup or another machine).
+- **Style families (EDM sub-genres):** the AI's 400 styles are grouped
+  into House, Disco, Techno, Trance, Bass (dubstep, garage, trap), Drum &
+  Bass, Breaks, Hard Dance, Dance / Pop and Downtempo, with a map of
+  which families **blend** with each other (house ↔ techno ↔ hard dance,
+  bass ↔ drum & bass ↔ breaks, …). Suggestions, the auto-mix queue and
+  the Setlist Builder stay in the seed's family or one that blends with
+  it (**Style: Family + what blends with it**, the default; or *Same
+  style family only* / *Any style*). The library gets a **Style** filter
+  (AI sub-genre, narrowed by the Genre filter), the track line shows the
+  family and its neighbours, and **What blends?** opens the whole map.
 - **Sets stay in the seed's genre:** every suggestion is scored against the
   song the set started from (its AI style, sound and tempo), not just the
   previous track. A set started from electro house can't walk off into
@@ -321,6 +359,16 @@ the bar between them to give the decks more or less room.
     more than 10 %). Everything else gets a blend.
   - **Blend length depends on genre:** long blends for house and techno,
     short ones for hip-hop and pop. Your bars setting is the maximum.
+  - **Each style family is mixed its own way:** trance and drum & bass
+    never shorter than 16 bars with the bass swap on the incoming drop at
+    the very end of the blend; dubstep / bass and hard dance 8 bars or
+    more, also swapping on the drop; house, techno, disco and breaks as a
+    classic EQ blend with the swap on a phrase in the middle. When the
+    incoming drop lands inside the blend, the basses swap right there. A
+    short outro never cuts a family's minimum: the last groove is looped.
+  - **The bass comes in gradually:** the incoming low end creeps in
+    through the second half of the build-up (to 60 % by the downbeat), the
+    outgoing gives it the same room, and the downbeat finishes the swap.
   - **A peak limiter guards the master**, so two loud tracks overlapping
     never distort.
 - **Auto-mix timing:**
@@ -447,6 +495,9 @@ Under the hood:
   too, and re-plans the next transition; learned blends are never shorter
   than 4 bars, and a blip (a deck started and stopped at once) is never
   learned or recorded.
+- **SYNC on both decks:** the master deck leads and its tempo fader moves
+  the whole mix; the other follows. A deck holding CUE is never the deck
+  others follow, so cueing one deck never bends the other.
 - **Tempo sync or beat sync:** **Options → SYNC also locks the beat phase**.
   Off: SYNC matches the tempo only and you line up the beats yourself (they
   stay where you put them; nothing jumps when you press PLAY or SYNC). On:

@@ -232,3 +232,48 @@ def test_bass_comes_in_gradually_before_the_swap():
     assert 0.2 < half["in_eq"][0] < 0.6                                 # already coming in before the drop
     assert half["out_eq"][0] + half["in_eq"][0] <= 1.0 + 1e-9           # ... without doubling the bass
     assert blend_values(sw + 0.5, beats, sw, 0.0)["out_eq"][0] < 1e-6   # outgoing bass gone after the swap
+
+
+def test_style_families_shape_the_blend():
+    """Trance: never shorter than 16 bars, bass swap on the drop at the very
+    end; house: the DJ's 8 bars stand and the swap sits in the middle;
+    drum & bass / dubstep: the drop is the moment (swap at the end)."""
+    full, nxt = _struct(FULL), _struct((("intro", 16), ("drop", 32), ("outro", 8)))
+    p = plan_transition(full, nxt, max_bars=8, family="Trance")
+    assert p.bars >= 16 and p.swap_bar == p.bars and "Trance" in p.reason
+    p = plan_transition(full, nxt, max_bars=8, family="House")
+    assert p.bars == 8
+    p = plan_transition(full, nxt, max_bars=16, family="Drum & Bass")
+    assert p.swap_bar == p.bars
+    p = plan_transition(full, nxt, max_bars=16, family="Bass")
+    assert p.swap_bar == p.bars
+    # a fixed length set by the DJ is never overridden by a family
+    p = plan_transition(full, nxt, max_bars=8, family="Trance", auto=False)
+    assert p.bars == 8
+
+
+def test_learned_groups_follow_the_style_family_and_templates_win(tmp_path):
+    from cta.db import Database
+    from cta.dj.learn import MixLearner, TransitionExample, style_group
+
+    assert style_group("Electronic---Progressive Trance", "Electronic") == "Trance"
+    assert style_group("Electronic---Tech House", "Electronic") == "House"
+    assert style_group("", "Hip Hop") == "short" and style_group("", "Electronic") == "club"
+    lr = MixLearner(Database(str(tmp_path / "l.db")), None)
+    for bars in (16, 24, 32):
+        lr.examples.append(TransitionExample(float(bars), "Trance", "a", "b", bars, 0.0, 8.0, "outro", "intro"))
+    lr._save()
+    assert lr.preferences("Trance")["bars"] == 24
+    lr.set_template("Trance", bars=32, out_offset=-4.0, in_lead=16.0)
+    p = lr.preferences("Trance")
+    assert p["template"] and p["bars"] == 32 and p["in_lead"] == 16.0
+    lr.update(0, bars=20.0)
+    assert lr.examples[0].bars == 20.0
+    text = lr.export_json()
+    lr2 = MixLearner(Database(str(tmp_path / "m.db")), None)
+    assert lr2.import_json(text) == 3 and lr2.preferences("Trance")["template"]
+    assert lr2.import_json(text) == 0                     # the same file twice adds nothing
+    lr2.clear_template("Trance")
+    assert not lr2.preferences("Trance").get("template")
+    lr2.remove(0)
+    assert len(lr2.examples) == 2

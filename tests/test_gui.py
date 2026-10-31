@@ -73,3 +73,54 @@ def test_drag_out_carries_audio_files_for_other_apps(tmp_path):
     assert [os.path.normpath(u.toLocalFile()) for u in data.urls()] == \
         [os.path.normpath(Lib.paths[2]), os.path.normpath(Lib.paths[0])]
     assert bytes(data.data(TRACK_MIME)).decode() == "2"
+
+
+def test_double_click_opens_the_details_page_not_a_player(tmp_data_dir, monkeypatch):
+    """Double-clicking a track shows its details (feel, song map, waveform)
+    instead of handing the file to an external player."""
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer
+
+    from cta.db import Database
+    from cta.gui.details import against_text, feel_text
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    for n, bpm in enumerate((124.0, 128.0)):
+        write_audio(str(music / f"t{n}.flac"), synth_track(bpm, 20, chord=(57, 60, 64)))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    opened = []
+    monkeypatch.setattr("PySide6.QtGui.QDesktopServices.openUrl", staticmethod(lambda u: opened.append(u)))
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "settings.ini"), QSettings.IniFormat))
+    w.show()
+
+    def wait(ms):
+        loop = QEventLoop()
+        QTimer.singleShot(ms, loop.quit)
+        loop.exec()
+
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        wait(50)
+    assert w.lib is not None and w.lib.n == 2
+    w.focus_track(1)
+    w.lib_view.doubleClicked.emit(w.lib_model.index(w.lib_model.row_of(0), 0))
+    dlg = w._details
+    assert dlg.isVisible() and not opened
+    for _ in range(200):                                   # the audio is read in a thread
+        if dlg.map.st is not None:
+            break
+        wait(50)
+    assert dlg.map.st is not None and dlg.map.st.bars >= 10
+    assert "BPM" in dlg.feel.text() and "After the focused track" in dlg.against.text()
+    dlg.map.resize(800, 240)
+    dlg.map.grab()                                          # paints the map + waveform
+    assert "Sections:" in dlg.structure.text()
+    assert "energy" in feel_text(w.lib, 0) and "tempo" in against_text(w.lib, 0, 1)
+    assert "Nothing is playing" in against_text(w.lib, 0, None)
+    dlg.close()
+    w.close()

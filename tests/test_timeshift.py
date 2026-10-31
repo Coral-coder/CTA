@@ -212,3 +212,42 @@ def test_blips_are_not_recorded_and_learned_blends_stay_long(tmp_path):
     lr.examples = [mk(0.5), mk(1.0), mk(1.5), mk(3.0), mk(3.0), mk(3.0)]
     p = lr.preferences("club")
     assert p is not None and p["bars"] >= 4 and p["n"] == 3
+
+
+def test_a_recording_used_as_a_template_replays_for_other_tracks(tmp_path):
+    """A Mix Ahead recording made the House template: a different pair of
+    tracks is mixed with its moves, timed by the planner for that pair."""
+    from cta.db import Database
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    t1, t2 = _track("one", 124.0, (57, 60, 64)), _track("two", 124.0, (52, 55, 59))
+    r = _rehearse(t1, t2)
+    store = RehearsalStore(Database(str(tmp_path / "x.db")))
+    store.put(r)
+    store.set_template("House", r)
+    assert store.template("House") is r and store.template_group(r) == "House"
+    t3, t4 = _track("three", 124.0, (57, 60, 64)), _track("four", 124.0, (52, 55, 59))
+    t3.info.style = t4.info.style = "Electronic---Tech House"
+    eng = Engine()
+    tracks = {"three": t3, "four": t4}
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4), synchronous_loads=True)
+    am.rehearsals = store
+    am.set_queue(["three", "four"])
+    am.start()
+    seen = []
+    for _ in range(int(150 * SR / 1024)):
+        eng.render(1024)
+        tr = am.tr
+        if tr is not None and tr.started:
+            din = eng.decks[tr.in_deck]
+            seen.append((din.grid.beat_at(din.time) - tr.in_start_beat, din.volume, tr))
+        if seen and am.tr is None:
+            break
+    assert seen and seen[0][2].style == "rehearsed" and "template" in seen[0][2].reason
+    assert abs(seen[0][2].beats - r.beats) < 1e-6
+    mid = min(seen, key=lambda s: abs(s[0] - 4.0))
+    assert abs(mid[1] - r.value("in_vol", mid[0])) < 0.05
+    # export / import carries recordings and templates
+    text = store.export_json()
+    store2 = RehearsalStore(Database(str(tmp_path / "y.db")))
+    assert store2.import_json(text) == 1 and store2.template("House") is not None

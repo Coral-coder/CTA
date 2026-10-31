@@ -190,6 +190,18 @@ class Plan:
     exact: bool = False                          # length set by the DJ (markers / fixed length)
 
 
+# How each style family is mixed (see cta.styles): the shortest blend that sounds
+# right, and where the bass swap lands - "end": the incoming drop lands on the last
+# bar of the blend and the basses swap right there (trance, drum & bass, dubstep,
+# hard dance: the drop is the moment), "half": a classic EQ blend with the swap on
+# a phrase in the middle (house, techno, disco). The DJ's blend length is the
+# ceiling; a family's floor raises a too-short setting.
+FAMILY_RULES = {
+    "Trance": (16, "end"), "Drum & Bass": (16, "end"), "Bass": (8, "end"), "Hard Dance": (8, "end"),
+    "House": (8, "half"), "Techno": (8, "half"), "Disco": (8, "half"), "Downtempo": (8, "half"),
+    "Breaks": (8, "half"), "Dance / Pop": (4, "half"),
+}
+
 AUDIBLE = 0.08          # bar energy (0..1 of the track's loud parts) that is more than silence
 DEAD = 0.2              # combined level below which a blend bar sounds empty
 PHRASES = (4, 8, 16, 32, 64, 128)
@@ -259,7 +271,7 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
                     harmonic: float = 1.0, tempo_gap_pct: float = 0.0,
                     out_marker_bar: float | None = None, in_marker_bar: float | None = None,
                     genre_short: bool = False, learned: dict | None = None,
-                    out_end_bar: float | None = None, auto: bool = True) -> Plan:
+                    out_end_bar: float | None = None, auto: bool = True, family: str | None = None) -> Plan:
     """Decide how and where to go from the outgoing to the incoming track.
 
     max_bars: the longest blend (auto) or the blend length (auto=False).
@@ -270,6 +282,13 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
     max_bars = max(1, int(max_bars))
     if genre_short:
         max_bars = min(max_bars, 8)
+    rules = FAMILY_RULES.get(family or "")
+    swap_end = False
+    if rules and auto and not genre_short:
+        fmin, where = rules
+        min_bars = max(min_bars, fmin)
+        max_bars = max(max_bars, fmin)
+        swap_end = where == "end"
     last_beat_end = out_s.last_beat_bar + 1
     drop_end = out_s.last_drop_end if out_s.last_drop_end is not None else last_beat_end
     drop_in = in_s.first_drop_bar
@@ -402,7 +421,7 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
             start = float(drop_end)
             loop = out_loop_for(start, bars)
             reason = "blend over the outgoing outro"
-        elif outro_beats >= 8:
+        elif outro_beats >= 8 and outro_beats // 4 * 4 >= min_bars:
             # outro a bit shorter than the blend: fit the blend to it, keep the
             # incoming drop landing at the end
             bars = int(outro_beats // 4 * 4)
@@ -421,9 +440,15 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
             loop = (start, start + lb)
             reason = "no outro: loop the final groove and blend over it"
 
+    if loop is not None and start >= loop[1] - 1e-6:
+        start = loop[0]                     # the beats end where the blend would begin: blend from the loop
+
     def swap_for(b, ist):
-        lands = drop_in is not None and abs((drop_in - ist) - b) < 1e-6
-        return float(b) if lands else float(max(1, b // 2))
+        if drop_in is not None and 1.0 <= drop_in - ist <= b + 1e-6:
+            return float(drop_in - ist)     # the incoming drop inside the blend: the basses swap right there
+        if swap_end:
+            return float(b)                 # trance / d&b / bass: at the very end, on the drop
+        return float(max(1, b // 2))
 
     # ---- never hang on dead air: find a length (and a start a few bars either
     #      side) where every bar of the blend has music and a beat
@@ -449,5 +474,7 @@ def plan_transition(out_s: Structure, in_s: Structure, max_bars: int = 16, min_b
                 start, bars, in_start = found
                 reason += f" ({bars} bars, placed to avoid dead air)"
     style = "loop_blend" if loop else "blend"
+    if rules and auto:
+        reason += f" · {family} style"
     return Plan(style, start, in_start, bars, swap_bar=swap_for(bars, in_start), loop=loop, reason=reason,
                 exact=not auto)

@@ -12,6 +12,7 @@ started), the same clock auto-mix uses, so tempo changes do not matter.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 
@@ -22,6 +23,7 @@ from .engine import SR
 LANES = ("xf", "out_vol", "in_vol", "out_low", "out_mid", "out_high", "in_low", "in_mid", "in_high",
          "out_filter", "in_filter")
 META_KEY = "rehearsals"
+TEMPLATE_KEY = "rehearsal_templates"       # style group -> key of the recording used for every mix of it
 MIN_BEATS = 8.0                      # shorter than 2 bars is not a transition (ignored)
 DEFAULTS = {"xf": 0.0, "out_vol": 1.0, "in_vol": 1.0, "out_low": 1.0, "out_mid": 1.0, "out_high": 1.0,
             "in_low": 1.0, "in_mid": 1.0, "in_high": 1.0, "out_filter": 0.0, "in_filter": 0.0}
@@ -109,6 +111,7 @@ class RehearsalStore:
     def __init__(self, db):
         self.db = db
         self._cache: dict[str, Rehearsal] | None = None
+        self._templates: dict[str, str] | None = None
         self.on_change = None            # called after every put / delete
 
     @staticmethod
@@ -142,9 +145,56 @@ class RehearsalStore:
     def items(self) -> list[Rehearsal]:
         return sorted(self._all().values(), key=lambda r: -r.created)
 
+    # ---- templates: one recording stands for a whole style ------------------------------
+    def templates(self) -> dict[str, str]:
+        if self._templates is None:
+            try:
+                self._templates = dict(self.db.get_meta(TEMPLATE_KEY, {}) or {})
+            except Exception:  # noqa: BLE001
+                self._templates = {}
+        return self._templates
+
+    def set_template(self, group: str, r: Rehearsal | None):
+        if r is None:
+            self.templates().pop(group, None)
+        else:
+            self.templates()[group] = self.key(r.out_path, r.in_path)
+        self._save()
+
+    def template(self, group: str) -> Rehearsal | None:
+        k = self.templates().get(group)
+        r = self._all().get(k) if k else None
+        return r if r is not None and r.beats >= MIN_BEATS else None
+
+    def template_group(self, r: Rehearsal) -> str | None:
+        k = self.key(r.out_path, r.in_path)
+        return next((g for g, kk in self.templates().items() if kk == k), None)
+
+    def export_json(self) -> str:
+        return json.dumps({"version": 1, "rehearsals": [r.to_dict() for r in self._all().values()],
+                           "templates": self.templates()}, indent=1)
+
+    def import_json(self, text: str) -> int:
+        data = json.loads(text)
+        n = 0
+        for row in data.get("rehearsals", []):
+            try:
+                r = Rehearsal.from_dict(row)
+            except (KeyError, TypeError):
+                continue
+            if self.key(r.out_path, r.in_path) not in self._all():
+                n += 1
+            self._all()[self.key(r.out_path, r.in_path)] = r
+        for g, k in (data.get("templates") or {}).items():
+            if k in self._all():
+                self.templates()[g] = k
+        self._save()
+        return n
+
     def _save(self):
         try:
             self.db.set_meta(META_KEY, {k: r.to_dict() for k, r in self._all().items()})
+            self.db.set_meta(TEMPLATE_KEY, self.templates())
         except Exception:  # noqa: BLE001
             pass
         if self.on_change is not None:

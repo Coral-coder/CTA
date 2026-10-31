@@ -806,8 +806,8 @@ class EngineClient:
     def push_learned(self, prefs: dict):
         self.call("srv", "set_learned", prefs)
 
-    def push_rehearsals(self, items: list[dict]):
-        self.call("srv", "set_rehearsals", items)
+    def push_rehearsals(self, items: list[dict], templates: dict | None = None):
+        self.call("srv", "set_rehearsals", items, templates or {})
 
     def create_preview(self) -> PreviewClient:
         if self.preview is None:

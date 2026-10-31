@@ -629,12 +629,16 @@ class Waveform(QWidget):
                 p.fillRect(QRectF(x, 0, 12, 12), CUE_COLORS[i])
                 p.setPen(QColor(0, 0, 0))
                 p.drawText(QRectF(x, 0, 12, 12), Qt.AlignCenter, str(i + 1))
-        # mix markers: green IN flag, red OUT flag + the blend region after it
+        # mix markers: the intro (start .. IN, green), the outro blend (OUT .. END, red), labelled flags
+        if self.mix_in is not None:
+            x1 = self._x(self.mix_in, w)
+            if x1 > 0:
+                p.fillRect(QRectF(max(self._x(0.0, w), 0), 0, x1 - max(self._x(0.0, w), 0), h), QColor(67, 160, 71, 38))
         if self.mix_out is not None and self.grid is not None:
             x0 = self._x(self.mix_out, w)
             x1 = self._x(self.mix_out_end if self.mix_out_end is not None
                          else self.mix_out + self.mix_beats * self.grid.beat_len, w)
-            p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(229, 57, 53, 45))
+            p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), h), QColor(229, 57, 53, 55))
         for t, label, colr in ((self.mix_in, "IN", QColor(67, 160, 71)), (self.mix_out, "OUT", QColor(229, 57, 53)),
                                (self.mix_out_end, "END", QColor(255, 152, 0))):
             if t is None:
@@ -643,9 +647,11 @@ class Waveform(QWidget):
             if -30 <= x <= w + 5:
                 p.setPen(QPen(colr, 2))
                 p.drawLine(int(x), 0, int(x), h)
-                p.fillRect(QRectF(x, h - 14, 28, 14), colr)
+                fh = min(14, h)
+                fx = x - 30 if label == "END" else x               # END's flag sits before its line
+                p.fillRect(QRectF(fx, 0, 30, fh), colr)
                 p.setPen(QColor(255, 255, 255))
-                p.drawText(QRectF(x, h - 14, 28, 14), Qt.AlignCenter, label)
+                p.drawText(QRectF(fx, 0, 30, fh), Qt.AlignCenter, label)
         cx = self._x(self.cue, w)
         p.setPen(QPen(QColor(255, 190, 0), 1, Qt.DashLine))
         p.drawLine(int(cx), 0, int(cx), h)
@@ -1080,9 +1086,13 @@ class MarkerWave(QWidget):
 
     moved = Signal(str, float)      # marker kind, seconds (bar-snapped)
     seek = Signal(float)
+    placed = Signal()               # a one-shot placement happened (the editor un-arms its button)
 
     COLORS = {"in": QColor(67, 160, 71), "out": QColor(229, 57, 53), "out_end": QColor(255, 152, 0)}
     LABELS = {"in": "IN", "out": "OUT", "out_end": "OUT END"}
+    SECTION_COLORS = {"intro": QColor(67, 160, 71), "groove": QColor(90, 120, 200), "build": QColor(255, 193, 7),
+                      "drop": QColor(229, 57, 53), "breakdown": QColor(120, 90, 200), "outro": QColor(255, 152, 0)}
+    STRIP = 16                      # the section strip under the bar numbers
 
     def __init__(self):
         super().__init__()
@@ -1097,12 +1107,40 @@ class MarkerWave(QWidget):
         self.v0, self.v1 = 0.0, 1.0
         self._drag = None            # ("mark", kind) | ("pan", x0, v0, v1)
         self._preview: tuple[str, float] | None = None
+        self.place: str | None = None          # armed: the next click puts this marker there
+        self.sections: list[tuple[float, float, str]] = []   # (t0, t1, kind) from the structure analysis
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
 
     def set_track(self, bands, duration, grid):
         self.bands, self.duration, self.grid = bands, max(duration, 1e-3), grid
         self.crange = colour_range(bands)
         self._coarse = (None,)
         self.v0, self.v1 = 0.0, self.duration
+        self.sections = []
+        if bands is not None and grid is not None:
+            try:
+                from ..dj.structure import analyse
+
+                st = analyse(bands, grid)
+                self.sections = [(grid.time_of_beat(s.start_bar * 4), grid.time_of_beat(s.end_bar * 4), s.kind)
+                                 for s in st.sections]
+            except Exception:  # noqa: BLE001
+                self.sections = []
+
+    def _menu(self, pos):
+        if self.bands is None:
+            return
+        from PySide6.QtWidgets import QMenu
+
+        t = self._snap(self._t(pos.x()))
+        m = QMenu(self)
+        bar = f"bar {int(round(self.grid.beat_at(t) / 4)) + 1}" if self.grid else fmt_time(t)
+        for k in ("in", "out", "out_end"):
+            m.addAction(f"Put {self.LABELS[k]} here  ({bar})", lambda _=False, k=k, t=t: self.moved.emit(k, t))
+        m.addSeparator()
+        m.addAction(f"Play from here  ({bar})", lambda: self.seek.emit(t))
+        m.exec(self.mapToGlobal(pos))
 
     # ---- view ------------------------------------------------------------------------
     def zoom(self, factor: float, around: float | None = None):
@@ -1168,6 +1206,13 @@ class MarkerWave(QWidget):
         if ev.button() != Qt.LeftButton or self.bands is None:
             return
         x = ev.position().x()
+        if self.place:
+            # armed from the editor: this click puts the marker here - the deck never jumps
+            self.moved.emit(self.place, self._snap(self._t(x)))
+            self.place = None
+            self.placed.emit()
+            self.setCursor(Qt.OpenHandCursor)
+            return
         k = self._hit(x)
         self._drag = ("mark", k) if k else ("pan", x, self.v0, self.v1)
         self.setCursor(Qt.SizeHorCursor if k else Qt.ClosedHandCursor)
@@ -1175,6 +1220,11 @@ class MarkerWave(QWidget):
     def mouseMoveEvent(self, ev):
         x = ev.position().x()
         if self._drag is None:
+            if self.place:
+                self.setCursor(Qt.CrossCursor)
+                self._preview = (self.place, self._snap(self._t(x)))
+                self.update()
+                return
             self.setCursor(Qt.SizeHorCursor if self._hit(x) else Qt.OpenHandCursor)
             return
         if self._drag[0] == "mark":
@@ -1195,7 +1245,7 @@ class MarkerWave(QWidget):
         self.update()
 
     def mouseDoubleClickEvent(self, ev):
-        self.seek.emit(self._snap(self._t(ev.position().x())))
+        ev.ignore()                  # a click never moves the deck: "Play from here" is in the right-click menu
 
     # ---- paint ------------------------------------------------------------------------------
     def paintEvent(self, _ev):
@@ -1204,7 +1254,7 @@ class MarkerWave(QWidget):
         p.fillRect(0, 0, w, h, QColor(16, 17, 20))
         if self.bands is None or w < 4:
             return
-        wave_h = h - 22
+        wave_h = h - 22 - (self.STRIP if self.sections else 0)
         ts = self.v0 + (np.arange(w) + 0.5) / w * (self.v1 - self.v0)
         idx = (ts * SR / 256).astype(np.int64)
         valid = (idx >= 0) & (idx < self.bands.shape[0])
@@ -1243,11 +1293,34 @@ class MarkerWave(QWidget):
                     for k in range(1, 4):
                         xb = self._x(g.time_of_beat(bar * 4 + k))
                         p.drawLine(int(xb), 0, int(xb), wave_h)
+        # the song's sections (intro / groove / build / drop / breakdown / outro) under the bar numbers
+        if self.sections:
+            y = h - self.STRIP
+            p.setFont(self.font())
+            for t0, t1, kind in self.sections:
+                x0, x1 = self._x(t0), self._x(t1)
+                if x1 < 0 or x0 > w:
+                    continue
+                c = self.SECTION_COLORS.get(kind, QColor(120, 120, 120))
+                p.fillRect(QRectF(x0, y, max(x1 - x0 - 1, 1), self.STRIP - 2),
+                           QColor(c.red(), c.green(), c.blue(), 150))
+                if x1 - x0 > 50:
+                    p.setPen(QColor(255, 255, 255, 220))
+                    p.drawText(QRectF(x0 + 3, y, x1 - x0 - 6, self.STRIP - 2), Qt.AlignLeft | Qt.AlignVCenter,
+                               kind.upper())
         marks = dict(self.marks)
         if self._preview:
             marks[self._preview[0]] = self._preview[1]
             if self._preview[0] == "out" and self.marks["out"] is not None and self.marks["out_end"] is not None:
                 marks["out_end"] = self.marks["out_end"] + (self._preview[1] - self.marks["out"])
+        # the intro the next track mixes into: start .. IN
+        if marks["in"] is not None:
+            x1 = self._x(marks["in"])
+            if x1 > 0:
+                p.fillRect(QRectF(0, 0, x1, wave_h), QColor(67, 160, 71, 32))
+                p.setPen(QColor(67, 160, 71, 200))
+                p.drawText(QRectF(max(x1 - 90, 4), wave_h - 18, 84, 16), Qt.AlignRight | Qt.AlignVCenter,
+                           "intro ▶")
         # the outgoing blend: OUT .. OUT END (or the auto-mix length)
         if marks["out"] is not None:
             end = marks["out_end"]
@@ -1256,6 +1329,9 @@ class MarkerWave(QWidget):
             if end is not None:
                 x0, x1 = self._x(marks["out"]), self._x(end)
                 p.fillRect(QRectF(x0, 0, max(x1 - x0, 2), wave_h), QColor(229, 57, 53, 40))
+                p.setPen(QColor(229, 57, 53, 220))
+                p.drawText(QRectF(x0 + 4, wave_h - 18, 160, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                           "◀ outro blend" + (" (auto length)" if marks["out_end"] is None else ""))
         for k in ("in", "out", "out_end"):
             t = marks[k]
             if t is None:
@@ -1303,10 +1379,31 @@ class MarkerEditor(QDialog):
         self.wave = MarkerWave()
         self.wave.moved.connect(self._moved)
         self.wave.seek.connect(lambda t: self.dj.engine.seek(self.deck, t))
+        self.wave.placed.connect(self._unarm)
         lay.addWidget(self.wave, 1)
-        hint = QLabel("Drag a flag to move it (it snaps to the start of the bar) · drag elsewhere to scroll · "
-                      "wheel to zoom · double-click to play from there")
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("<b>Add a marker:</b> press one, then click where it goes"))
+        self.place_btns = {}
+        for kind in ("in", "out", "out_end"):
+            b = _btn(f"+ {MarkerWave.LABELS[kind]}", checkable=True, h=26,
+                     tip=f"Then click on the waveform: {MarkerWave.LABELS[kind]} goes to the start of that bar")
+            b.setStyleSheet(f"QPushButton:checked {{ background: {MarkerWave.COLORS[kind].name()}; color: white; }}")
+            b.toggled.connect(lambda on, k=kind: self._arm(k, on))
+            prow.addWidget(b)
+            self.place_btns[kind] = b
+        prow.addSpacing(16)
+        prow.addWidget(QLabel("<b>Remove:</b>"))
+        for kind in ("in", "out", "out_end"):
+            b = _btn(f"− {MarkerWave.LABELS[kind]}", h=26, tip=f"Remove the {MarkerWave.LABELS[kind]} marker")
+            b.clicked.connect(lambda _=False, k=kind: self._clear(k))
+            prow.addWidget(b)
+        prow.addStretch()
+        lay.addLayout(prow)
+        hint = QLabel("Clicking the waveform never moves the deck. Drag a flag to move it (it snaps to the start "
+                      "of the bar) · drag elsewhere to scroll · right-click: put a marker here / play from here · "
+                      "the strip under the bars shows the song's sections (intro, build, drop, breakdown, outro)")
         hint.setStyleSheet("color: #9a9ba3;")
+        hint.setWordWrap(True)
         lay.addWidget(hint)
         self.rows = {}
         g = QGridLayout()
@@ -1324,13 +1421,13 @@ class MarkerEditor(QDialog):
                 b.clicked.connect(lambda _=False, k=kind, bt=beats: self._do(self.dj.bump_marker, self.deck, k, bt))
                 g.addWidget(b, r, col)
                 col += 1
-            b = _btn("At playhead", tip="Put it at the start of the bar that is playing")
+            b = _btn("Set at playhead", tip="Put it at the start of the bar that is playing")
             b.clicked.connect(lambda _=False, k=kind: self._at_playhead(k))
             g.addWidget(b, r, col)
             b = _btn("Show", tip="Zoom to it")
             b.clicked.connect(lambda _=False, k=kind: self._show(k))
             g.addWidget(b, r, col + 1)
-            b = _btn("Clear")
+            b = _btn("Remove", tip=f"Remove the {kind.upper().replace('_', ' ')} marker")
             b.clicked.connect(lambda _=False, k=kind: self._clear(k))
             g.addWidget(b, r, col + 2)
             self.rows[kind] = val
@@ -1360,6 +1457,22 @@ class MarkerEditor(QDialog):
         except ValueError as e:
             self.status.setText(f"⚠ {e}")
         self.refresh()
+
+    def _arm(self, kind: str, on: bool):
+        if on:
+            for k, b in self.place_btns.items():
+                if k != kind and b.isChecked():
+                    b.setChecked(False)
+            self.wave.place = kind
+            self.wave.setCursor(Qt.CrossCursor)
+        elif self.wave.place == kind:
+            self.wave.place = None
+            self.wave._preview = None
+            self.wave.update()
+
+    def _unarm(self):
+        for b in self.place_btns.values():
+            b.setChecked(False)
 
     def _moved(self, kind, t):
         mi, mo, me = self.dj.markers_of(self.deck)
@@ -1642,6 +1755,9 @@ class DeckPanel(QFrame):
         self.b_loop.clicked.connect(self._toggle_loop)
         for b in (b_in, b_out, self.b_loop):
             trow.addWidget(b)
+        b_mk = _btn("⚑", tip="Mix markers: intro (IN), outro (OUT), outro end - add, move, remove", h=26, w=28)
+        b_mk.clicked.connect(lambda: self.dj.edit_markers(name))
+        trow.addWidget(b_mk)
         self.b_adv = _btn("⌃", True, "More: hot cues, beat grid, key, tempo tools, mix markers", h=26)
         self.b_adv.setChecked(self.dj.settings.value(f"dj_adv_{name}", "true") == "true")
         self.b_adv.toggled.connect(self._adv_toggled)
@@ -3259,6 +3375,7 @@ class DJPanel(QWidget):
 
         self.learner = MixLearner(main_window.db, self.automix)
         self.automix.learner = self.learner
+        self.learner.on_change = self._push_learned
         self._learned_n = -1
         from ..dj.rehearsal import RehearsalStore
 
@@ -3631,6 +3748,7 @@ class DJPanel(QWidget):
         ract.setDefaultWidget(rholder)
         menu.addAction(ract)
         menu.addAction("Queue = setlist", self.queue_from_setlist)
+        menu.addAction("Learned mixes & templates… (edit, export, import)", self.open_learned)
         menu.addAction("Forget what was learned from my mixes", self._forget_learning)
         bm = menu.addMenu("Blend length")
         for n in (4, 8, 16, 32, 64, 128):
@@ -4427,6 +4545,18 @@ class DJPanel(QWidget):
             self.start_audio(quiet=True)
             self.main.status_label.setText("Audio device stopped responding - reconnected")
 
+    def open_learned(self):
+        from .learned import LearnedMixesDialog
+
+        w = getattr(self, "_learned_dlg", None)
+        if w is not None and w.isVisible():
+            w.refresh()
+            w.raise_()
+            return w
+        self._learned_dlg = LearnedMixesDialog(self)
+        self._learned_dlg.show()
+        return self._learned_dlg
+
     def open_timeshift(self, out_idx: int | None = None, in_idx: int | None = None):
         from .timeshift import TimeShiftWindow
 
@@ -4499,12 +4629,15 @@ class DJPanel(QWidget):
 
     def _push_learned(self):
         """What auto-mix learned lives here (the database); the engine process gets the numbers."""
-        from ..dj.learn import style_group  # noqa: F401 - groups below match style_group()
-
-        self.engine.push_learned({g: self.learner.preferences(g) for g in ("long", "club", "short")})
+        groups = set(self.learner.groups()) | {"long", "club", "short"}
+        prefs = {g: self.learner.preferences(g) for g in groups}
+        prefs["*"] = self.learner.preferences("")           # any other style: all of the DJ's mixes
+        self.engine.push_learned(prefs)
 
     def _push_rehearsals(self):
-        self.engine.push_rehearsals([r.to_dict() for r in self.rehearsals.items() if r.enabled])
+        tpl = {g: r.to_dict() for g in self.rehearsals.templates()
+               if (r := self.rehearsals.template(g)) is not None}
+        self.engine.push_rehearsals([r.to_dict() for r in self.rehearsals.items() if r.enabled], tpl)
 
     def _tick(self):
         self._offer_unload()
