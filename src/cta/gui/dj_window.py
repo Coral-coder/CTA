@@ -3231,10 +3231,10 @@ class LearnWizard(QDialog):
         if QMessageBox.question(self, "Controller setup", "Replace this controller's mapping with Tempest's built-in "
                                 "DDJ-T1 map (every control, from Pioneer's MIDI list)?") != QMessageBox.Yes:
             return
+        self.ctl.reset_to_builtin()
         bs = ddj_t1_default()
         self.result = {(b.action, b.deck): b for b in bs}
-        self.ctl.set_bindings(bs, learned=True)
-        self.heard.setText(f"Built-in DDJ-T1 map restored: {len(bs)} controls")
+        self.heard.setText(f"Built-in DDJ-T1 map restored: {len(bs)} controls (custom mapping forgotten)")
         self._show()
 
     def _import_tsi(self):
@@ -3473,6 +3473,10 @@ class DJPanel(QWidget):
         b_midi.clicked.connect(self.connect_midi)
         b_learn = QPushButton("Controller setup…")
         b_learn.clicked.connect(self.learn)
+        b_builtin = QPushButton("Built-in map")
+        b_builtin.setToolTip("Forget any custom controller mapping (setup guide, Traktor import) and use "
+                             "Tempest's built-in Pioneer DDJ-T1 map: every jog, fader, knob and button")
+        b_builtin.clicked.connect(self.forget_mapping)
         self.quant = QCheckBox("Quantize")
         self.quant.setChecked(True)
         self.quant.setToolTip("Snap cues, loops and jumps to the beat grid")
@@ -3491,10 +3495,11 @@ class DJPanel(QWidget):
         self.platter_chk.setToolTip("Show the jog platters (Full view). You can always scratch on the waveform.")
         self.platter_chk.setChecked(self.settings.value("dj_platter", "true") == "true")
         self.platter_chk.toggled.connect(self._view_changed)
-        self.scratch_chk = QCheckBox("Scratch (jog wheel top, platter, waveform drag)")
-        self.scratch_chk.setToolTip("Off: pressing the jog top does not scratch (the jog only nudges, or searches "
-                                    "a stopped deck) and dragging the platter or waveform does nothing")
-        self.scratch_chk.setChecked(self.settings.value("dj_scratch", "true") == "true")
+        self.scratch_chk = QCheckBox("Scratch mode (jog wheel top, platter, waveform drag)")
+        self.scratch_chk.setToolTip("On: a hand on the jog top holds the record and turning it scratches.\n"
+                                    "Off (default): touching the jog never stops a playing track; turning it "
+                                    "bends the pitch (nudge) on a playing deck and searches a stopped one.")
+        self.scratch_chk.setChecked(self.settings.value("dj_scratch", "false") == "true")
         self.scratch_chk.toggled.connect(self._scratch_toggled)
         self.phase_chk = QCheckBox("SYNC also locks the beat phase")
         self.phase_chk.setToolTip("On: SYNC matches tempo and keeps the beats lined up.\n"
@@ -3530,7 +3535,7 @@ class DJPanel(QWidget):
 
         bar = QToolBar()
         bar.setStyleSheet("QToolBar { border: 0; background: transparent; padding: 0; }")
-        for w in (self.audio_lbl, b_audio, QLabel("  MIDI:"), self.midi_combo, b_midi, b_learn):
+        for w in (self.audio_lbl, b_audio, QLabel("  MIDI:"), self.midi_combo, b_midi, b_learn, b_builtin):
             bar.addWidget(w)
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -4223,14 +4228,40 @@ class DJPanel(QWidget):
             self.controller = None
             self._error.emit(f"Could not open {port}:\n{e}")
             return
-        self.main.status_label.setText(f"Controller connected: {port}")
-        if not self.controller.learned:
+        if self.controller.learned:
+            self.main.status_label.setText(f"Controller connected: {port} - custom mapping in use "
+                                           "(Built-in map forgets it)")
+        else:
+            self.main.status_label.setText(f"Controller connected: {port} - built-in mapping")
+        if not self.controller.learned and "DDJ-T1" not in dev.upper():
             r = QMessageBox.question(
                 self, "Controller setup",
                 f"{port} is connected with a basic mapping (play, cue, jog, tempo, load, browse).\n\n"
                 "Run the guided setup now so every fader, knob and button works exactly as on your unit?")
             if r == QMessageBox.Yes:
                 self.learn()
+
+    def forget_mapping(self):
+        """Delete the custom controller mapping and go back to the built-in DDJ-T1 map."""
+        from ..dj.midi import forget_mapping
+
+        port = self.midi_combo.currentText()
+        dev = "DDJ-T1" if "DDJ-T1" in port.upper() else (self.controller.device if self.controller else port)
+        if "DDJ-T1" not in (dev or "").upper():
+            QMessageBox.information(self, "Built-in map", "Tempest has a built-in map for the Pioneer DDJ-T1 only; "
+                                    "other controllers are set up with Controller setup.")
+            return
+        if QMessageBox.question(self, "Built-in map", "Forget the custom mapping for this controller and use "
+                                "Tempest's built-in DDJ-T1 map (every control, from Pioneer's MIDI list)?") \
+                != QMessageBox.Yes:
+            return
+        if self.controller is not None and "DDJ-T1" in self.controller.device.upper():
+            self.controller.reset_to_builtin()
+        else:
+            forget_mapping("DDJ-T1")
+        self.main.status_label.setText("Controller: built-in DDJ-T1 map (custom mapping forgotten)")
+        if self.controller is None and port and not port.startswith("("):
+            self.connect_midi()
 
     def learn(self):
         if self.controller is None:

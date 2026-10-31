@@ -452,6 +452,15 @@ class Engine:
     def seek(self, deck: str, seconds: float):
         self.cmd(lambda e: e._seek(e.decks[deck], seconds * SR))
 
+    def seek_by(self, deck: str, seconds: float):
+        """Move relative to where the deck is now (jog search): computed here,
+        from the engine's own position, so a stream of jog ticks never jitters."""
+        def f(e):
+            d = e.decks[deck]
+            if d.loaded:
+                e._seek(d, float(np.clip(d.play_pos + seconds * SR, 0.0, max(0.0, d.length - 1))))
+        self.cmd(f)
+
     def _play_now(e, deck: str, on: bool, quantize: bool = True):
         d = e.decks[deck]
         if not d.loaded:
@@ -888,6 +897,17 @@ class Engine:
 
     def _apply_sync(self):
         lead = self._lead()                        # the deck everyone follows: its tempo fader rules
+        hand = any(x.nudge != 0.0 for x in self.decks.values() if x.loaded and x.playing)
+        lead_name = lead.name if lead is not None else None
+        if lead_name != getattr(self, "_sync_lead_prev", None):
+            # a new master (MASTER pressed, a handover): it is in charge of the
+            # tempo from now on and nothing else - the beats stay exactly where
+            # they are, so every follower re-bases its lock on its current phase
+            self._sync_lead_prev = lead_name
+            for x in self.decks.values():
+                if x.sync and x.playing:
+                    x.nudged = True
+                    x.phase_corr = 0.0
         for d in self.decks.values():
             if not (d.sync and d.loaded and d.grid) or d is lead:
                 # (with SYNC lit on both decks, the master would otherwise follow its follower
@@ -910,8 +930,9 @@ class Engine:
             if err is None:
                 d.phase_corr = 0.0
                 continue
-            if d.nudge != 0.0:
-                # the DJ is nudging with the jog: no pulling back while the hand moves
+            if d.nudge != 0.0 or hand:
+                # the DJ is nudging with a jog (this deck or the one it follows):
+                # no pulling back while the hand moves - the DJ sets the phase
                 d.phase_corr = 0.0
                 d.nudged = True
                 continue

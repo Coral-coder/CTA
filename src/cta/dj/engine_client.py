@@ -459,7 +459,8 @@ class PreviewClient:
     def load_track(self, deck: str, lt, only_if_stopped: bool = True):
         self._client._load("pv", deck, lt, only_if_stopped)
 
-    _FWD = ("set", "seek", "set_playing", "toggle_play", "set_markers", "set_cue", "cue_press", "cue_release",
+    _FWD = ("set", "seek", "seek_by", "set_playing", "toggle_play", "set_markers", "set_cue", "cue_press",
+            "cue_release",
             "loop_beats", "hotcue", "hotcue_delete", "beatjump", "set_master", "unload", "scratch", "jog",
             "jog_release", "loop_in", "loop_out", "loop_resize", "key_sync", "phase_snap", "set_paused")
 
@@ -845,7 +846,7 @@ class EngineClient:
 
     # ---- the engine API ------------------------------------------------------------------------
     def __getattr__(self, name):
-        if name in ("set_playing", "toggle_play", "cue_press", "cue_release", "seek", "set_cue",
+        if name in ("set_playing", "toggle_play", "cue_press", "cue_release", "seek", "seek_by", "set_cue",
                     "set_markers", "loop_beats", "hotcue", "hotcue_delete", "set_hotcues", "set_loop", "loop_in",
                     "loop_out",
                     "loop_resize", "beatjump", "key_sync", "set_grid", "grid_downbeat_here", "phase_snap",

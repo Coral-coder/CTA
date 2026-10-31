@@ -198,6 +198,16 @@ def save_mapping(device: str, bindings: list[Binding], learned: bool = True):
         json.dump({"device": device, "learned": learned, "bindings": [asdict(b) for b in bindings]}, f, indent=1)
 
 
+def forget_mapping(device: str):
+    """Delete the saved mapping (the setup guide's or an import's): the next
+    load falls back to the built-in map."""
+    p = mapping_path(device)
+    try:
+        os.remove(p)
+    except FileNotFoundError:
+        pass
+
+
 def export_mapping(path: str, device: str, bindings: list[Binding]):
     """Write a mapping file to share or keep (same format as the saved one)."""
     with open(path, "w", encoding="utf-8") as f:
@@ -343,9 +353,27 @@ class Controller:
         self._sent: dict = {}              # the last position we applied (to notice outside moves)
         self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
         self._delete_held: dict[str, bool] = {}
+        self._seen: set[tuple] = set()           # controls logged once (mapped or not)
+        log.info("MIDI mapping for %s: %s (%d controls)", device,
+                 "custom (saved by the setup guide / an import)" if self.learned else "built-in", len(self.bindings))
 
     def _index(self):
         self._map = {(b.type, b.ch, b.num): b for b in self.bindings}
+
+    def reset_to_builtin(self) -> bool:
+        """Forget the saved (learned / imported) mapping: the built-in map is
+        back, with the default decoder. False when the device has no built-in map."""
+        if "DDJ-T1" not in self.device.upper():
+            return False
+        forget_mapping(self.device)
+        self.bindings, self.learned = ddj_t1_default(), False
+        self._index()
+        self.decoder = Decoder({(b.ch, b.num) for b in self.bindings if b.type == "cc14"})
+        self._seen.clear()
+        self._armed.clear()
+        self._sent.clear()
+        log.info("MIDI mapping for %s: back to the built-in map", self.device)
+        return True
 
     def set_bindings(self, bindings: list[Binding], learned: bool = True):
         self.bindings = bindings
@@ -423,6 +451,14 @@ class Controller:
         b = self._map.get((ev.type, ev.ch, ev.num))
         if b is None and ev.type == "cc14":
             b = self._map.get(("cc", ev.ch, ev.num))
+        key = (ev.type, ev.ch, ev.num)
+        if key not in self._seen:
+            self._seen.add(key)
+            if b is None:
+                log.info("MIDI %s ch=%d num=%d value=%d: not mapped (%s)", ev.type, ev.ch + 1, ev.num, ev.value,
+                         "custom mapping" if self.learned else "built-in mapping")
+            else:
+                log.info("MIDI %s ch=%d num=%d -> %s %s", ev.type, ev.ch + 1, ev.num, b.action, b.deck or "")
         if b is not None:
             self.dispatch(b, ev)
 
@@ -608,16 +644,21 @@ class Controller:
         return abs(ev.value - last) >= step
 
     def jog(self, deck: str, revs: float, dt: float):
+        """One jog message. Scratch mode + hand on the top: the record follows the
+        hand. Otherwise the jog never stops a playing track: it bends the pitch
+        (a nudge the sync lock then respects), and searches a stopped one."""
         e = self.eng
         d = e.decks[deck]
-        if self._touch.get(deck) and d.playing:
+        if self.scratch_enabled and self._touch.get(deck) and d.playing:
             # platter held: the record follows your hand (scratch)
             e.scratch(deck, (revs / dt) * REV_SECONDS, True)
         elif d.playing:
             # outer ring: temporary pitch bend to nudge the phase
             e.set(deck, nudge=float(max(-0.15, min(0.15, (revs / dt) * 0.25))))
         else:
-            e.seek(deck, d.time + revs * REV_SECONDS)
+            # stopped: search. The engine moves from its own position (the
+            # snapshot here can be a few ms old; adding to it would jitter).
+            e.seek_by(deck, revs * REV_SECONDS)
 
     def tick(self):
         """Called ~60x/s from the UI: stop scratch motion when the hand stops."""

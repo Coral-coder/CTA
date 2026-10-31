@@ -753,3 +753,63 @@ def test_a_deck_keeps_its_mixed_tempo_when_it_stops_following():
     eng.set("B", tempo=0.0)                          # the DJ moves the fader: now it is their call
     _run(eng, 1)
     assert abs(b.bpm - 128.0) < 0.05
+
+
+def test_nudging_the_master_does_not_drag_the_follower_back():
+    """The DJ bends the lead's pitch with the jog to set the phase by ear: the
+    synced deck does not chase it back to a zero offset afterwards."""
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    _load(eng, "B", 124.0, offset=0.1)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set("B", sync=True)
+    eng.set_playing("B", True)
+    _run(eng, 4)
+    assert abs(eng.phase_error("B")) < 0.02
+    for _ in range(40):                                # jog on the MASTER (A)
+        eng.jog("A", 40.0, False)
+        _run(eng, 0.02)
+    _run(eng, 1)
+    moved = eng.phase_error("B")
+    assert abs(moved) > 0.03
+    _run(eng, 5)
+    assert abs(eng.phase_error("B") - moved) < 0.01    # where the DJ left it
+
+
+def test_changing_master_mid_mix_changes_only_who_leads_the_tempo():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    _load(eng, "B", 124.0, offset=0.1)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set("A", sync=True)
+    eng.set("B", sync=True)
+    eng.set_playing("B", True)
+    _run(eng, 4)
+    for _ in range(40):                                # B deliberately pushed off the beat by the DJ
+        eng.jog("B", 40.0, False)
+        _run(eng, 0.02)
+    _run(eng, 2)
+    before = eng.phase_error("B")
+    assert abs(before) > 0.03
+    pos_a, pos_b = eng.decks["A"].play_pos, eng.decks["B"].play_pos
+    rate_a = eng.decks["A"].rate
+    eng.set_master("B")                                # MASTER on B mid-transition
+    _run(eng, 4)
+    assert abs(eng.phase_error("B") - before) < 0.01   # the phase is untouched
+    assert abs(eng.decks["A"].rate - rate_a) < 1e-3    # and so is everyone's tempo
+    assert eng.decks["A"].play_pos > pos_a and eng.decks["B"].play_pos > pos_b
+
+
+def test_seek_by_moves_from_the_engines_own_position():
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    pos = eng.decks["A"].play_pos
+    for _ in range(10):
+        eng.seek_by("A", 0.01)
+    eng.render(64)                                     # a stopped deck: the seeks apply, nothing moves
+    assert abs(eng.decks["A"].play_pos - pos - 0.1 * SR) < SR * 0.012
+    eng.seek_by("A", -100.0)
+    eng.render(64)
+    assert eng.decks["A"].play_pos == 0.0

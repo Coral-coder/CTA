@@ -286,3 +286,42 @@ def test_controller_picks_up_a_control_only_where_the_app_is():
     assert eng.crossfader == -0.5
     c.handle_raw([0xB6, 24, 32])                     # ~ -0.5: met
     assert abs(eng.crossfader - (32 / 127 * 2 - 1)) < 1e-6
+
+
+def test_jog_never_stops_a_playing_track_unless_scratch_mode(tmp_data_dir):
+    e = _engine()
+    c = Controller(e, device="PIONEER DDJ-T1")
+    c.scratch_enabled = False                        # the default: no scratch mode
+    c.handle_raw([0x90, 11, 127])                     # play
+    e.render(256)
+    c.handle_raw([0x90, 54, 127])                     # hand on the platter
+    c.handle_raw([0xB0, 1, 0])
+    c.handle_raw([0xB0, 33, 1])                       # ... and a turn
+    e.render(256)
+    d = e.decks["A"]
+    assert d.playing and not d.scratching and d.nudge > 0   # a nudge, the track keeps playing
+    c.tick()
+    e.render(256)
+    assert not d.scratching
+    c.handle_raw([0x90, 54, 0])
+    c.scratch_enabled = True                          # scratch mode: the hand holds the record
+    c.handle_raw([0x90, 54, 127])
+    e.render(256)
+    assert d.scratching
+
+
+def test_reset_to_builtin_forgets_the_custom_mapping(tmp_path, monkeypatch):
+    import os
+
+    import cta.dj.midi as M
+
+    monkeypatch.setattr(M.paths, "data_dir", lambda: str(tmp_path))
+    M.save_mapping("PIONEER DDJ-T1", [M.Binding("cc", 0, 1, "volume", "A")])   # a bad custom map on the jog
+    c = M.Controller(Engine(), device="PIONEER DDJ-T1")
+    assert c.learned and c._map.get(("cc", 0, 1)).action == "volume"
+    assert c.reset_to_builtin()
+    assert not c.learned and not os.path.exists(M.mapping_path("PIONEER DDJ-T1"))
+    assert c._map[("cc14", 0, 1)].action == "jog" and (0, 1) in c.decoder.cc14
+    bs, learned = M.load_mapping("PIONEER DDJ-T1")
+    assert not learned and len(bs) == len(M.ddj_t1_default())
+    assert not M.Controller(Engine(), device="other").reset_to_builtin()
