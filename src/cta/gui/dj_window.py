@@ -3429,6 +3429,7 @@ class DJPanel(QWidget):
     _load_sig = Signal(str)
     _hint_sig = Signal(object, str, float, float)     # controller pickup hints (MIDI thread -> GUI)
     _cues_sig = Signal(str)                           # cues changed from the controller (MIDI thread -> GUI)
+    _midi_status_sig = Signal(str)                    # controller messages for the status bar (MIDI thread)
     _devices_sig = Signal(object)
 
     def __init__(self, main_window):
@@ -3475,6 +3476,7 @@ class DJPanel(QWidget):
         self._browse_sig.connect(lambda d: self.main.browse_library(d))
         self._load_sig.connect(lambda deck: self.load_selected(deck))
         self._hint_sig.connect(self._show_pickup_hint)
+        self._midi_status_sig.connect(lambda t: self.main.status_label.setText(t))
         self._cues_sig.connect(lambda deck: QTimer.singleShot(60, lambda: self._save_cues(deck)))
 
         outer = QVBoxLayout(self)
@@ -4305,6 +4307,10 @@ class DJPanel(QWidget):
         where = f"deck {deck} " if deck else ""
         self.main.status_label.setText(f"{where}{what}: controller at {ctl_x * 100:.0f} %, the app is at "
                                        f"{app_x * 100:.0f} % - move it there to pick it up (no jumps)")
+
+    def midi_status(self, text: str):
+        """A line about the controller for the status bar (called on the MIDI thread)."""
+        self._midi_status_sig.emit(str(text))
 
     def browse(self, delta: int):
         self._browse_sig.emit(int(delta))

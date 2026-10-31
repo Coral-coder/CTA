@@ -95,6 +95,7 @@ class Binding:
     deck: str | None = None
     relative: bool = False
     invert: bool = False
+    center: bool = False      # relative around 64 (65 = +1, 63 = -1) instead of two's complement
 
 
 def ddj_t1_default() -> list[Binding]:
@@ -116,6 +117,9 @@ def ddj_t1_default() -> list[Binding]:
             Binding("cc", ch, 19, "loop_size", deck, relative=True),
             Binding("cc", ch, 4, "filter", deck),
             Binding("cc", ch, 3, "needle", deck),
+            Binding("cc", ch, 8, "needle", deck),                       # SHIFT + needle
+            Binding("cc", ch, 9, "filter", deck),                       # SHIFT + filter
+            Binding("cc", ch, 79, "loop_size", deck, relative=True),    # SHIFT + auto loop
             n(42, "pad_mode"), n(45, "pad_delete"),
             n(46, "pad1"), n(47, "pad2"), n(48, "pad3"), n(49, "pad4"),
             n(95, "hotcue5"), n(96, "hotcue6"), n(97, "hotcue7"), n(98, "hotcue8"),   # SHIFT + pads
@@ -285,6 +289,7 @@ def eq_curve_inv(g: float) -> float:
 
 # absolute (fader / knob) actions and where the app's current value lives, as 0..1
 PICKUP_TOL = 0.02
+DETACH_TOL = 0.15     # a picked-up control stays on the hand unless something else really moved it
 
 
 def _app_value(e, deck: str | None, a: str, eq_x: dict):
@@ -354,6 +359,8 @@ class Controller:
         self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
         self._delete_held: dict[str, bool] = {}
         self._seen: set[tuple] = set()           # controls logged once (mapped or not)
+        self._scrub: set[str] = set()            # stopped decks the wheel is moving (audible)
+        self._unknown_n: dict[tuple, int] = {}   # unmapped deck-channel CCs seen while a jog is touched
         log.info("MIDI mapping for %s: %s (%d controls)", device,
                  "custom (saved by the setup guide / an import)" if self.learned else "built-in", len(self.bindings))
 
@@ -460,10 +467,45 @@ class Controller:
             if b is None:
                 log.info("MIDI %s ch=%d num=%d value=%d: not mapped (%s)", ev.type, ev.ch + 1, ev.num, ev.value,
                          "custom mapping" if self.learned else "built-in mapping")
+                if self.ui is not None and hasattr(self.ui, "midi_status"):
+                    self.ui.midi_status(f"Controller sent {ev.type.upper()} {ev.num} on channel {ev.ch + 1} "
+                                        f"(value {ev.value}) - not mapped")
             else:
                 log.info("MIDI %s ch=%d num=%d -> %s %s", ev.type, ev.ch + 1, ev.num, b.action, b.deck or "")
+        if b is None and ev.type == "cc" and ev.ch < 4:
+            b = self._adopt_jog(ev)
         if b is not None:
             self.dispatch(b, ev)
+
+    def _adopt_jog(self, ev: Event):
+        """A deck channel sends a control the map does not know, with the
+        values a jog wheel sends (small steps either way, around 0 or 64):
+        it is this unit's jog. Adopted for this session and logged, so the jog
+        works whatever numbers this DDJ-T1 / firmware uses."""
+        deck = "ABCD"[ev.ch]
+        if ev.num >= 32 and ("cc", ev.ch, ev.num - 32) in self._unknown_n:
+            # the LSB of a 14-bit pair whose MSB was seen just before: a 14-bit relative jog
+            b = Binding("cc14", ev.ch, ev.num - 32, "jog", deck, relative=True)
+            self.decoder.cc14.add((ev.ch, ev.num - 32))
+        else:
+            k = ("cc", ev.ch, ev.num)
+            hist = self._unknown_n.setdefault(k, [])
+            hist.append(ev.value)
+            del hist[:-6]
+            if len(hist) < 4:
+                return None
+            twos = all(v <= 24 or v >= 104 for v in hist) and any(v != 0 for v in hist)
+            centred = all(40 <= v <= 88 for v in hist) and any(v != 64 for v in hist) and len(set(hist)) <= 4
+            if not (twos or centred) or (len(set(hist)) == len(hist) and not centred):
+                return None                       # an absolute knob sweeping: not a jog
+            b = Binding("cc", ev.ch, ev.num, "jog", deck, relative=True, center=centred and not twos)
+        self.bindings.append(b)
+        self._index()
+        msg = f"Controller: deck {deck} jog found on channel {ev.ch + 1} CC {b.num} - adopted"
+        log.warning("MIDI: %s (%s)", msg, b)
+        if self.ui is not None and hasattr(self.ui, "midi_status"):
+            self.ui.midi_status(msg)
+        return b if b.type == "cc" else None
 
     def dispatch(self, b: Binding, ev: Event):
         e = self.eng
@@ -476,8 +518,10 @@ class Controller:
         pressed = ev.value > 0
         am = self.automix
         moved = self._moved(b, ev)
+        # moved by something else (mouse, auto-mix, a new track)? the controller has
+        # to meet that value first; from then on it owns the control and stays on it
         if not b.relative and not self._pickup(b, deck, a, x):
-            return                              # the knob has not met the app's value yet: no jump
+            return
         if am is not None and moved:
             am.manual(deck, a)
 
@@ -509,9 +553,15 @@ class Controller:
                 if self.scratch_enabled or not e.decks[deck].playing:
                     e.scratch(deck, 0.0, True)    # the hand holds the record (a stopped one always scrubs)
             else:
+                self._scrub.discard(deck)
                 e.jog_release(deck)
         elif a == "jog":
-            delta = rel14(ev.value) if ev.type == "cc14" else rel7(ev.value)
+            if b.center:
+                delta = ev.value - (8192 if ev.type == "cc14" else 64)
+            else:
+                delta = rel14(ev.value) if ev.type == "cc14" else rel7(ev.value)
+            if ev.type == "cc" and not b.center:
+                delta *= 8                        # a 7-bit jog counts coarser than the 14-bit one
             revs = delta / self.counts_per_rev
             now = ev.t
             dt = max(1e-3, min(0.05, now - self._jog_last.get(deck, now - 0.01)))
@@ -614,7 +664,7 @@ class Controller:
         self._ctl_x[key] = x
         armed = self._armed.get(key, False)
         sent = self._sent.get(key)
-        if armed and sent is not None and abs(app - sent) > PICKUP_TOL:
+        if armed and sent is not None and abs(app - sent) > DETACH_TOL:
             armed = False                         # moved by something else (mouse, auto-mix): pick it up again
         if not armed:
             met = abs(x - app) <= PICKUP_TOL or (prev is not None and (prev - app) * (x - app) <= 0.0)
@@ -653,26 +703,34 @@ class Controller:
         d = e.decks[deck]
         if self._touch.get(deck) and d.playing and not self.scratch_enabled and d.scratching:
             e.jog_release(deck)                   # PLAY pressed with a hand on the jog: the music goes on
-        if self._touch.get(deck) and (self.scratch_enabled or not d.playing):
-            # platter held: the record follows your hand (scratch); a stopped
-            # deck scrubs this way whatever the scratch mode
+        if not d.playing:
+            # a stopped deck: the record follows the wheel and you hear it (platter
+            # or ring, touch sensor or not); it falls silent when the wheel stops
+            self._scrub.add(deck)
             e.scratch(deck, (revs / dt) * REV_SECONDS, True)
-        elif d.playing:
-            # outer ring: temporary pitch bend to nudge the phase
-            e.set(deck, nudge=float(max(-0.15, min(0.15, (revs / dt) * 0.25))))
+        elif self._touch.get(deck) and self.scratch_enabled:
+            # scratch mode, platter held: the record follows your hand
+            e.scratch(deck, (revs / dt) * REV_SECONDS, True)
         else:
-            # stopped: search. The engine moves from its own position (the
-            # snapshot here can be a few ms old; adding to it would jitter).
-            e.seek_by(deck, revs * REV_SECONDS)
+            # a playing deck: temporary pitch bend to nudge the phase
+            e.set(deck, nudge=float(max(-0.15, min(0.15, (revs / dt) * 0.25))))
 
     def tick(self):
         """Called ~60x/s from the UI: stop scratch motion when the hand stops."""
         now = time.perf_counter()
+        for deck in list(self._scrub):                    # a stopped deck scrubbed by the wheel
+            if self._touch.get(deck):
+                continue                                  # the hand is on it: held below
+            d = self.eng.decks[deck]
+            if d.playing or now - self._jog_last.get(deck, 0) > 0.06:
+                self._scrub.discard(deck)
+                self.eng.jog_release(deck)               # wheel stopped (or PLAY pressed): let go
         for deck, held in list(self._touch.items()):      # the MIDI thread may add a deck meanwhile
             d = self.eng.decks[deck]
             if not (held and d.scratching):
                 continue
             if d.playing and not self.scratch_enabled:
+                self._scrub.discard(deck)
                 self.eng.jog_release(deck)               # started under the hand: never hold a playing deck
             elif now - self._jog_last.get(deck, 0) > 0.03:
                 self.eng.scratch(deck, 0.0, True)

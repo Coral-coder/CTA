@@ -41,8 +41,9 @@ def test_ddj_t1_default_play_tempo_jog(tmp_data_dir):
     c.handle_raw([0x90, 11, 127])                       # pause
     pos = e.decks["A"].play_pos
     c.handle_raw([0xB0, 1, 0])
-    c.handle_raw([0xB0, 33, 100])                       # jog while paused: search forwards
-    assert e.decks["A"].play_pos > pos
+    c.handle_raw([0xB0, 33, 100])                       # jog while paused: the record moves forwards, audibly
+    m, _ = e.render(512)
+    assert e.decks["A"].play_pos > pos and not e.decks["A"].playing
 
 
 def test_learner_detects_14bit_and_buttons():
@@ -345,3 +346,18 @@ def test_a_stopped_deck_scrubs_under_the_hand_whatever_the_scratch_mode(tmp_data
     assert not d.scratching and not d.playing and np.abs(m[:, -1]).max() < 1e-6
     m, _ = e.render(512)                              # ... and is silent after that
     assert np.abs(m).max() == 0.0
+
+
+def test_an_unknown_jog_cc_is_adopted_from_its_values(tmp_data_dir):
+    e = _engine()
+    c = Controller(e, device="PIONEER DDJ-T1")
+    pos = e.decks["A"].play_pos
+    for _ in range(6):                                  # a 14-bit relative jog on numbers the map does not know
+        c.handle_raw([0xB0, 14, 0])
+        c.handle_raw([0xB0, 46, 3])
+    e.render(512)
+    assert any(b.action == "jog" and b.num == 14 and b.type == "cc14" for b in c.bindings)
+    assert e.decks["A"].play_pos > pos
+    for v in (3, 50, 90, 120):                          # an absolute knob sweeping is never taken for a jog
+        c.handle_raw([0xB1, 15, v])
+    assert not any(b.num == 15 and b.ch == 1 for b in c.bindings)
