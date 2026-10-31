@@ -575,3 +575,43 @@ def test_setting_up_the_incoming_deck_before_the_blend_makes_it_the_djs():
     for _ in range(int(2 * SR / 1024)):
         eng.render(1024)
     assert am.tr is None or am.tr.in_deck != out or eng.decks[out].info.title != "t1"
+
+
+def test_master_tempo_fader_still_works_with_sync_on_both_decks():
+    """SYNC lit on both decks: the master leads, the other follows - the
+    master's tempo fader must move the whole mix, not be ignored."""
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 124.0)
+    eng.set("A", sync=True)
+    eng.set("B", sync=True)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set_playing("B", True)
+    _run(eng, 2)
+    assert abs(eng.decks["B"].bpm - 128.0) < 0.01
+    eng.set("A", tempo=0.5, tempo_range=0.08)             # +4 % on the master
+    _run(eng, 3)
+    assert abs(eng.decks["A"].bpm - 128.0 * 1.04) < 0.05
+    assert abs(eng.decks["B"].bpm - 128.0 * 1.04) < 0.05  # the follower came along
+
+
+def test_cueing_a_synced_deck_never_bends_the_master():
+    """Both decks synced, B the master and playing: holding CUE on A (a cue
+    preview) must leave B's tempo alone - and A plays the preview at B's tempo."""
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 124.0, offset=0.21)
+    eng.set("A", sync=True)
+    eng.set("B", sync=True)
+    eng.set_master("B")
+    eng.set_playing("B", True)
+    _run(eng, 2)
+    rates = []
+    eng.cue_press("A")
+    for _ in range(30):
+        _run(eng, 0.05)
+        rates.append(eng.decks["B"].rate)
+    eng.cue_release("A")
+    assert all(abs(r - 1.0) < 1e-9 for r in rates), rates      # B: untouched, no bend at all
+    assert abs(eng.decks["A"].bpm - 124.0) < 0.01               # A previewed at the master's tempo

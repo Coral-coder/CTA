@@ -70,7 +70,7 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
         self.lib: Library | None = None
         self.rows = np.zeros(0, np.int64)
         self._sort = (-1, Qt.AscendingOrder)
-        self._filter = {"text": "", "bpm_min": 0.0, "bpm_max": 0.0, "genre": "", "keys": None}
+        self._filter = {"text": "", "bpm_min": 0.0, "bpm_max": 0.0, "genre": "", "style": "", "keys": None}
 
     # ---- data source ------------------------------------------------------
     def set_library(self, lib: Library):
@@ -100,6 +100,9 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
         if f["genre"]:
             g = f["genre"]
             mask &= np.array([pg == g for pg in lib.parent_genres])
+        if f.get("style"):
+            st = f["style"]
+            mask &= np.array([g == st for g in lib.genres])
         if f["keys"] is not None:
             mask &= np.isin(lib.key, list(f["keys"]))
         rows = np.nonzero(mask)[0]

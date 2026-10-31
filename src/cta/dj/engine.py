@@ -759,14 +759,18 @@ class Engine:
 
     # ---- sync helpers ---------------------------------------------------------
     def _master(self, exclude: str | None = None) -> Deck | None:
+        """The deck the synced ones follow. A deck only cueing (CUE held) is
+        never it: nobody follows a cue preview."""
+        def ok(d):
+            return d.name != exclude and d.playing and d.grid and not d.cue_preview
         m = self.master_deck
-        if m and m != exclude and self.decks[m].playing and self.decks[m].grid:
+        if m and ok(self.decks[m]):
             return self.decks[m]
         for d in self.decks.values():
-            if d.name != exclude and d.playing and d.grid and not d.sync:
+            if ok(d) and not d.sync:
                 return d
         for d in self.decks.values():
-            if d.name != exclude and d.playing and d.grid:
+            if ok(d):
                 return d
         return None
 
@@ -818,9 +822,14 @@ class Engine:
         return float(((mb - db) + 0.5) % 1.0 - 0.5)
 
     def _apply_sync(self):
+        lead = self._master()                      # the deck everyone follows: its tempo fader rules
         for d in self.decks.values():
-            if not (d.sync and d.loaded and d.grid):
+            if not (d.sync and d.loaded and d.grid) or d is lead:
+                # (with SYNC lit on both decks, the master would otherwise follow its follower
+                # and its own tempo fader would do nothing)
                 d.phase_corr = 0.0
+                if d is lead:
+                    d.rate_override = None
                 continue
             m = self._master(exclude=d.name)
             if m is None:

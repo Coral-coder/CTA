@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QSplitter,
@@ -172,6 +173,9 @@ class SettingsDialog(QDialog):
         self.auto_update = QCheckBox("Check for updates automatically")
         self.auto_update.setChecked(settings.value("auto_update_check", "true") == "true")
         form.addRow(self.auto_update)
+        self.start_dj = QCheckBox("Start in DJ mode (decks open at launch)")
+        self.start_dj.setChecked(settings.value("start_in_dj", "true") == "true")
+        form.addRow(self.start_dj)
         lay.addLayout(form)
 
         lay.addWidget(QLabel("<b>Mix server (phone remote)</b>"))
@@ -212,6 +216,7 @@ class SettingsDialog(QDialog):
         self.s.setValue("min_bpm", self.min_bpm.value())
         self.s.setValue("max_bpm", self.max_bpm.value())
         self.s.setValue("use_ai", "true" if self.use_ai.isChecked() else "false")
+        self.s.setValue("start_in_dj", "true" if self.start_dj.isChecked() else "false")
         self.s.setValue("ai_device", self.device.currentText())
         self.s.setValue("auto_update_check", "true" if self.auto_update.isChecked() else "false")
         self.s.setValue("server_mode", "true" if self.server_mode.isChecked() else "false")
@@ -341,6 +346,17 @@ class MainWindow(QMainWindow):
         self.f_genre.setMinimumContentsLength(6)
         self.f_genre.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         fl.addWidget(self.f_genre, 1)
+        fl.addWidget(QLabel(" Style"))
+        self.f_style = QComboBox()
+        self.f_style.setToolTip("AI sub-genre (Tech House, Trance, Drum n Bass, …) - the genre on the left "
+                                "narrows this list. Right-click a track for what blends with it.")
+        self.f_style.currentIndexChanged.connect(lambda _: self.apply_filter())
+        self.f_style.setMinimumWidth(80)
+        self.f_style.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.f_style.setMinimumContentsLength(8)
+        self.f_style.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        fl.addWidget(self.f_style, 1)
+        self.f_genre.currentIndexChanged.connect(lambda _: self._fill_styles())
         self.f_compat = QCheckBox("Keys")
         self.f_compat.setToolTip("Only keys compatible with the focused track")
         self.f_compat.toggled.connect(lambda _: self.apply_filter())
@@ -439,8 +455,26 @@ class MainWindow(QMainWindow):
         row.addWidget(self.half_double)
         self.genre_lock = QCheckBox("Same genre family")
         self.genre_lock.setChecked(self.settings.value("genre_lock", "false") == "true")
+        self.genre_lock.setToolTip("Only the seed's coarse AI genre (Electronic, Hip Hop, …)")
         self.genre_lock.toggled.connect(self._mix_changed)
         row.addWidget(self.genre_lock)
+        row.addWidget(QLabel(" Style"))
+        self.family_lock = QComboBox()
+        self.family_lock.addItem("Family + what blends with it", "neighbours")
+        self.family_lock.addItem("Same style family only", "family")
+        self.family_lock.addItem("Any style", "")
+        self.family_lock.setToolTip("Which AI sub-genres may follow: the seed's style family (house, techno, "
+                                    "trance, bass, drum & bass, breaks, hard dance, disco, dance/pop, downtempo) "
+                                    "and the families that blend with it, that family alone, or anything. "
+                                    "See Help → What blends with what.")
+        self.family_lock.setCurrentIndex(max(0, self.family_lock.findData(
+            self.settings.value("family_lock", "neighbours"))))
+        self.family_lock.currentIndexChanged.connect(self._mix_changed)
+        row.addWidget(self.family_lock)
+        b_blend = QPushButton("What blends?")
+        b_blend.setToolTip("The style families and which of them sit well next to each other")
+        b_blend.clicked.connect(self.show_blend_map)
+        row.addWidget(b_blend)
         row.addStretch()
         lay.addLayout(row)
 
@@ -591,6 +625,7 @@ class MainWindow(QMainWindow):
         self.f_genre.addItems([x for x in lib.parent_names if x])
         self.f_genre.setCurrentText(g)
         self.f_genre.blockSignals(False)
+        self._fill_styles()
         # keep the setlist only if all tracks still exist
         self.current = None
         if prev_path and prev_path in lib.paths:
@@ -610,6 +645,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(300, self._first_run)
         quiet_memory()
         self.apply_filter()
+        if (self.settings.value("start_in_dj", "true") == "true" and getattr(self, "dj", None) is None
+                and self.isVisible() and not os.environ.get("CTA_NO_AUTO_DJ")):
+            QTimer.singleShot(0, self.open_dj)      # DJ mode is the point: decks up from the start
         if self._want_server:
             self._want_server = False
             QTimer.singleShot(0, self.start_server)
@@ -622,6 +660,27 @@ class MainWindow(QMainWindow):
         if r == QMessageBox.Yes:
             self.add_folder()
 
+    def _fill_styles(self):
+        """The Style list: every AI sub-genre in the library (most common first),
+        narrowed to the chosen genre."""
+        lib = self.lib
+        if lib is None:
+            return
+        cur = self.f_style.currentText()
+        parent = self.f_genre.currentText()
+        names = lib.style_names
+        if parent:
+            keep = {g for g, pg in zip(lib.genres, lib.parent_genres) if pg == parent}
+            names = [g for g in names if g in keep]
+        self.f_style.blockSignals(True)
+        self.f_style.clear()
+        self.f_style.addItem("")
+        for g in names:
+            self.f_style.addItem(f"{g}  ({lib.style_counts[g]})", g)
+        i = self.f_style.findData(cur) if cur else 0
+        self.f_style.setCurrentIndex(max(i, 0))
+        self.f_style.blockSignals(False)
+
     def apply_filter(self):
         if self.lib is None:
             return
@@ -631,7 +690,8 @@ class MainWindow(QMainWindow):
             k = int(self.lib.key[self.current])
             keys = {j for j in range(24) if compatibility(k, j) >= 0.55}
         self.lib_model.set_filter(text=self.search.text().strip(), bpm_min=self.f_bpm_min.value(),
-                                  bpm_max=self.f_bpm_max.value(), genre=self.f_genre.currentText(), keys=keys)
+                                  bpm_max=self.f_bpm_max.value(), genre=self.f_genre.currentText(),
+                                  style=self.f_style.currentData() or "", keys=keys)
         if self.current is not None:
             r = self.lib_model.row_of(self.current)
             if r >= 0:
@@ -649,10 +709,14 @@ class MainWindow(QMainWindow):
         self.current = idx
         t = self.lib.track(idx)
         styles = ", ".join(f"{lab.split('---')[-1]} {p:.0%}" for lab, p in self.lib.styles[idx][:3])
+        from ..styles import NEIGHBOURS
+
+        fam = self.lib.families[idx]
+        fam_txt = f" · <b>{fam}</b> family, blends with {', '.join(NEIGHBOURS[fam])}" if fam in NEIGHBOURS else ""
         self.now_label.setText(
             f"<b>{t.artist} - {t.title}</b><br>"
             f"<span style='font-size:20px'>{t.bpm:.2f} BPM &nbsp; {camelot_str(t.key)} {key_name(t.key)} "
-            f"&nbsp; Energy {t.energy:.1f}</span><br><small>{styles or t.tag_genre}</small>")
+            f"&nbsp; Energy {t.energy:.1f}</span><br><small>{styles or t.tag_genre}{fam_txt}</small>")
         self.seed_label.setText(f"Seed: <b>{t.artist} - {t.title}</b> ({t.bpm:.1f} BPM, {camelot_str(t.key)})")
         if select:
             r = self.lib_model.row_of(idx)
@@ -680,6 +744,7 @@ class MainWindow(QMainWindow):
         w = {k: s.value() / 100.0 for k, s in self.w_sliders.items()}
         return MixSettings(max_pitch_pct=self.pitch.value(), allow_half_double=self.half_double.isChecked(),
                            strict_key=self.strict_key.isChecked(), genre_lock=self.genre_lock.isChecked(),
+                           family_lock=str(self.family_lock.currentData() or ""),
                            energy_step=steps[self.energy_dir.currentIndex()], w_tempo=w["tempo"],
                            w_key=w["key"], w_sound=w["sound"], w_genre=w["genre"], w_energy=0.10)
 
@@ -689,6 +754,7 @@ class MainWindow(QMainWindow):
         s.setValue("strict_key", "true" if self.strict_key.isChecked() else "false")
         s.setValue("half_double", "true" if self.half_double.isChecked() else "false")
         s.setValue("genre_lock", "true" if self.genre_lock.isChecked() else "false")
+        s.setValue("family_lock", str(self.family_lock.currentData() or ""))
         s.setValue("energy_dir", self.energy_dir.currentIndex())
         for k, sl in self.w_sliders.items():
             s.setValue(f"w_{k}", sl.value())
@@ -1021,6 +1087,33 @@ class MainWindow(QMainWindow):
             return
         self.db.add_folder(os.path.normpath(d))
         self.start_scan()
+
+    def show_blend_map(self):
+        """What blends with what: the style families and their neighbours."""
+        from ..styles import FAMILIES, NEIGHBOURS
+
+        rows = "".join(
+            f"<tr><td style='padding:4px 10px 4px 0'><b>{fam}</b></td>"
+            f"<td style='padding:4px 10px 4px 0'>{', '.join(NEIGHBOURS[fam])}</td>"
+            f"<td style='padding:4px 0'><small>{', '.join(styles)}</small></td></tr>"
+            for fam, styles in FAMILIES.items())
+        html = ("<p>A set stays in one <b>style family</b> or moves to a family that <b>blends</b> with it. "
+                "Tempo and key still decide the order; this only says what belongs in the same set.</p>"
+                "<table><tr><th align=left>Family</th><th align=left>Blends with</th>"
+                f"<th align=left>AI styles</th></tr>{rows}</table>")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("What blends with what")
+        lay = QVBoxLayout(dlg)
+        lab = QLabel(html)
+        lab.setWordWrap(True)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setWidget(lab)
+        lay.addWidget(sc)
+        dlg.resize(900, 600)
+        dlg.show()
+        self._blend_dlg = dlg
 
     def open_settings(self):
         dlg = SettingsDialog(self.settings, self.db, self)

@@ -126,6 +126,19 @@ class Library:
         self.dedup_code = self._codes([d if d != "|" else "" for d in self.dedup], empty_unique=True)
         self.parent_code = self._codes(self.parent_genres, empty_unique=False)
         self.parent_names = sorted(set(self.parent_genres))
+        # AI sub-genre (the top style) and its family: what blends with what
+        from .styles import family_of
+
+        # a style outside the dance map (hip hop, rock, ...) is its own family: its parent genre
+        self.families = [family_of(g) or pg or "" for g, pg in zip(self.genres, self.parent_genres)]
+        self.style_code = self._codes([g.lower() for g in self.genres], empty_unique=False)
+        self.family_code = self._codes(self.families, empty_unique=False)
+        counts: dict[str, int] = {}
+        for g in self.genres:
+            if g:
+                counts[g] = counts.get(g, 0) + 1
+        self.style_names = sorted(counts, key=lambda g: (-counts[g], g))
+        self.style_counts = counts
         self._hay: list[str] | None = None
         try:
             stats = self.db.play_stats()
@@ -231,6 +244,23 @@ class Library:
 
     def style_score(self, idx: int) -> np.ndarray:
         return _to_percentile(self.style_similarity(idx), self.style_q)
+
+    def blend_vector(self, idx: int) -> np.ndarray:
+        """How well every track's style sits next to track idx's (styles.blend_score, vectorised)."""
+        from .styles import NEIGHBOURS
+
+        out = np.full(self.n, 0.5)
+        fam = self.families[idx]
+        if not fam:
+            return out
+        known = self.family_code >= 0
+        same_parent = (self.parent_code == self.parent_code[idx]) & (self.parent_code >= 0)
+        out[known] = np.where(same_parent[known], 0.2, 0.0)
+        neigh = np.array([f in NEIGHBOURS.get(fam, ()) for f in self.families], bool)
+        out[neigh] = 0.55
+        out[self.family_code == self.family_code[idx]] = 0.85
+        out[self.style_code == self.style_code[idx]] = 1.0
+        return out
 
     def search(self, text: str) -> np.ndarray:
         if not text:

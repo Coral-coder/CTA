@@ -219,3 +219,16 @@ def test_crossfade_is_gradual_never_a_sudden_drop():
     t_full = next(tt for tt, _o, i in vols if i > 0.99)
     audible_after = [tt for tt, o, _i in vols if tt > t_full and o > 0.2]
     assert audible_after and audible_after[-1] - t_full >= 8 * beat
+
+
+def test_bass_comes_in_gradually_before_the_swap():
+    from cta.dj.automix import blend_values
+
+    beats, sw = 32.0, 32.0
+    lows = [blend_values(x, beats, sw, 0.0)["in_eq"][0] for x in np.arange(0, 36, 0.5)]
+    assert lows[0] == 0.0 and lows[-1] == 1.0
+    assert all(b >= a - 1e-9 for a, b in zip(lows, lows[1:]))           # never steps back
+    half = blend_values(0.75 * sw, beats, sw, 0.0)
+    assert 0.2 < half["in_eq"][0] < 0.6                                 # already coming in before the drop
+    assert half["out_eq"][0] + half["in_eq"][0] <= 1.0 + 1e-9           # ... without doubling the bass
+    assert blend_values(sw + 0.5, beats, sw, 0.0)["out_eq"][0] < 1e-6   # outgoing bass gone after the swap

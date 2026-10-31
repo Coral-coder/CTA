@@ -122,3 +122,50 @@ def test_bridge_suggestions_fit_both_neighbours(tmp_path):
     # better than a typical track at linking the two
     typical = np.median(np.minimum(sa.total, sc.total))
     assert worst > typical
+
+
+def test_style_families_keep_the_set_in_what_blends(tmp_path):
+    """House seed: tech house and techno (a neighbouring family) may follow,
+    drum & bass may not unless the style lock is off; the Style filter narrows
+    the library to one AI sub-genre."""
+    import json
+
+    from cta.styles import blend_score, blends_with, family_of
+
+    assert family_of("Electronic---Tech House") == "House" and family_of("Hardstyle") == "Hard Dance"
+    assert blend_score("House", "Deep House") == 0.85 > blend_score("House", "Techno") == 0.55
+    assert blend_score("House", "Jungle", "Electronic", "Electronic") == 0.2
+    assert "Drum & Bass" in blends_with("Dubstep")
+    rng = np.random.default_rng(1)
+    db = Database(str(tmp_path / "s.db"))
+    styles = ["House", "Tech House", "Techno", "Drum n Bass", "Hip Hop"] * 20
+    rows = []
+    for i, st in enumerate(styles):
+        emb = rng.random(1280).astype(np.float32)
+        sv = rng.dirichlet(np.ones(400) * 0.05).astype(np.float32)
+        parent = "Hip Hop" if st == "Hip Hop" else "Electronic"
+        rows.append(dict(path=f"/m/{i}.mp3", mtime=0, size=0, title=f"T{i}", artist=f"A{i}", album="",
+                         tag_genre="", tag_bpm=None, tag_key=-1, duration=300, bpm=126.0, bpm_conf=1,
+                         key=int(rng.integers(0, 24)), key_conf=1, loudness=-10.0, centroid=2000, onset_rate=3,
+                         genre=st, styles=json.dumps({"top": [[f"{parent}---{st}", 0.9]], "parent": parent}),
+                         style_vec=vec_to_blob(sv), embedding=vec_to_blob(emb), status="ok", error=None,
+                         analyzed_at=0, version=1))
+    db.upsert_many(rows)
+    lib = Library(db)
+    assert lib.style_names[:5] == ["Drum n Bass", "Hip Hop", "House", "Tech House", "Techno"]   # equal: a-z
+    seed = 0                                                                              # House
+    fams = {lib.genres[s.idx] for s in suggest_next(lib, seed, MixSettings(family_lock="neighbours"), n=80)}
+    assert fams <= {"House", "Tech House", "Techno"} and "Techno" in fams
+    fams = {lib.genres[s.idx] for s in suggest_next(lib, seed, MixSettings(family_lock="family"), n=80)}
+    assert fams == {"House", "Tech House"}
+    fams = {lib.genres[s.idx] for s in suggest_next(lib, seed, MixSettings(family_lock=""), n=99)}
+    assert "Drum n Bass" in fams
+    # the Style filter in the library list
+    from PySide6 import QtWidgets
+
+    from cta.gui.models import LibraryModel
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    m = LibraryModel(None)
+    m.set_library(lib)
+    m.set_filter(style="Drum n Bass")
+    assert m.rowCount() == 20 and all(lib.genres[i] == "Drum n Bass" for i in m.rows)

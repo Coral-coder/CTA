@@ -30,6 +30,8 @@ class MixSettings:
     avoid_same_artist: bool = True
     energy_step: float = 0.0          # preferred energy change per transition (-2..+2)
     genre_lock: bool = False          # stay within the seed's AI parent genre
+    family_lock: str = "neighbours"   # "": any style; "neighbours": the seed's style family or one that
+                                      # blends with it; "family": the seed's family only (see styles.py)
 
     def weights(self) -> np.ndarray:
         w = np.array([self.w_tempo, self.w_key, self.w_sound, self.w_genre, self.w_energy], np.float64)
@@ -79,7 +81,8 @@ def score_from(lib: Library, a: int, s: MixSettings, target_energy: float | None
     tempo, pct, valid = tempo_match(lib, a, s, ref_bpm)
     key = COMPAT[lib.key[a] + 1, lib.key + 1].astype(np.float64)
     sound = lib.sound_score(a)
-    genre = lib.style_score(a)
+    blend = lib.blend_vector(a)                     # the DJ's map of what blends (styles.py) ...
+    genre = 0.5 * lib.style_score(a) + 0.5 * blend  # ... and the model's own style similarity
     te = lib.energy[a] + s.energy_step if target_energy is None else target_energy
     energy = np.clip(1.0 - np.abs(lib.energy - te) / 5.0, 0.0, 1.0)
     w = s.weights()
@@ -93,6 +96,9 @@ def score_from(lib: Library, a: int, s: MixSettings, target_energy: float | None
         valid &= key >= 0.5
     if s.genre_lock and lib.parent_code[a] >= 0:
         valid &= (lib.parent_code == lib.parent_code[a]) | (lib.parent_code < 0)
+    if s.family_lock and lib.family_code[a] >= 0:
+        floor = 0.8 if s.family_lock == "family" else 0.5
+        valid &= (blend >= floor) | (lib.family_code < 0)
     if s.avoid_same_artist:
         total = np.where(lib.artist_code == lib.artist_code[a], total * 0.85, total)
     # never suggest the track itself or another copy of it

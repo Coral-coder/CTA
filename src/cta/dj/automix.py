@@ -146,10 +146,16 @@ def blend_values(x: float, beats: float, swap_beat: float, tail_beats: float, ba
     swap = _ramp((x - sw) / 0.5 + 0.5) if bass_swap else _ramp(x / beats)
     pre = _ramp((x - 0.5 * sw) / max(0.5 * sw, 1.0))        # second half before the swap
     post = _ramp((x - sw) / max(beats + tail_beats - sw, 4.0))
+    # the incoming bass is not a switch: it creeps in through the second half of the
+    # build-up (to 60 % by the downbeat, the outgoing giving the same room) and the
+    # downbeat only finishes the swap - keeping it cut until then felt hollow for too long
+    creep = 0.6 * pre if bass_swap else 0.0
+    in_low = creep + (1.0 - creep) * swap
+    out_low = (1.0 - creep) * (1.0 - swap)
     return {
         "in_vol": float(np.sin(_ramp(x / fade_in) * np.pi / 2)),
-        "in_eq": (swap, 0.5 + 0.5 * _ramp(x / max(sw, 1.0)), 1.0),
-        "out_eq": (1.0 - swap, float(np.clip(1.0 - 0.3 * pre - 0.5 * post, 0, 1)),
+        "in_eq": (float(in_low), 0.5 + 0.5 * _ramp(x / max(sw, 1.0)), 1.0),
+        "out_eq": (float(out_low), float(np.clip(1.0 - 0.3 * pre - 0.5 * post, 0, 1)),
                    float(np.clip(1.0 - 0.35 * pre - 0.5 * post, 0, 1))),
         "out_vol": float((1.0 - 0.2 * pre) * np.cos(post * np.pi / 2)),
     }
