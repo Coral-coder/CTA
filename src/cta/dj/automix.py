@@ -90,6 +90,8 @@ class _Transition:
     last_raw: float = 0.0
     echo_on: bool = False
     rehearsal: object = None         # a Rehearsal: replay the DJ's own pre-mixed moves
+    in_sync_was: bool | None = None  # the DJ's SYNC buttons before the blend: given back after it
+    out_sync_was: bool | None = None
 
     @property
     def tail_beats(self) -> float:
@@ -693,6 +695,8 @@ class AutoMix:
             # exact bar/phase alignment: incoming beat = its start + beats since start
             target_beat = tr.in_start_beat + (mb - tr.start_beat)
             din.keylock = True
+            if tr.in_sync_was is None:
+                tr.in_sync_was, tr.out_sync_was = bool(din.sync), bool(dout.sync)
             din.sync = True
             din.auto_phase = True                  # its blends stay on the beat whatever the SYNC mode
             din.rate_override = e.sync_ratio(m.bpm, din.grid.bpm)
@@ -826,7 +830,8 @@ class AutoMix:
         dout.loop = None
         dout.trim = 1.0
         dout.fx = set(dout.fx) - {len(e.fx_units) - 1}
-        dout.sync = False
+        # SYNC is sticky: each deck keeps the button the DJ had on it before the blend
+        dout.sync = bool(tr.out_sync_was)
         dout.rate_override = None
         dout.filter = 0.0
         if tr.style == "rehearsed":
@@ -835,7 +840,7 @@ class AutoMix:
             din.volume = 1.0
             din.eq = np.ones(3)
             din.filter = 0.0
-        din.sync = False
+        din.sync = bool(tr.in_sync_was)        # (it leads now: its tempo is kept either way)
         din.auto_phase = False
         dout.auto_phase = False
         din.phase_corr = 0.0
