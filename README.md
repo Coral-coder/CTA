@@ -215,7 +215,7 @@ Security: a 32-byte key, TLS with a certificate the laptop pins from the pairing
 
 ## Updates
 
-**Renamed from CTA (2.3.0).** Everything carries over by itself: the data folder, library, analysis, settings, learned mixes, recordings and the start-at-login entry move from the CTA names to the Tempest ones on first start. Installs still named CTA update themselves through `legacy-CTA-*` zips for a while; the new app folder is simply called Tempest.
+**Renamed from CTA (2.3.0).** Everything carries over by itself: the data folder, library, analysis, settings, learned mixes, recordings and the start-at-login entry move from the CTA names to the Tempest ones on first start. Installs still named CTA update themselves through `upgrade-from-CTA-*` zips for a while; the new app folder is simply called Tempest.
 
 Tempest checks GitHub Releases at start-up (at most every 12 hours) and on **Check for Updates**: **Update now**, **Later** or **Skip this version**. The zip is downloaded, verified against the release's SHA-256 sums, unpacked next to the install and test-run; only then does Tempest close, a helper swaps the folders (keeping the old version until the swap has worked, rolling back if it fails) and restarts. Your library, settings and analysis data are never touched. On the Mac an app run straight from Downloads is installed to **/Applications** first so it can update itself in place.
 

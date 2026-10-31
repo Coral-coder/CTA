@@ -159,8 +159,9 @@ def release_from_json(d: dict, target: str | None = "auto") -> Release:
         name = a.get("name", "")
         if name == "SHA256SUMS.txt":
             sums_url = a.get("browser_download_url")
-        elif target and name.endswith(f"-{target}.zip") and not name.startswith("legacy-"):
-            # the Tempest zip wins; a legacy-named one (for installs still called Tempest) is a fallback
+        elif target and name.endswith(f"-{target}.zip") and not name.startswith(("legacy-", "upgrade-from-")):
+            # the Tempest zip wins; the upgrade-from-CTA one (for installs still called CTA, whose
+            # updater takes the last matching asset - GitHub sorts names case-insensitively) is ignored
             if asset_name is None or name.startswith(f"{APP_NAME}-"):
                 asset_name, asset_url, size = name, a.get("browser_download_url"), int(a.get("size") or 0)
     return Release(version=tag.lstrip("vV"), tag=tag, notes=d.get("body") or "",

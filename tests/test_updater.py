@@ -19,9 +19,9 @@ def test_versions():
 RELEASE = {
     "tag_name": "v1.2.0", "body": "notes", "html_url": "https://x/rel", "draft": False, "prerelease": False,
     "assets": [
-        {"name": "legacy-CTA-1.2.0-windows-x64.zip", "browser_download_url": "https://x/lw.zip", "size": 11},
         {"name": "Tempest-1.2.0-windows-x64.zip", "browser_download_url": "https://x/w.zip", "size": 10},
         {"name": "Tempest-1.2.0-macos-arm64.zip", "browser_download_url": "https://x/m.zip", "size": 20},
+        {"name": "upgrade-from-CTA-1.2.0-windows-x64.zip", "browser_download_url": "https://x/lw.zip", "size": 11},
         {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sums"},
     ],
 }
