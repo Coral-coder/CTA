@@ -205,7 +205,8 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     assert not dj.automix.s.auto_length and dj.automix.s.mix_bars == 128
     call(lambda: cmd(action="blend", auto=True))
     assert dj.automix.s.auto_length
-    # queue editing and pause
+    # queue editing and pause (auto-suggest off: it would refill an emptied queue on the next tick)
+    dj.auto_suggest.setChecked(False)
     other = next(i for i in range(lib.n) if i != seed)
     call(lambda: cmd(action="queue_add", idx=other))
     assert other in list(dj.automix.queue)
