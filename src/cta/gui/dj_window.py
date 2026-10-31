@@ -1698,6 +1698,7 @@ class DeckPanel(QFrame):
         self.body_lay = body                       # the zoom moves out of here in the stacked layout
         self.w_body = wrap(body, 4)
         outer.addWidget(self.w_body, 1)
+        self._outer = outer                        # the stacked layout lets the body shrink to the tempo fader
 
         # ---- SYNC  MASTER  KEY  [phase]  beat jump ------------------------------------------------
         self.b_sync = QPushButton("SYNC")
@@ -1920,7 +1921,8 @@ class DeckPanel(QFrame):
         full = v == "full"
         adv = full and self.b_adv.isChecked()
         self.w_body.setVisible(v != "micro")
-        self.platter.setVisible(full and self.dj.show_platter())
+        self.platter.setVisible((full or getattr(self.dj, "wave_layout", "decks") == "stacked")
+                                and self.dj.show_platter())
         self.w_jump.setVisible(v != "micro")
         self.w_pads.setVisible(adv)
         self.w_key.setVisible(adv)
@@ -3742,6 +3744,7 @@ class DJPanel(QWidget):
         self.stack_w.hide()
         outer.addWidget(self.stack_w)
         outer.addWidget(decks_w, 1)
+        self._dj_outer, self._decks_w = outer, decks_w
         outer.addWidget(self.mixer.xf_bar)
         self.wave_layout = "decks"
         self.set_wave_layout(str(self.settings.value("dj_wave_layout", "decks")), save=False)
@@ -4867,22 +4870,33 @@ class DJPanel(QWidget):
             lay = row.layout()
             if mode == "stacked":
                 if p.zoom.parent() is not row:
+                    # platter + waveform go to the deck's row in the stack (platter on the left);
+                    # the deck keeps only its tempo fader in that space and shrinks to it
+                    p.body_lay.removeWidget(p.platter)
                     p.body_lay.removeWidget(p.zoom)
-                    p.body_lay.insertStretch(1, 1)
+                    p.body_lay.insertStretch(0, 1)
+                    lay.addWidget(p.platter, 0, Qt.AlignVCenter)
                     lay.addWidget(p.zoom, 1)
                     p.zoom.setMinimumHeight(64)
+                    p._outer.setStretchFactor(p.w_body, 0)
                 row.setVisible(n in "AB" or self.show_cd.isChecked())
             else:
                 if p.zoom.parent() is row:
+                    lay.removeWidget(p.platter)
                     lay.removeWidget(p.zoom)
-                    item = p.body_lay.takeAt(1)          # the stretch that filled the gap
+                    item = p.body_lay.takeAt(0)          # the stretch that filled the gap
                     del item
+                    p.body_lay.insertWidget(0, p.platter, 0, Qt.AlignVCenter)
                     p.body_lay.insertWidget(1, p.zoom, 1)
                     p.zoom.setMinimumHeight(48)
+                    p._outer.setStretchFactor(p.w_body, 1)
                 row.setVisible(False)
             p.zoom.show()
             p.apply_view(force=True)
         self.stack_w.setVisible(mode == "stacked")
+        # the waveforms take the room the decks no longer need
+        self._dj_outer.setStretchFactor(self.stack_w, 1 if mode == "stacked" else 0)
+        self._dj_outer.setStretchFactor(self._decks_w, 0 if mode == "stacked" else 1)
         for key, a in getattr(self, "layout_acts", {}).items():
             a.setChecked(key == mode)
 
