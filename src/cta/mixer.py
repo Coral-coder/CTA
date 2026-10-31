@@ -49,6 +49,7 @@ class Scored:
     energy: np.ndarray
     pitch_pct: np.ndarray           # signed tempo change needed (%)
     valid: np.ndarray
+    loose: np.ndarray | None = None # valid without the genre / style locks: when a set runs dry
 
 
 def tempo_match(lib: Library, a: int, s: MixSettings, ref_bpm: float | None = None):
@@ -94,6 +95,7 @@ def score_from(lib: Library, a: int, s: MixSettings, target_energy: float | None
         valid = np.ones(lib.n, bool)
     if s.strict_key:
         valid &= key >= 0.5
+    loose = valid.copy()
     if s.genre_lock and lib.parent_code[a] >= 0:
         valid &= (lib.parent_code == lib.parent_code[a]) | (lib.parent_code < 0)
     if s.family_lock and lib.family_code[a] >= 0:
@@ -105,7 +107,8 @@ def score_from(lib: Library, a: int, s: MixSettings, target_energy: float | None
     dup = lib.dedup_code == lib.dedup_code[a]
     dup[a] = True
     valid &= ~dup
-    return Scored(total, tempo, key, sound, genre, energy, pct, valid)
+    loose &= ~dup
+    return Scored(total, tempo, key, sound, genre, energy, pct, valid, loose)
 
 
 ANCHOR_KEEP = 0.3          # only the 30 % of the library that sounds most like the seed
@@ -263,6 +266,8 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None
             used = np.isin(lib.dedup_code, lib.dedup_code[seq])
             used[seq] = True
             ok &= ~used
+            if not ok.any() and sc.loose is not None:
+                ok = sc.loose & ~banned & ~used        # the style ran dry: a lock never starves a set
             if not ok.any():
                 continue      # dead end: nothing mixable from here
             total = np.where(ok, total, -np.inf)

@@ -169,3 +169,23 @@ def test_style_families_keep_the_set_in_what_blends(tmp_path):
     m.set_library(lib)
     m.set_filter(style="Drum n Bass")
     assert m.rowCount() == 20 and all(lib.genres[i] == "Drum n Bass" for i in m.rows)
+
+
+def test_a_style_lock_never_starves_a_set(tmp_path):
+    """Three tracks, two families that do not blend: the setlist still has
+    three tracks (the lock widens when its family runs dry) - the packaged
+    app's self-test builds exactly this."""
+    import json
+
+    db = Database(str(tmp_path / "tiny.db"))
+    rows = []
+    for i, st in enumerate(("Minimal", "Minimal", "Juke")):
+        rows.append(dict(path=f"/m/{i}.mp3", mtime=0, size=0, title=f"T{i}", artist=f"A{i}", album="",
+                         tag_genre="", tag_bpm=None, tag_key=-1, duration=300, bpm=(128.0, 124.0, 174.0)[i],
+                         bpm_conf=1, key=i, key_conf=1, loudness=-10.0, centroid=2000, onset_rate=3, genre=st,
+                         styles=json.dumps({"top": [[f"Electronic---{st}", 0.9]], "parent": "Electronic"}),
+                         style_vec=None, embedding=None, status="ok", error=None, analyzed_at=0, version=1))
+    db.upsert_many(rows)
+    lib = Library(db)
+    seq = build_setlist(lib, 0, SetlistOptions(length=3, mix=MixSettings(max_pitch_pct=40)))
+    assert len(seq) == 3
