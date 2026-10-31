@@ -14,7 +14,7 @@ ENTRY = os.path.join(ROOT, "packaging", "cta_main.py")
 MODEL = os.path.join(ROOT, "build_models", "discogs-effnet-bsdynamic-1.onnx")
 
 sys.path.insert(0, SRC)
-from cta import __version__  # noqa: E402
+from cta import BUILD, VERSION, __version__  # noqa: E402
 
 datas = [(os.path.join(SRC, "cta", "discogs400_labels.txt"), "cta"), (os.path.join(SRC, "cta", "icon.png"), "cta"),
          (os.path.join(SRC, "cta", "app-icon-180.png"), "cta"), (os.path.join(SRC, "cta", "app-icon-512.png"), "cta")]
@@ -93,10 +93,10 @@ if sys.platform == "darwin":
         name="Tempest.app",
         icon=icon,
         bundle_identifier="app.tempest.dj",
-        version=__version__,
+        version=VERSION,
         info_plist={
-            "CFBundleShortVersionString": __version__,
-            "CFBundleVersion": __version__,
+            "CFBundleShortVersionString": VERSION,
+            "CFBundleVersion": str(BUILD) if BUILD else VERSION,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "NSRequiresAquaSystemAppearance": False,

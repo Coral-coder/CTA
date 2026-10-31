@@ -7,3 +7,4 @@ __pycache__/
 .ruff_cache/
 *.pyc
 .venv/
+src/cta/_build.py
