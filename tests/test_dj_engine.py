@@ -615,3 +615,39 @@ def test_cueing_a_synced_deck_never_bends_the_master():
     eng.cue_release("A")
     assert all(abs(r - 1.0) < 1e-9 for r in rates), rates      # B: untouched, no bend at all
     assert abs(eng.decks["A"].bpm - 124.0) < 0.01               # A previewed at the master's tempo
+
+
+def test_cue_and_loops_land_where_the_dj_hears_them():
+    """The render runs display_latency ahead of the speakers: CUE, hot cues,
+    loop IN/OUT and 'beat 1 here' pressed while playing land on what was
+    heard at that moment, not on what was about to be rendered."""
+    eng = Engine()
+    _load(eng, "A", 120.0)
+    eng.quantize = False
+    eng.display_latency = 0.1                          # 100 ms late output
+    eng._stream = object()                             # "running": a real output is open
+    try:
+        eng.set_playing("A", True)
+        _run(eng, 2)
+        d = eng.decks["A"]
+        heard = d.play_pos - 0.1 * SR
+        eng.hotcue("A", 3)
+        _run(eng, 0.05)
+        assert abs(d.hotcues[3] - heard) < 0.03 * SR   # within a block of the heard position
+        p0 = d.play_pos
+        eng.loop_in("A")
+        _run(eng, 0.5)
+        eng.loop_out("A")
+        _run(eng, 0.05)
+        assert d.loop is not None and abs(d.loop[0] - (p0 - 0.1 * SR)) < 0.03 * SR
+        assert abs((d.loop[1] - d.loop[0]) / SR - 0.5) < 0.05
+        eng.loop_beats("A", None)
+        eng.set_playing("A", False)                    # stopped: what you see is what is there (no latency)
+        _run(eng, 0.05)
+        p = d.play_pos
+        eng.cue_press("A")                             # stopped, away from the cue: sets it right here
+        _run(eng, 0.05)
+        assert abs(d.cue_point - p) < 1.0
+        eng.cue_release("A")
+    finally:
+        eng._stream = None

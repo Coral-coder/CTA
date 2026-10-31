@@ -124,6 +124,16 @@ class Knob(QDial):
         self.setValue(self.default)
 
 
+class _TitleLabel(QLabel):
+    """The deck's title: double-click = what mixes next from this track."""
+
+    doubleClicked = Signal()
+
+    def mouseDoubleClickEvent(self, ev):
+        self.doubleClicked.emit()
+        ev.accept()
+
+
 class ResetSlider(QSlider):
     """Fader / crossfader / tempo: double-click puts it back to its default."""
 
@@ -1578,8 +1588,10 @@ class DeckPanel(QFrame):
         head.addWidget(self.art)
         titles = QVBoxLayout()
         titles.setSpacing(0)
-        self.title = QLabel("—")
+        self.title = _TitleLabel("—")
         self.title.setStyleSheet("font-size: 13px; font-weight: 700; color: #f2f2f5;")
+        self.title.setToolTip("Double-click: what mixes next from this track")
+        self.title.doubleClicked.connect(lambda: self.dj.next_from_deck(name))
         self.artist = QLabel("Drop a track here")
         self.artist.setStyleSheet("font-size: 11px; color: #8d8f97;")
         titles.addWidget(self.title)
@@ -2019,7 +2031,8 @@ class DeckPanel(QFrame):
         if d.info.path != self._loaded_path:
             self._loaded_path = d.info.path
             self.title.setText(d.info.title or "—")
-            self.title.setToolTip(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}")
+            self.title.setToolTip(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}\n"
+                                  "Double-click: what mixes next from this track")
             lib = self.dj.main.lib
             played = lib is not None and 0 <= d.info.lib_index < lib.n and lib.play_count[d.info.lib_index] > 0
             sub = d.info.artist or ""
@@ -2671,6 +2684,35 @@ class AudioSettings(QDialog):
             self.dj.apply_clock()
         super().reject()
 
+    def _delays(self) -> dict:
+        """Measured / set output delays, per device label (a delay measured on
+        Bluetooth must never be applied to the wired card you play on later)."""
+        import json as _json
+
+        try:
+            d = _json.loads(self.s.value("dj_output_delays", "") or "{}")
+            return d if isinstance(d, dict) else {}
+        except ValueError:
+            return {}
+
+    def _load_delays(self):
+        """Show each output's stored delay for the device chosen right now."""
+        from ..dj.outputs import BLUETOOTH_GUESS_MS, is_bluetooth
+
+        delays = self._delays()
+        for combo, sp, auto, info in ((self.dev, self.mdelay, self.m_auto, self.m_info),
+                                      (self.pdev if self.pdev.currentData() else self.dev, self.pdelay,
+                                       self.p_auto, self.p_info)):
+            label = combo.currentText() if combo.currentData() is not None else ""
+            v = delays.get(label)
+            bt = is_bluetooth(label)
+            if v is None and bt:
+                v = BLUETOOTH_GUESS_MS
+            auto.setChecked(v is None)
+            sp.setValue(int(round(v)) if v is not None else 0)
+            info.setText("Bluetooth: about 200 ms late - measure it" if bt else
+                         "measured on this device" if v is not None else "driver's figure")
+
     def _delay_row(self, form, label, which):
         row = QHBoxLayout()
         sp = QSpinBox()
@@ -2683,9 +2725,7 @@ class AudioSettings(QDialog):
         b = _btn("Measure…", tip="Tap along with clicks on this output: CTA works out how late it plays")
         b.clicked.connect(lambda: self._measure(which))
         auto.toggled.connect(lambda on: sp.setEnabled(not on))
-        v = self.s.value(f"dj_{which}_delay_ms", "")
-        auto.setChecked(v in ("", None))
-        sp.setValue(int(float(v)) if v not in ("", None) else 0)
+        auto.setChecked(True)                   # _load_delays fills it in for the chosen device
         for w_ in (sp, auto, b, info):
             row.addWidget(w_)
         row.addStretch()
@@ -2794,7 +2834,6 @@ class AudioSettings(QDialog):
     def _dev_changed(self, *_):
         if hasattr(self, "sync_list"):
             self._fill_clock()
-        from ..dj.outputs import BLUETOOTH_GUESS_MS, is_bluetooth
 
         for combo, chans, key, extra in ((self.master, self._channels(self.dev), "dj_master", []),
                                          (self.phones, self._channels(self.pdev if self.pdev.currentData()
@@ -2807,14 +2846,7 @@ class AudioSettings(QDialog):
             ix = combo.findText(cur)
             combo.setCurrentIndex(ix if ix >= 0 else (0 if not extra or chans < 4 else combo.findText("3-4")))
             combo.blockSignals(False)
-        for combo, sp, auto, info in ((self.dev, self.mdelay, self.m_auto, self.m_info),
-                                      (self.pdev if self.pdev.currentData() else self.dev, self.pdelay,
-                                       self.p_auto, self.p_info)):
-            bt = is_bluetooth(combo.currentText())
-            info.setText("Bluetooth: about 200 ms late - measure it" if bt else "")
-            if bt and auto.isChecked():
-                auto.setChecked(False)
-                sp.setValue(int(BLUETOOTH_GUESS_MS))
+        self._load_delays()
 
     # ---- measuring ---------------------------------------------------------------------------
     def _measure(self, which: str):
@@ -2869,8 +2901,17 @@ class AudioSettings(QDialog):
         self.s.setValue("dj_block", self.block.currentText())
         self.s.setValue("dj_safety", self.safety.currentData())
         self.s.setValue("dj_audio_process", "true" if self.own_proc.isChecked() else "false")
-        self.s.setValue("dj_master_delay_ms", "" if self.m_auto.isChecked() else self.mdelay.value())
-        self.s.setValue("dj_phones_delay_ms", "" if self.p_auto.isChecked() else self.pdelay.value())
+        delays = self._delays()
+        for combo, sp, auto in ((self.dev, self.mdelay, self.m_auto),
+                                (self.pdev if self.pdev.currentData() else self.dev, self.pdelay, self.p_auto)):
+            label = combo.currentText() if combo.currentData() is not None else ""
+            if auto.isChecked():
+                delays.pop(label, None)
+            else:
+                delays[label] = int(sp.value())
+        self.s.setValue("dj_output_delays", _json.dumps(delays))
+        self.s.remove("dj_master_delay_ms")      # old single values: a delay now belongs to its device
+        self.s.remove("dj_phones_delay_ms")
         self.s.setValue("rec_dir", self.rec_dir.text())
         self.s.setValue("stream_port", self.port.value())
 
@@ -3820,9 +3861,7 @@ class DJPanel(QWidget):
             if pc == mc and pdev is None:
                 pc = None
             eng = self.engine
-            for attr, key in (("master_delay_s", "dj_master_delay_ms"), ("phones_delay_s", "dj_phones_delay_ms")):
-                v = s.value(key, "")
-                setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
+            eng.master_delay_s, eng.phones_delay_s = self.stored_delays()
             eng.start(dev, int(s.value("dj_block", 512)), mc, pc, phones_label=pdev)
             self.engine.set_want_deck_scope(self.xy_chk.isChecked())
             if not eng.extra_outputs:
@@ -3836,6 +3875,7 @@ class DJPanel(QWidget):
                 phones = f"headphones {eng.phones_chans[0] + 1}-{eng.phones_chans[1] + 1}"
             m, p = eng.output_delays()
             delay = f"{m * 1000:.0f} ms" + (f" / {p * 1000:.0f} ms" if eng.phones_chans is not None and p != m else "")
+            delay += " measured" if eng.master_delay_s is not None else " (driver)"
             self.audio_lbl.setText(f"Audio: {delay}, {phones}")
             self.audio_lbl.setToolTip(f"{eng.out_channels} channels, buffer {eng.block}. Delay = how late the "
                                       "output plays (driver or measured); master and headphones are kept in time.")
@@ -3854,6 +3894,23 @@ class DJPanel(QWidget):
             self.apply_audio_settings(dlg)
         elif not self.engine.running:
             self.start_audio()
+
+    def stored_delays(self) -> tuple[float | None, float | None]:
+        """(master, phones) delay in seconds for the devices chosen now, from
+        the per-device table - a delay measured on another card is never used."""
+        import json as _json
+
+        s = self.settings
+        try:
+            delays = _json.loads(s.value("dj_output_delays", "") or "{}")
+        except ValueError:
+            delays = {}
+        if not isinstance(delays, dict):
+            delays = {}
+        master = str(s.value("dj_device_name", "") or "")
+        phones = str(s.value("dj_phones_device_name", "") or "") or master
+        f = lambda label: (float(delays[label]) / 1000.0) if delays.get(label) is not None else None  # noqa: E731
+        return f(master), f(phones)
 
     def apply_clock(self):
         """Which output keeps time, which follow it, and the DJ's adjustment."""
@@ -3885,9 +3942,7 @@ class DJPanel(QWidget):
             eng.block = int(self.settings.value("dj_block", 512))
             self.start_audio()
         else:
-            for attr, key in (("master_delay_s", "dj_master_delay_ms"), ("phones_delay_s", "dj_phones_delay_ms")):
-                v = self.settings.value(key, "")
-                setattr(eng, attr, float(v) / 1000 if v not in ("", None) else None)
+            eng.master_delay_s, eng.phones_delay_s = self.stored_delays()
             eng.update_alignment()
         self.apply_extras()
         self.apply_clock()
@@ -4544,6 +4599,16 @@ class DJPanel(QWidget):
             self._wd = (fr, now)
             self.start_audio(quiet=True)
             self.main.status_label.setText("Audio device stopped responding - reconnected")
+
+    def next_from_deck(self, deck: str):
+        """Show the library's Next Track list for what this deck holds."""
+        d = self.engine.decks[deck]
+        if not d.loaded or d.info.lib_index < 0:
+            self.main.status_label.setText(f"Deck {deck} holds no library track")
+            return
+        self.main.focus_track(int(d.info.lib_index))
+        self.main.tabs.setCurrentIndex(0)
+        self.main.status_label.setText(f"Next tracks for deck {deck}: {d.info.title}")
 
     def open_learned(self):
         from .learned import LearnedMixesDialog

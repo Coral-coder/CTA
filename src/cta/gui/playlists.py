@@ -408,7 +408,7 @@ class PlaylistPanel(QWidget):
         if self.model.kinds[r] == "bridge":
             self.accept_bridge(r)
         else:
-            self.main.play(self.model.items[r])
+            self.main.show_details(self.model.items[r])     # never an external player
 
     def _menu(self, pos):
         ix = self.view.indexAt(pos)

@@ -487,8 +487,9 @@ class Engine:
                 d.playing = True
                 d.start_pos = d.play_pos
             else:
-                # set the cue where you are (snapped to the beat only with quantise on)
-                p = e._quant(d, d.play_pos)
+                # set the cue where you are - where you *hear* you are (snapped to the beat
+                # only with quantise on)
+                p = e._quant(d, e.heard_pos(d))
                 d.cue_point = max(0.0, p)
                 e._seek(d, d.cue_point)
         self.cmd(f)
@@ -619,6 +620,14 @@ class Engine:
         self.cmd(f)
 
     # ---- hot cues / loops / jumps -------------------------------------------------
+    def heard_pos(self, d: Deck) -> float:
+        """The frame coming out of the speakers right now: the render runs
+        display_latency ahead of the sound, and a DJ presses CUE / IN / a hot
+        cue on what they hear, not on what is being rendered."""
+        if d.playing and self.running and self.display_latency > 0:
+            return max(0.0, d.play_pos - self.display_latency * SR * d.rate)
+        return d.play_pos
+
     def _quant(self, d: Deck, frame: float) -> float:
         if self.quantize and d.grid:
             b = round(d.grid.beat_at(frame / SR))
@@ -646,7 +655,7 @@ class Engine:
             if not d.loaded:
                 return
             if d.hotcues[i] is None:
-                d.hotcues[i] = e._quant(d, d.play_pos)
+                d.hotcues[i] = e._quant(d, e.heard_pos(d))
             else:
                 e._jump(d, d.hotcues[i])
                 if not d.playing:
@@ -659,7 +668,7 @@ class Engine:
     def loop_in(self, deck: str):
         def f(e):
             d = e.decks[deck]
-            p = e._quant(d, d.play_pos)
+            p = e._quant(d, e.heard_pos(d))
             d._loop_in = p
             if d.loop is not None:
                 d.loop = None
@@ -671,7 +680,7 @@ class Engine:
         def f(e):
             d = e.decks[deck]
             start = getattr(d, "_loop_in", None)
-            end = e._quant(d, d.play_pos)
+            end = e._quant(d, e.heard_pos(d))
             if start is not None and end - start > SR * 0.01:
                 d.loop = (start, end)
                 d._loop_in = None                 # used: the next OUT loops the chosen length again
@@ -750,7 +759,7 @@ class Engine:
             d = e.decks[deck]
             if d.grid is None:
                 return
-            b = round(d.grid.beat_at(d.time))
+            b = round(d.grid.beat_at(e.heard_pos(d) / SR))
             t = d.grid.time_of_beat(b)
             while t - 4 * d.grid.beat_len >= 0:
                 t -= 4 * d.grid.beat_len

@@ -495,6 +495,15 @@ Under the hood:
   too, and re-plans the next transition; learned blends are never shorter
   than 4 bars, and a blip (a deck started and stopped at once) is never
   learned or recorded.
+- **What you see is what you hear:** the playhead, cue point, hot cues and
+  loop points line up with the sound. The waveform is drawn as late as the
+  output plays (the driver's figure, or what you measured); CUE, hot cues,
+  loop IN / OUT and "beat 1 here" pressed while playing land on what you
+  *heard* at that moment, not on what was about to be rendered. A delay you
+  measured (or the Bluetooth guess) belongs to that device only - it is
+  never applied to the wired card you play on later (Audio… shows "measured"
+  or "(driver)"). With the engine in its own process the GUI runs the
+  positions on smoothly between the engine's 30 updates a second.
 - **SYNC on both decks:** the master deck leads and its tempo fader moves
   the whole mix; the other follows. A deck holding CUE is never the deck
   others follow, so cueing one deck never bends the other.

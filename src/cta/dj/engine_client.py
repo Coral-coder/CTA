@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import threading
+import time
 from dataclasses import asdict, fields
 from types import SimpleNamespace
 
@@ -66,10 +67,38 @@ class DeckView:
         self.scope = None
         self.track: str | None = None
         self._info_key = None
+        self._snap_t: float | None = None     # monotonic time the snapshot's play_pos was true
+        self._live = False                    # a real-time output is running: positions move between snapshots
+        self._est: float | None = None        # the continuous position estimate (frames) at _snap_t
+
+    def _stamp(self, t: float | None, live: bool):
+        """A new snapshot: carry the continuous position on. play_pos is the end
+        of the last rendered block, so it jumps a block at a time; the estimate
+        runs smoothly and only steps when the deck really jumped (cue, loop,
+        seek), never backwards by a block's worth of quantisation."""
+        meas = float(self.play_pos)
+        est = meas
+        if (live and self.playing and not self.scratching and self._est is not None
+                and self._snap_t is not None and t is not None):
+            pred = self._est + max(t - self._snap_t, 0.0) * SR * self.rate
+            if 0.0 <= pred - meas < 0.03 * SR:
+                est = pred
+        self._est, self._snap_t, self._live = est, t, live
 
     @property
     def time(self) -> float:
-        return self.play_pos / SR
+        """Seconds into the track right now: the last snapshot's position run
+        on by the time since (snapshots come 30 times a second; the eye would
+        see the stall)."""
+        pos = self.play_pos
+        if self._live and self.playing and self._snap_t is not None and not self.scratching:
+            dt = min(max(time.monotonic() - self._snap_t, 0.0), 0.25)
+            pos = (self._est if self._est is not None else pos) + dt * SR * self.rate
+            lp = self.loop
+            if lp is not None and lp[1] > lp[0] and pos >= lp[1]:
+                pos = lp[0] + (pos - lp[0]) % (lp[1] - lp[0])
+            pos = min(pos, max(self.length - 1, 0)) if self.length else pos
+        return pos / SR
 
     def _apply(self, s: dict, registry: dict, held=()):
         for k in DECK_SCALARS:
@@ -399,8 +428,10 @@ class PreviewClient:
         self.block = client.block
 
     def _apply(self, s: dict, held=()):
+        snap_t, live = self._client._snap.get("t"), bool(self._client._snap.get("running"))
         for n, d in s["decks"].items():
             self.decks[n]._apply(d, self._client._registry, held)
+            self.decks[n]._stamp(snap_t, live)
         if ("pv", "crossfader") not in held:
             self._crossfader = s["crossfader"]
         self.master_deck = s["master_deck"]
@@ -681,8 +712,10 @@ class EngineClient:
                 if key[0] == "eng" and key[1] in old:
                     snap[key[1]] = old[key[1]]
             self._snap = snap
+            snap_t, live = snap.get("t"), bool(snap.get("running"))
             for n, d in snap["decks"].items():
                 self.decks[n]._apply(d, self._registry, held)
+                self.decks[n]._stamp(snap_t, live)
             for i, s in enumerate(snap["fx"]):
                 if i < len(self.fx_units):
                     self.fx_units[i]._apply(s, held)

@@ -441,6 +441,9 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
         ev = QKeyEvent(QEvent.KeyRelease if release else QEvent.KeyPress, k, mods)
         app.sendEvent(w.lib_view, ev)
 
+    # double-clicking the deck title shows what mixes next from that track
+    dj.decks["A"].title.doubleClicked.emit()
+    assert w.current == 0 and w.tabs.currentIndex() == 0
     # Traktor keys: W plays deck A, W again pauses, Q holds the cue preview
     key(Qt.Key_W)
     assert d.playing

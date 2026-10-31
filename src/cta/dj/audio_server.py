@@ -576,6 +576,7 @@ class Server:
     def _snapshot1(self) -> dict:
         e, am = self.engine, self.automix
         snap = {k: getattr(e, k) for k in ENGINE_SCALARS}
+        snap["t"] = time.monotonic()                 # when these positions were true (the GUI runs them on)
         snap["decks"] = {n: self._deck_snap("eng", d) for n, d in e.decks.items()}
         snap["phase_err"] = {n: e.phase_error(n) if d.playing else None for n, d in e.decks.items()}
         snap["running"] = e.running

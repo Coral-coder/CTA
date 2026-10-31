@@ -152,7 +152,13 @@ def test_audio_dialog_scans_live_and_suggests_bluetooth(tmp_path, monkeypatch):
     import json
 
     assert st.value("dj_phones_device_name") == "AirPods Pro (Core Audio, 2 ch)"
-    assert int(st.value("dj_phones_delay_ms")) == 200 and st.value("dj_master_delay_ms") == ""
+    # delays live per device: the AirPods' 200 ms, nothing for the master card
+    assert json.loads(st.value("dj_output_delays")) == {"AirPods Pro (Core Audio, 2 ch)": 200}
+    # ... so switching headphones back to the wired card drops the Bluetooth delay at once
+    dlg.pdev.setCurrentIndex(0)
+    assert dlg.p_auto.isChecked() and "driver" in dlg.p_info.text()
+    dlg.pdev.setCurrentIndex(ix)
+    assert not dlg.p_auto.isChecked() and dlg.pdelay.value() == 200
     assert json.loads(st.value("dj_extra_outputs")) == [{"label": "JBL Flip 6 (Core Audio, 2 ch)", "delay_ms": 240}]
     assert dlg.restart_needed and dlg.reinit_needed            # headphones moved to a device found by the scan
 

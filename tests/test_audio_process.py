@@ -151,3 +151,35 @@ def test_gui_stalls_do_not_reach_the_audio_process():
             assert eng.underruns <= frames // 512 // 100, (eng.underruns, frames // 512)
     finally:
         eng.close()
+
+
+def test_positions_run_on_between_snapshots():
+    """The GUI side draws the playhead where it is *now*, not where the last
+    30 Hz snapshot said: the time runs on from the snapshot's stamp, wraps in
+    a loop, and stands still when the deck is stopped."""
+    tracks = {0: _track("one", 120.0, 30, idx=0)}
+    eng = EngineClient(block=512, inproc=False, load_fn=lambda item: tracks[int(item)])
+    try:
+        eng.start_virtual()
+        eng.load_track("A", tracks[0], only_if_stopped=False)
+        assert _wait(lambda: eng.decks["A"].loaded)
+        d = eng.decks["A"]
+        eng.set_playing("A", True)
+        assert _wait(lambda: d.playing and d.time > 0.2)
+        # between two snapshots the time keeps moving smoothly (never backwards, never a 33 ms stall)
+        ts = [d.time for _ in range(200) if not time.sleep(0.002)]
+        steps = np.diff(ts)
+        assert (steps >= -1e-6).all(), steps.min()           # never a step back (a block's quantisation)
+        assert np.median(steps) < 0.004 and steps.max() < 0.06  # no 33 ms stalls (a busy box may hiccup once)
+        eng.loop_beats("A", 4)
+        assert _wait(lambda: d.loop is not None)
+        time.sleep(1.0)
+        lp = d.loop
+        assert all(lp[0] / SR - 0.01 <= d.time <= lp[1] / SR + 0.01 for _ in range(50) if not time.sleep(0.01))
+        eng.set_playing("A", False)
+        assert _wait(lambda: not d.playing)
+        t0 = d.time
+        time.sleep(0.2)
+        assert d.time == t0
+    finally:
+        eng.close()
