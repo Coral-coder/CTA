@@ -510,6 +510,7 @@ class EngineClient:
         self._scope_buf = np.zeros((2, 2048), np.float32)
         self.ring: AudioRing | None = None
         self.server_errors: list[str] = []
+        self.audio_notes: list[str] = []            # the audio process's buffer ladder, for the status bar
         self.deck_errors: list[str] = []
         self.click_times: list[float] = []
         self.extra_outputs: list = []
@@ -730,6 +731,9 @@ class EngineClient:
             elif what == "error":
                 self.server_errors.append(data)
                 del self.server_errors[:-20]
+            elif what == "latency":
+                self.audio_notes.append(str(data))
+                del self.audio_notes[:-10]
 
     def _apply_snapshot(self, snap: dict):
         if not snap:

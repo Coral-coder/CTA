@@ -681,3 +681,36 @@ def test_automix_uses_four_decks_round_the_table():
             break
     assert [n for n, _t in landed[:5]] == ["A", "B", "C", "D", "A"], landed
     assert [t for _n, t in landed[:5]] == ["t0", "t1", "t2", "t3", "t4"]
+
+
+def test_cue_and_play_on_a_synced_deck_never_bends_the_deck_already_playing():
+    """Both decks synced and playing, MASTER left on B by an earlier handover:
+    CUE then PLAY on B must not make A bend - the deck already playing keeps
+    the lead; B is the one that re-aligns."""
+    eng = Engine()
+    _load(eng, "A", 128.0)
+    _load(eng, "B", 126.0, offset=0.3)
+    eng.set("A", sync=True)
+    eng.set("B", sync=True)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set_playing("B", True)
+    eng.set_master("B")                             # what auto-mix leaves behind after a handover
+    _run(eng, 3)
+    a_rates = []
+    for _ in range(3):
+        eng.cue_press("B")                          # stop + back to the cue
+        _run(eng, 0.3)
+        eng.set_playing("B", True)                  # PLAY again
+        for _ in range(20):
+            _run(eng, 0.1)
+            a_rates.append(eng.decks["A"].rate)
+    assert max(abs(r - 1.0) for r in a_rates) < 1e-6, a_rates   # A never bent
+    assert abs(eng.decks["B"].bpm - 128.0) < 0.05                 # B follows A
+    # MASTER pressed on B by the DJ: now B leads and its fader rules
+    eng.set_master("A")
+    eng.set_master("B")
+    _run(eng, 1)
+    eng.set("B", tempo=0.5, tempo_range=0.08)
+    _run(eng, 3)
+    assert abs(eng.decks["A"].bpm - eng.decks["B"].bpm) < 0.05 and eng.decks["B"].bpm > 128.5

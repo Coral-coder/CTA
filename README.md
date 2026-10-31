@@ -227,14 +227,21 @@ the bar between them to give the decks more or less room.
   process stays exactly on time. If the audio process ever dies, the window
   starts a new one and reloads the decks (watchdog). Controls still land
   within a millisecond. Audio… has a switch to run it in-process instead.
-- **Audio stability (Audio… → Output safety):** how much audio the sound card
-  holds in reserve. **Normal** (25 ms, default) is tight and stable; **Safe**
-  (50 ms) gives a slow or busy computer more headroom; **Tight** is the
-  least delay the driver allows. CTA also keeps full speed in the background:
-  no App Nap on the Mac, no power throttling on Windows, and the
-  time-stretcher is never rebuilt inside an audio block (a cue press or jump
-  on a synced deck used to cost a dropout). The status bar warns when blocks
-  come close to their deadline.
+- **Audio first.** The audio engine runs in its own process at high
+  priority; its callback thread is made the most important thread on the
+  machine (Windows: time-critical + the MMCSS "Pro Audio" class every DAW
+  uses; macOS: a real-time time-constraint policy sized to the block; Linux:
+  SCHED_FIFO when allowed). The GUI comes second: nothing it does - paints,
+  scans, downloads - can delay a block.
+- **Audio… → Output safety:** how much audio the sound card holds in
+  reserve. **Auto** (default) lives on the edge of safe: it starts at the
+  card's minimum, steps the reserve up one notch the moment a block is
+  late (12 → 25 → 50 → 100 ms) and steps back down after ten quiet minutes
+  with nothing playing - the status bar says when it moves. **Normal**
+  (25 ms), **Safe** (50 ms) and **Tight** (the minimum, no safety net) fix
+  it instead. CTA also keeps full speed in the background: no App Nap on
+  the Mac, no power throttling on Windows, and the time-stretcher is never
+  rebuilt inside an audio block.
 - **Small screens (13-inch laptops):** CTA fits a 1280-pixel-wide screen.
   For even more room, **Settings → Interface size** (70–150 %) scales the
   whole app after a restart.

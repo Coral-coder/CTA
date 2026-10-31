@@ -216,3 +216,51 @@ def test_a_crashed_audio_process_comes_back_where_the_mix_was():
         assert eng.master_deck == "A" and list(eng.automix.queue) == [1]
     finally:
         eng.close()
+
+
+def test_auto_buffer_walks_the_ladder_on_glitches_and_back_down_when_quiet(monkeypatch):
+    """"Auto" output safety: start at the card's minimum; glitches raise the
+    reserve one step at once; ten quiet minutes with nothing playing bring it
+    back down. (The sound card is stubbed: start() only records the latency.)"""
+    from cta.dj import audio_server as AS
+    from cta.dj.engine import Engine
+
+    opened = []
+
+    def fake_start(self, device=None, block=None, master_chans=(0, 1), phones_chans=None, phones_device=None):
+        opened.append(self.out_latency)
+        self._stream = object()                       # "running", not virtual
+    monkeypatch.setattr(Engine, "start", fake_start)
+    monkeypatch.setattr(AS, "list_output_devices", lambda: [], raising=False)
+    import multiprocessing as mp
+
+    a, b = mp.Pipe()
+    srv = AS.Server(b, {"block": 512})
+    try:
+        srv.engine.out_latency = "auto"
+        srv.start(None, 512, (0, 1), None, None)
+        assert opened == ["low"] and srv._auto_latency
+        t = 1000.0
+        srv._lat_changed = t - 10.0                    # the test's own clock
+        srv._check_latency(t)                          # nothing happened: stays
+        assert srv._lat_idx == 0
+        srv.engine.underruns += 1                      # a glitch: up one step at once
+        srv._check_latency(t + 6.0)
+        assert srv._lat_idx == 1 and opened[-1] == 0.012 and srv.engine.out_latency == 0.012
+        srv.engine.slow_blocks += 3                    # near misses count as trouble too, but one
+        srv._check_latency(t + 8.0)                    # burst needs a second within 30 s (or an underrun)
+        assert srv._lat_idx == 1
+        srv.engine.slow_blocks += 3
+        srv._check_latency(t + 12.0)
+        assert srv._lat_idx == 2 and opened[-1] == 0.025
+        # quiet for ten minutes with no deck playing: one step back down
+        srv._check_latency(t + 12.0 + 601.0)
+        assert srv._lat_idx == 1 and opened[-1] == 0.012
+        # the event reached the pipe
+        msgs = []
+        while a.poll(0.1):
+            msgs.append(a.recv())
+        assert any(m[0] == "event" and m[1] == "latency" for m in msgs)
+    finally:
+        srv.alive = False
+        srv.engine.stop()

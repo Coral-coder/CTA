@@ -2503,11 +2503,12 @@ class AudioSettings(QDialog):
         self.block.setCurrentText(str(settings.value("dj_block", "512")))
         form.addRow("Buffer (samples)", self.block)
         self.safety = QComboBox()
-        for label, key in (("Normal - tight and stable (25 ms cushion, recommended)", "normal"),
+        for label, key in (("Auto - on the edge of safe (starts tight, backs off only at glitches)", "auto"),
+                           ("Normal - tight and stable (25 ms cushion)", "normal"),
                            ("Safe - most headroom (50 ms: a slow or busy computer)", "safe"),
-                           ("Tight - least delay (glitches if the computer is busy)", "tight")):
+                           ("Tight - least delay, no safety net", "tight")):
             self.safety.addItem(label, key)
-        self.safety.setCurrentIndex(max(self.safety.findData(settings.value("dj_safety", "normal")), 0))
+        self.safety.setCurrentIndex(max(self.safety.findData(settings.value("dj_safety", "auto")), 0))
         self.safety.setToolTip("How much audio the sound card holds in reserve. More = the music never "
                                "glitches when the computer is busy or CTA is in the background; less = "
                                "buttons answer a few milliseconds sooner.")
@@ -3885,7 +3886,8 @@ class DJPanel(QWidget):
 
         outputs.raise_priority()
         s = self.settings
-        self.engine.out_latency = {"tight": "low", "safe": 0.05}.get(str(s.value("dj_safety", "normal")), 0.025)
+        self.engine.out_latency = {"tight": "low", "safe": 0.05, "normal": 0.025,
+                                   "auto": "auto"}.get(str(s.value("dj_safety", "auto")), "auto")
         name = s.value("dj_device_name", "")
         dev = None
         try:
@@ -4772,7 +4774,12 @@ class DJPanel(QWidget):
             return
         n = self.engine.slow_blocks
         self._health = (now, n)
-        if n - last_n >= 3 and self.engine.running:
+        notes = getattr(self.engine, "audio_notes", None)
+        if notes and notes[-1] != getattr(self, "_note_seen", None):
+            self._note_seen = notes[-1]
+            self.main.status_label.setText(f"Audio: {notes[-1]}")
+            return
+        if n - last_n >= 3 and self.engine.running and str(self.settings.value("dj_safety", "auto")) != "auto":
             self.main.status_label.setText(
                 f"Audio is near its limit ({n - last_n} late blocks) - raise the buffer in Audio… "
                 f"(now {self.engine.block}) to stop any stutter")

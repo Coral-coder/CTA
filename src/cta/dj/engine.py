@@ -279,6 +279,10 @@ class Engine:
         # against the system pausing CTA (background, busy machine) - no glitches live
         self.out_latency: str | float = 0.05
         self.phase_lock = True                 # SYNC = tempo + beat phase; False: tempo only (phase by hand)
+        self._lead_deck: str | None = None     # the deck the synced ones follow right now (sticky)
+        self._boosted = False                  # the audio thread's priority is raised on its first block
+        self._boost_ok = False
+        self._lead_master_seen = None
         self.cpu_load = 0.0                    # share of each block's time spent rendering (peak, decaying)
         self.slow_blocks = 0                   # blocks that nearly missed their deadline
         self.preview: Engine | None = None
@@ -568,7 +572,13 @@ class Engine:
             self._pause_applied = True
 
     def set_master(self, deck: str | None):
-        self.cmd(lambda e: setattr(e, "master_deck", deck))
+        """The MASTER button: that deck leads the synced ones from now on (even
+        when it was the nominal master already and another deck had the lead)."""
+        def f(e):
+            e.master_deck = deck
+            e._lead_master_seen = deck
+            e._lead_deck = deck
+        self.cmd(f)
 
     def jog(self, deck: str, delta: float, touched: bool):
         """delta: jog movement in 'ticks' (signed). touched: platter touched
@@ -837,8 +847,26 @@ class Engine:
             db = db * 2
         return float(((mb - db) + 0.5) % 1.0 - 0.5)
 
+    def _lead(self) -> Deck | None:
+        """The deck the synced ones follow - sticky: whichever is leading keeps
+        leading while it plays. A deck that starts (CUE, PLAY) never takes the
+        lead by itself, so the deck already playing is never bent to re-align
+        to the newcomer; pressing MASTER (or auto-mix handing over) moves it."""
+        def ok(d):
+            return d is not None and d.playing and d.grid is not None and not d.cue_preview
+        cur = self.decks.get(self._lead_deck) if self._lead_deck else None
+        m = self.master_deck
+        if m != self._lead_master_seen:            # MASTER changed: the new one leads once it plays
+            self._lead_master_seen = m
+            if m and ok(self.decks.get(m)):
+                cur = self.decks[m]
+        if not ok(cur):
+            cur = self._master()
+        self._lead_deck = cur.name if cur is not None else None
+        return cur
+
     def _apply_sync(self):
-        lead = self._master()                      # the deck everyone follows: its tempo fader rules
+        lead = self._lead()                        # the deck everyone follows: its tempo fader rules
         for d in self.decks.values():
             if not (d.sync and d.loaded and d.grid) or d is lead:
                 # (with SYNC lit on both decks, the master would otherwise follow its follower
@@ -847,7 +875,7 @@ class Engine:
                 if d is lead:
                     d.rate_override = None
                 continue
-            m = self._master(exclude=d.name)
+            m = lead if lead is not None else self._master(exclude=d.name)
             if m is None:
                 d.phase_corr = 0.0
                 continue
@@ -1155,6 +1183,12 @@ class Engine:
     def _callback(self, outdata, frames, time_info, status):
         import time as _t
 
+        if not self._boosted:
+            # the first block: this thread is the one that must never wait
+            from .outputs import boost_audio_thread
+
+            self._boosted = True
+            self._boost_ok = boost_audio_thread(frames / SR)
         if status and status.output_underflow:
             self.underruns += 1
         t0 = _t.perf_counter()
@@ -1199,6 +1233,7 @@ class Engine:
         import sounddevice as sd
 
         self.stop()
+        self._boosted = False
         if block:
             self.block = block
         attempts = [(device, self.block), (device, max(self.block, 1024))]

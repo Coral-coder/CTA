@@ -482,12 +482,31 @@ class Server:
             self.engine.cmd(lambda e: self._release_unused())
 
     # ---- device ----------------------------------------------------------------------------
+    # how much the sound card holds in reserve, tightest first; "auto" walks this ladder:
+    # it starts tight, steps up at the first glitches and steps back down later when nothing plays
+    LATENCY_STEPS = ("low", 0.012, 0.025, 0.05, 0.1)
+
     def start(self, device_label=None, block=None, master_chans=(0, 1), phones_chans=None, phones_label=None):
         """Open the sound card(s) by label (this process has its own PortAudio)."""
-        from .engine import list_output_devices
-        from .outputs import base_name, raise_priority
+        from .outputs import raise_priority
 
-        raise_priority()
+        raise_priority(audio_process=True)
+        self._start_args = (device_label, block, master_chans, phones_chans, phones_label)
+        if self.engine.out_latency == "auto":
+            self._auto_latency = True
+            self._lat_idx = 0
+            self.engine.out_latency = self.LATENCY_STEPS[0]
+        else:
+            self._auto_latency = False
+        self._lat_changed = time.monotonic()
+        self._trouble: list[float] = []
+        self._last_counts = (self.engine.underruns, self.engine.slow_blocks)
+        return self._open_now(*self._start_args)
+
+    def _open_now(self, device_label=None, block=None, master_chans=(0, 1), phones_chans=None, phones_label=None):
+        from .engine import list_output_devices
+        from .outputs import base_name
+
         devs = list_output_devices()
 
         def resolve(label):
@@ -619,6 +638,46 @@ class Server:
             }
         return snap
 
+    def _check_latency(self, now: float | None = None):
+        """Auto buffer: glitches (underruns or blocks that nearly missed) push
+        the reserve up one step at once; a long quiet spell with nothing
+        playing lets it come back down - always on the edge of safe."""
+        if not getattr(self, "_auto_latency", False) or not self.engine.running or self.engine.virtual:
+            return
+        now = time.monotonic() if now is None else now
+        u, s = self.engine.underruns, self.engine.slow_blocks
+        lu, ls = self._last_counts
+        self._last_counts = (u, s)
+        if u > lu or s - ls >= 3:
+            self._trouble.append(now)
+        self._trouble = [t for t in self._trouble if now - t < 30.0]
+        steps = self.LATENCY_STEPS
+        if self._trouble and self._lat_idx < len(steps) - 1 and now - self._lat_changed > 5.0 \
+                and (u > lu or len(self._trouble) >= 2):
+            self._lat_idx += 1
+            self._reopen(now, f"buffer raised to {self._lat_label()} after glitches")
+        elif (self._lat_idx > 0 and not self._trouble and now - self._lat_changed > 600.0
+              and not any(d.playing for d in self.engine.decks.values())):
+            self._lat_idx -= 1
+            self._reopen(now, f"buffer back down to {self._lat_label()} (quiet, nothing playing)")
+
+    def _lat_label(self) -> str:
+        v = self.LATENCY_STEPS[self._lat_idx]
+        return "the card's minimum" if v == "low" else f"{float(v) * 1000:.0f} ms"
+
+    def _reopen(self, now: float, why: str):
+        self.engine.out_latency = self.LATENCY_STEPS[self._lat_idx]
+        self._lat_changed = now
+        self._trouble = []
+        try:
+            self._open_now(*self._start_args)
+            self._last_counts = (self.engine.underruns, self.engine.slow_blocks)
+            log.info("auto latency: %s", why)
+            self.event("latency", why)
+        except Exception as e:  # noqa: BLE001
+            log.exception("auto latency: reopening the output failed")
+            self.event("error", f"audio reopen failed: {e}")
+
     def _snapshots(self):
         period = 1.0 / SNAP_HZ
         n = 0
@@ -627,6 +686,8 @@ class Server:
             n += 1
             try:
                 self.automix.maybe_resume()
+                if n % 15 == 0:                              # twice a second: the buffer ladder
+                    self._check_latency()
                 if n % 60 == 0:                              # every 2 s: free tracks no deck holds
                     self.engine.cmd(lambda e: self._release_unused())
                 snap = self._snapshot()
@@ -667,7 +728,7 @@ def serve(conn, cfg: dict | None = None):
     try:
         from .outputs import raise_priority
 
-        raise_priority()
+        raise_priority(audio_process=True)
     except Exception:  # noqa: BLE001
         pass
     Server(conn, cfg).run()

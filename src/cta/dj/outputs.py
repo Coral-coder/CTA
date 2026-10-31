@@ -156,22 +156,96 @@ def estimate_latency(taps: list[float], clicks: list[float], min_taps: int = 8) 
 _keep_awake = []          # macOS activity token: must stay referenced for the activity to last
 
 
-def raise_priority() -> None:
+def raise_priority(audio_process: bool = False) -> None:
     """Keep the music steady when CTA is minimised or in the background.
 
-    Windows: above-normal priority, no power throttling ("efficiency mode"
-    slows background apps on Windows 11) and 1 ms timer precision.
-    macOS: no App Nap - a latency-critical, user-initiated activity (also
-    set in the app's Info.plist)."""
+    Windows: above-normal priority (HIGH for the audio process), no power
+    throttling ("efficiency mode" slows background apps on Windows 11) and
+    1 ms timer precision. macOS: no App Nap - a latency-critical,
+    user-initiated activity (also set in the app's Info.plist). Linux: the
+    audio process asks for a better nice level (granted when allowed)."""
     import sys
 
     if sys.platform == "win32":
-        _windows_no_throttle()
+        _windows_no_throttle(high=audio_process)
     elif sys.platform == "darwin":
         _mac_no_app_nap()
+    elif audio_process:
+        try:
+            import os
+
+            os.nice(-10)
+        except (OSError, AttributeError):
+            pass
 
 
-def _windows_no_throttle():
+def boost_audio_thread(period_s: float) -> bool:
+    """Called once from inside the audio callback: make *this* thread the
+    most important one on the machine. Windows: time-critical priority and
+    the MMCSS "Pro Audio" class (what every DAW uses). macOS: a real-time
+    time-constraint policy sized to the block (CoreAudio's own thread
+    already has one; a PortAudio worker may not). Linux: SCHED_FIFO when the
+    user may (rtprio limits), silently not otherwise."""
+    import sys
+
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentThread.restype = wintypes.HANDLE
+            k32.SetThreadPriority(k32.GetCurrentThread(), 15)          # THREAD_PRIORITY_TIME_CRITICAL
+            try:
+                avrt = ctypes.windll.avrt
+                idx = wintypes.DWORD(0)
+                avrt.AvSetMmThreadCharacteristicsW.restype = wintypes.HANDLE
+                h = avrt.AvSetMmThreadCharacteristicsW("Pro Audio", ctypes.byref(idx))
+                if h:
+                    avrt.AvSetMmThreadPriority(h, 2)                     # AVRT_PRIORITY_CRITICAL
+            except Exception:  # noqa: BLE001
+                pass
+            return True
+        if sys.platform == "darwin":
+            import ctypes
+
+            libc = ctypes.CDLL(None)
+
+            class TimebaseInfo(ctypes.Structure):
+                _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+            tb = TimebaseInfo()
+            libc.mach_timebase_info(ctypes.byref(tb))
+            ns_to_abs = tb.denom / tb.numer if tb.numer else 1.0
+            period = int(period_s * 1e9 * ns_to_abs)
+
+            class TimeConstraint(ctypes.Structure):
+                _fields_ = [("period", ctypes.c_uint32), ("computation", ctypes.c_uint32),
+                            ("constraint", ctypes.c_uint32), ("preemptible", ctypes.c_int)]
+
+            pol = TimeConstraint(period, max(period // 5, 1), max(period // 2, 1), 1)
+            libc.mach_thread_self.restype = ctypes.c_uint32
+            thread = libc.mach_thread_self()
+            THREAD_TIME_CONSTRAINT_POLICY, COUNT = 2, 4
+            r = libc.thread_policy_set(thread, THREAD_TIME_CONSTRAINT_POLICY, ctypes.byref(pol), COUNT)
+            return r == 0
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+
+        class SchedParam(ctypes.Structure):
+            _fields_ = [("sched_priority", ctypes.c_int)]
+
+        libc.pthread_self.restype = ctypes.c_void_p
+        SCHED_FIFO = 1
+        r = libc.pthread_setschedparam(ctypes.c_void_p(libc.pthread_self()), SCHED_FIFO,
+                                       ctypes.byref(SchedParam(60)))
+        return r == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _windows_no_throttle(high: bool = False):
     try:
         import ctypes
         from ctypes import wintypes
@@ -179,8 +253,8 @@ def _windows_no_throttle():
         k32 = ctypes.windll.kernel32
         k32.GetCurrentProcess.restype = wintypes.HANDLE
         proc = k32.GetCurrentProcess()
-        ABOVE_NORMAL_PRIORITY_CLASS = 0x8000
-        k32.SetPriorityClass(proc, ABOVE_NORMAL_PRIORITY_CLASS)
+        ABOVE_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS = 0x8000, 0x80
+        k32.SetPriorityClass(proc, HIGH_PRIORITY_CLASS if high else ABOVE_NORMAL_PRIORITY_CLASS)
 
         class PowerThrottling(ctypes.Structure):
             _fields_ = [("Version", wintypes.ULONG), ("ControlMask", wintypes.ULONG),
