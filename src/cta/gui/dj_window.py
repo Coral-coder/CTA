@@ -2041,8 +2041,16 @@ class DeckPanel(QFrame):
     def refresh(self):
         d = self.eng.decks[self.name]
         if d.info.path != self._loaded_path:
+            fresh = bool(d.info.path)
             self._loaded_path = d.info.path
             self.title.setText(d.info.title or "—")
+            if fresh and d.info.lib_index >= 0:
+                # a track loaded into a deck: it is the one the library shows and
+                # the Next Track list is what mixes from it
+                try:
+                    self.dj.main.focus_track(int(d.info.lib_index))
+                except Exception:  # noqa: BLE001
+                    log.exception("focusing the loaded track failed")
             self.title.setToolTip(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}\n"
                                   "Double-click: what mixes next from this track")
             lib = self.dj.main.lib
@@ -4475,9 +4483,9 @@ class DJPanel(QWidget):
         threading.Thread(target=job, daemon=True, name=f"load-{deck}").start()
 
     def load_selected(self, deck: str):
-        idx = self.main.current
+        idx = self.main.selected_for_load()
         if idx is None:
-            self.main.status_label.setText("Select a track in the library first")
+            self.main.status_label.setText("Select a track first (right panel's open tab, or the library)")
             return
         self.load_index(deck, idx)
 

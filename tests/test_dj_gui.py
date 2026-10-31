@@ -53,6 +53,20 @@ def test_dj_window(tmp_data_dir, monkeypatch):
         wait(50)
     eng = dj.engine
     assert eng.decks["A"].loaded and eng.decks["B"].loaded
+    dj._tick()
+    app.processEvents()
+    # the track loaded last is the one the library shows; Next Track lists what mixes from it
+    assert w.current == eng.decks["B"].info.lib_index
+    # the controller's browse knob and LOAD work on the right panel's open tab
+    w.tabs.setCurrentIndex(0)                                   # Next Track
+    assert w.next_model.rowCount() >= 1
+    w.browse_library(1)
+    w.browse_library(-5)
+    assert w.next_view.currentIndex().row() == 0
+    assert w.selected_for_load() == w.next_model.items[0]
+    w.tabs.setCurrentIndex(2)                                   # Playlists (empty): falls back to the library
+    w.browse_library(1)
+    assert w.selected_for_load() == w.lib_model.lib_index(w.lib_view.currentIndex().row())
     eng.toggle_play("A")
     eng.set("B", sync=True)
     for _ in range(200):

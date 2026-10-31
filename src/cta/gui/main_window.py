@@ -1078,15 +1078,56 @@ class MainWindow(QMainWindow):
         lib.last_played[idx] = time.time()
         self.lib_model.layoutChanged.emit()
 
+    def _browse_target(self):
+        """The list the controller's browse knob and LOAD buttons work on: the
+        right panel's open tab (Next Track, Setlist Builder, Playlists, Auto-mix
+        queue), the library table when nothing there holds tracks."""
+        name = self.tabs.tabText(self.tabs.currentIndex()).split(" (")[0]
+        dj = getattr(self, "dj", None)
+        if name == "Next Track" and self.next_model.rowCount():
+            return self.next_view, lambda r: int(self.next_model.items[r])
+        if name == "Setlist Builder" and self.setlist:
+            return self.sl_view, lambda r: int(self.setlist[r])
+        if name == "Playlists" and self.playlists.model.rowCount():
+            def idx(r):
+                return int(self.playlists.model._lib_index_for_row(r)) if self.playlists.model.kinds[r] == "track" \
+                    else None
+            return self.playlists.view, idx
+        if name == "Auto-mix queue" and dj is not None and dj.queue_list.count():
+            return dj.queue_list, lambda r: int(dj.queue_list.item(r).data(Qt.UserRole))
+        return self.lib_view, lambda r: int(self.lib_model.lib_index(r))
+
     def browse_library(self, delta: int):
-        """Move the library selection (controller browse knob)."""
-        n = self.lib_model.rowCount()
+        """Move the selection in the right panel's open tab (controller browse knob)."""
+        view, _ = self._browse_target()
+        if hasattr(view, "model") and callable(getattr(view, "model", None)) and view.model() is not None:
+            n = view.model().rowCount()
+        else:
+            n = view.count()
         if n == 0:
             return
-        r = self.lib_view.currentIndex().row()
+        r = view.currentIndex().row() if hasattr(view, "currentIndex") else view.currentRow()
         r = max(0, min(n - 1, (r if r >= 0 else 0) + int(delta)))
-        self.lib_view.selectRow(r)
-        self.lib_view.scrollTo(self.lib_model.index(r, 0))
+        if hasattr(view, "selectRow"):
+            view.selectRow(r)
+            view.scrollTo(view.model().index(r, 0))
+        else:
+            view.setCurrentRow(r)
+            view.scrollToItem(view.item(r))
+
+    def selected_for_load(self) -> int | None:
+        """The track the controller's LOAD button loads: the row selected in the
+        right panel's open tab, else the focused library track."""
+        view, idx = self._browse_target()
+        r = view.currentIndex().row() if hasattr(view, "currentIndex") else view.currentRow()
+        if r >= 0:
+            try:
+                i = idx(r)
+                if i is not None and 0 <= i < self.lib.n:
+                    return i
+            except (IndexError, ValueError, TypeError):
+                pass
+        return self.current
 
     def play(self, i):
         if self.lib is not None:
