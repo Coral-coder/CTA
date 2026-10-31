@@ -148,6 +148,7 @@ Per channel: GAIN, HI / MID / LOW (kill when fully left, Linkwitz-Riley crossove
 
 - **SYNC** matches tempo (half/double time included) and phase-locks to the master; the phase meter shows how close. **Options → SYNC also locks the beat phase** off: tempo only, you line up the beats yourself and they stay where you put them.
 - With SYNC on both decks the **lead is sticky**: the deck already playing keeps leading and its tempo fader moves the whole mix; a deck you CUE and PLAY never grabs the lead, so nothing pitch-bends to re-align. **MASTER** moves it.
+- **A deck keeps the tempo it was mixed at.** When the outgoing track stops (or you switch SYNC off), the deck that was following does not snap back to its own BPM: the rate it was playing at becomes its own tempo-fader value (the fader range widens when the offset needs it) and stays there until you move the fader. The tempo fader and the % always show the offset the deck *really* plays at, following or not. *Glide tempo to each track's BPM* (auto-mix menu) is off by default; on, the fader itself glides home over a few bars.
 - A jog nudge on a synced deck stays where you put it (SYNC again snaps back on the beat). CUE and PLAY start on the first sample at the track's own tempo - fast cue taps are exact.
 - **Key lock** (Rubber Band R3, as in Mixxx, ~3 % of a core per deck) keeps the key while the tempo changes; off, you get vinyl-style pitch.
 
@@ -195,6 +196,8 @@ Drag to reorder; ✕, Delete or drag out to remove; **Clear queue**. With auto-m
 ## Controllers
 
 **Pioneer DDJ-T1** works out of the box: both MIDI ports and its 4-channel card (master 1-2, headphones 3-4). Play, cue, jog (touch to scratch, ring to nudge, search when paused), tempo and range, key lock, loops, auto loop, filter, needle search, the four performance buttons (hot cues / move modes), the whole mixer, SYNC, MASTER, FX assign, LOAD, browse and the FX section; LEDs follow the decks.
+
+**No jumps from the controller either (soft takeover).** A fader or knob whose physical position differs from the app's value does nothing until it reaches or crosses that value - the two meet first, then the control follows your hand; the status bar says where to move it. After the app moves a control by itself (auto-mix, a reset, the mouse) you pick it up again the same way. Each EQ band moves on its own.
 
 **Any MIDI controller:** **Controller setup…** walks you through every control once - it shows what it heard and waits for **Space** before moving on, so a fader that keeps sending can't run through the list. **Import Traktor (.tsi)…** sets a controller up from a Traktor export; **Export… / Import…** save and load mappings (used every time that controller connects); **Reset to built-in** restores the DDJ-T1 map.
 

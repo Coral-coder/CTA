@@ -33,6 +33,8 @@ def test_ddj_t1_default_play_tempo_jog(tmp_data_dir):
     c = Controller(e, device="PIONEER DDJ-T1")
     c.handle_raw([0x90, 11, 127])                       # deck A play
     assert e.decks["A"].playing
+    c.handle_raw([0xB0, 0, 64])                         # tempo fader meets the app's value (centre) first
+    c.handle_raw([0xB0, 32, 0])
     c.handle_raw([0xB0, 0, 127])                        # tempo MSB
     c.handle_raw([0xB0, 32, 127])                       # tempo LSB -> max
     assert abs(e.decks["A"].tempo - 1.0) < 1e-3
@@ -175,7 +177,8 @@ def test_ddj_t1_performance_buttons_and_mixer():
     eng.load("A", np.stack([y, y]), BeatGrid(120.0, 0.0, 20.0), TrackInfo(loudness=-10))
     c = Controller(eng, device="Test DDJ-T1")
     c.set_bindings(ddj_t1_default(), learned=False)
-    c.handle_raw([0xB6, 19, 64])                      # deck A channel fader half way
+    c.handle_raw([0xB6, 19, 127])                     # deck A channel fader: meets the app's value (full)...
+    c.handle_raw([0xB6, 19, 64])                      # ... then half way
     eng.render(256)
     assert abs(eng.decks["A"].volume - 64 / 127) < 1e-6
     c.handle_raw([0x90, 46, 127])                     # pad 1 in HOT CUE mode: sets hot cue 1
@@ -243,10 +246,43 @@ def test_fader_jitter_is_not_a_takeover():
     am = SimpleNamespace(manual=lambda deck, a: calls.append((deck, a)))
     c = Controller(eng, am, device="x")
     c.set_bindings([Binding("cc", 6, 19, "volume", "A"), Binding("note", 0, 11, "play", "A")], learned=False)
+    c.handle_raw([0xB6, 19, 127])                   # picked up (the app's fader is at full)
     for v in (64, 65, 64, 63, 64, 65):             # a fader's electrical noise
         c.handle_raw([0xB6, 19, v])
-    assert calls == []
+    assert calls == [("A", "volume")]              # the first real move down counted, the jitter did not
     c.handle_raw([0xB6, 19, 75])                    # a real move
-    assert calls == [("A", "volume")]
+    assert calls == [("A", "volume"), ("A", "volume")]
     c.handle_raw([0x90, 11, 127])                   # a button press always counts
     assert calls[-1] == ("A", "play")
+
+
+def test_controller_picks_up_a_control_only_where_the_app_is():
+    """Soft takeover: a fader at a different position than the app's value
+    does nothing until it reaches (or crosses) it; after the app moves a
+    control by itself the hand has to meet it again."""
+    from cta.dj.midi import Binding, Controller
+
+    eng = Engine()
+    c = Controller(eng, device="x")
+    c.set_bindings([Binding("cc", 6, 19, "volume", "A"), Binding("cc", 6, 24, "crossfader", None)], learned=False)
+    d = eng.decks["A"]
+    assert d.volume == 1.0
+    c.handle_raw([0xB6, 19, 40])                     # far from the app's value: ignored
+    assert d.volume == 1.0
+    c.handle_raw([0xB6, 19, 90])                     # still below it: ignored
+    assert d.volume == 1.0
+    c.handle_raw([0xB6, 19, 126])                    # within reach: picked up
+    assert abs(d.volume - 126 / 127) < 1e-6
+    c.handle_raw([0xB6, 19, 60])                     # follows the hand from now on
+    assert abs(d.volume - 60 / 127) < 1e-6
+    eng.set("A", volume=0.2)                         # the app moved it (auto-mix, the mouse)
+    c.handle_raw([0xB6, 19, 70])                     # no jump: not picked up again yet
+    assert abs(d.volume - 0.2) < 1e-6
+    c.handle_raw([0xB6, 19, 10])                     # crossed the app's value on the way down: picked up
+    assert abs(d.volume - 10 / 127) < 1e-6
+    # the crossfader (an engine-level control) behaves the same
+    eng.crossfader = -0.5
+    c.handle_raw([0xB6, 24, 127])
+    assert eng.crossfader == -0.5
+    c.handle_raw([0xB6, 24, 32])                     # ~ -0.5: met
+    assert abs(eng.crossfader - (32 / 127 * 2 - 1)) < 1e-6

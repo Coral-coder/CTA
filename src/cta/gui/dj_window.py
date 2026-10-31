@@ -2063,7 +2063,8 @@ class DeckPanel(QFrame):
                 _set_text(lb, "")
             _set_ss(self.key_lbl, "")
             return
-        pct = (d.base_rate - 1) * 100
+        eff = d.rate_override if d.rate_override is not None else d.base_rate   # what it really plays at
+        pct = (eff - 1) * 100
         _set_text(self.bpm_lbl, f"{d.bpm:.2f}")
         _set_text(self.pct_lbl, f"{pct:+.2f}%  ·  orig {d.grid.bpm if d.grid else 0:.1f}")
         ek = d.effective_key
@@ -2132,7 +2133,18 @@ class DeckPanel(QFrame):
                   if d.hotcues[i] is not None else "")
             if b.styleSheet() != st:
                 b.setStyleSheet(st)
-        _sync_value(self.tempo, int(d.tempo * 1000))
+        # the fader shows the offset the deck really plays at (following the lead, or its own)
+        if d.rate_override is not None and d.tempo_range > 0:
+            shown = float(np.clip((d.rate_override - 1.0) / d.tempo_range, -1.0, 1.0))
+        else:
+            shown = d.tempo
+        _sync_value(self.tempo, int(shown * 1000))
+        k = (0.06, 0.08, 0.16, 0.5)
+        want = min(range(4), key=lambda i: abs(k[i] - d.tempo_range))
+        if self.range.currentIndex() != want:
+            self.range.blockSignals(True)
+            self.range.setCurrentIndex(want)
+            self.range.blockSignals(False)
         _sync_value(self.key_shift, int(round(d.key_shift)), 0)
         # loop sizes: the chosen size lights up while its loop plays
         lb = None
@@ -3799,7 +3811,7 @@ class DJPanel(QWidget):
         lay.addLayout(stc, 1)
         # the rest of the auto-mix options: one menu
         self.glide = QCheckBox("Glide tempo to each track's BPM")
-        self.glide.setChecked(self.settings.value("dj_glide", "true") == "true")
+        self.glide.setChecked(self.settings.value("dj_glide", "false") == "true")
         self.glide.toggled.connect(self._update_am_settings)
         self.auto_suggest = QCheckBox("Auto-load best next track")
         self.auto_suggest.setChecked(self.settings.value("dj_auto_suggest", "true") == "true")
@@ -4229,6 +4241,19 @@ class DJPanel(QWidget):
         LearnWizard(self.controller, decks, self).exec()
 
     # controller callbacks (MIDI thread -> GUI thread via signals)
+    def pickup_hint(self, deck, action, app_x: float, ctl_x: float):
+        """The controller's knob has not met the app's value yet (soft takeover)."""
+        import time as _t
+
+        now = _t.monotonic()
+        if now - getattr(self, "_pickup_t", 0.0) < 0.5:
+            return
+        self._pickup_t = now
+        what = action.replace("_", " ")
+        where = f"deck {deck} " if deck else ""
+        self.main.status_label.setText(f"{where}{what}: controller at {ctl_x * 100:.0f} %, the app is at "
+                                       f"{app_x * 100:.0f} % - move it there to pick it up (no jumps)")
+
     def browse(self, delta: int):
         self._browse_sig.emit(int(delta))
 
@@ -4434,7 +4459,7 @@ class DJPanel(QWidget):
     def _automix_settings(self) -> AutoMixSettings:
         return AutoMixSettings(mix_bars=int(self.settings.value("dj_mix_bars", 16)),
                                auto_length=self.settings.value("dj_auto_len", "true") == "true",
-                               glide=self.settings.value("dj_glide", "true") == "true")
+                               glide=self.settings.value("dj_glide", "false") == "true")
 
     def _update_am_settings(self, *_):
         self.settings.setValue("dj_auto_len", "true" if self.auto_len.isChecked() else "false")

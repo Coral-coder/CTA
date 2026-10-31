@@ -45,7 +45,7 @@ class AutoMixSettings:
     mix_bars: int = 16           # blend length (the longest one when auto_length)
     auto_length: bool = True     # pick the length from the music, never hanging on dead air
     phrase_bars: int = 8
-    glide: bool = True
+    glide: bool = False
     glide_bars: int = 16
     bass_swap: bool = True
 
@@ -844,9 +844,11 @@ class AutoMix:
         self.tr = None
         r0 = din.rate_override if din.rate_override is not None else din.base_rate
         din.rate_override = r0
+        din.gliding = False
+        e._bake_rate(din)                    # the tempo it was mixed at is now its own fader value
         if self.s.glide and abs(r0 - 1.0) > 1e-4:
             b0 = din.grid.beat_at(din.time)
-            self.glide = (din.name, b0, b0 + 4.0 * self.s.glide_bars, r0, 1.0)
+            self.glide = (din.name, b0, b0 + 4.0 * self.s.glide_bars, float(din.tempo), 0.0)
         self.status = f"Playing {din.info.title}"
         self._fill_free_deck()
         self._changed()
@@ -860,8 +862,7 @@ class AutoMix:
         b = d.grid.beat_at(d.time)
         p = float(np.clip((b - b0) / max(b1 - b0, 1e-9), 0.0, 1.0))
         p = p * p * (3 - 2 * p)                       # smoothstep: no audible corners
-        d.rate_override = r0 + (r1 - r0) * p
+        d.tempo = r0 + (r1 - r0) * p                  # the fader itself glides home (r0/r1 are fader values)
         if p >= 1.0:
-            d.rate_override = None
-            d.tempo = 0.0
+            d.tempo = r1
             self.glide = None

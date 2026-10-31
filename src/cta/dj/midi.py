@@ -266,6 +266,47 @@ def eq_curve(x: float) -> float:
     return 1.0 + (x - 0.5) * 2.0
 
 
+def eq_curve_inv(g: float) -> float:
+    """Gain -> knob position (the inverse of eq_curve)."""
+    if g <= 1.0:
+        return 0.5 * (max(g, 0.0) ** 0.5)
+    return 0.5 + (g - 1.0) / 2.0
+
+
+# absolute (fader / knob) actions and where the app's current value lives, as 0..1
+PICKUP_TOL = 0.02
+
+
+def _app_value(e, deck: str | None, a: str, eq_x: dict):
+    """The app's value of an absolute control on the controller's 0..1 scale (None: not a pickup control)."""
+    import math
+
+    d = e.decks.get(deck) if deck else None
+    if a == "tempo" and d is not None:
+        return (float(d.tempo) + 1.0) / 2.0
+    if a == "volume" and d is not None:
+        return float(d.volume)
+    if a in ("eq_low", "eq_mid", "eq_high") and d is not None:
+        return eq_curve_inv(float(d.eq[{"eq_low": 0, "eq_mid": 1, "eq_high": 2}[a]]))
+    if a == "gain" and d is not None:
+        return 0.5 + 20.0 * math.log10(max(float(d.trim), 1e-6)) / 24.0
+    if a == "filter" and d is not None:
+        return (float(d.filter) + 1.0) / 2.0
+    if a == "crossfader":
+        return (float(e.crossfader) + 1.0) / 2.0
+    if a == "master_volume":
+        return float(e.master_volume)
+    if a == "cue_mix":
+        return float(e.cue_mix)
+    if a == "phones_volume":
+        return float(e.phones_volume)
+    if a in ("fx1_wet", "fx2_wet"):
+        return float(e.fx_units[0 if a == "fx1_wet" else 1].wet)
+    if a in ("fx1_amount", "fx2_amount"):
+        return float(e.fx_units[0 if a == "fx1_amount" else 1].amount)
+    return None
+
+
 # --------------------------------------------------------------------------
 # controller
 # --------------------------------------------------------------------------
@@ -297,6 +338,9 @@ class Controller:
         self.jump_beats = 4
         self.scratch_enabled = True              # off: pressing the jog top does not scratch
         self._last_val: dict[tuple, int] = {}    # last value per control (jitter filter)
+        self._ctl_x: dict = {}             # last controller position per (deck, action)
+        self._armed: dict = {}             # picked up: the control follows the hand
+        self._sent: dict = {}              # the last position we applied (to notice outside moves)
         self._pad_mode: dict[str, str] = {}      # performance buttons: "hotcue" | "move"
         self._delete_held: dict[str, bool] = {}
 
@@ -392,7 +436,10 @@ class Controller:
             x = 1.0 - x
         pressed = ev.value > 0
         am = self.automix
-        if am is not None and self._moved(b, ev):
+        moved = self._moved(b, ev)
+        if not b.relative and not self._pickup(b, deck, a, x):
+            return                              # the knob has not met the app's value yet: no jump
+        if am is not None and moved:
             am.manual(deck, a)
 
         if a == "play" and pressed:
@@ -409,8 +456,10 @@ class Controller:
             e.set(deck, volume=float(x))
         elif a in ("eq_low", "eq_mid", "eq_high"):
             i = {"eq_low": 0, "eq_mid": 1, "eq_high": 2}[a]
-            self._eq[deck][i] = eq_curve(x)
-            e.set(deck, eq=tuple(self._eq[deck]))
+            eq = [float(v) for v in e.decks[deck].eq]      # only this band moves; the others stay as they are
+            eq[i] = eq_curve(x)
+            self._eq[deck] = eq
+            e.set(deck, eq=tuple(eq))
         elif a == "gain":
             e.set(deck, trim=float(10 ** ((x - 0.5) * 24 / 20)))     # +-12 dB
         elif a == "phones_cue" and pressed:
@@ -513,6 +562,35 @@ class Controller:
             am.stop() if am.active else am.start()
         elif a == "transition" and pressed and am is not None:
             am.transition_now()
+
+    def _pickup(self, b: Binding, deck: str | None, a: str, x: float) -> bool:
+        """Soft takeover: a fader or knob whose position differs from the app's
+        value does nothing until it reaches (or crosses) that value - the two
+        meet first, then the control follows the hand. A control the app moved
+        on its own (auto-mix, a reset, the mouse) has to be picked up again."""
+        app = _app_value(self.eng, deck, a, self._eq)
+        if app is None:
+            return True
+        key = (deck, a)
+        prev = self._ctl_x.get(key)
+        self._ctl_x[key] = x
+        armed = self._armed.get(key, False)
+        sent = self._sent.get(key)
+        if armed and sent is not None and abs(app - sent) > PICKUP_TOL:
+            armed = False                       # the app moved it meanwhile: meet it again
+        if not armed:
+            met = abs(x - app) <= PICKUP_TOL or (prev is not None and (prev - app) * (x - app) <= 0.0)
+            if not met:
+                self._armed[key] = False
+                if self.ui is not None and hasattr(self.ui, "pickup_hint"):
+                    try:
+                        self.ui.pickup_hint(deck, a, app, x)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return False
+        self._armed[key] = True
+        self._sent[key] = x
+        return True
 
     def _moved(self, b: Binding, ev: Event) -> bool:
         """A real hand move (not a fader's electrical jitter): a button press,

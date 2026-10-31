@@ -134,6 +134,7 @@ class Deck:
     info: TrackInfo = field(default_factory=TrackInfo)
     peaks: np.ndarray | None = None          # waveform overview for the UI
     cue_by_dj: bool = False                  # the DJ set the cue (else LOOP IN moves it)
+    gliding: bool = False                    # auto-mix is gliding the tempo fader home
     play_pos: float = 0.0                    # source frame being heard now
     feed_pos: float = 0.0                    # source frame fed to the stretcher
     playing: bool = False
@@ -525,10 +526,7 @@ class Engine:
                     d.sync = bool(v)
                     d.phase_offset, d.nudged = 0.0, False     # (re)pressing SYNC: on the beat again
                     if not v:
-                        # keep the current tempo when leaving sync
-                        if d.rate_override is not None and d.tempo_range > 0:
-                            d.tempo = float(np.clip((d.rate_override - 1.0) / d.tempo_range, -1, 1))
-                        d.rate_override = None
+                        e._bake_rate(d)             # keep the current tempo when leaving sync
                         d.phase_corr = 0.0
                     else:
                         m = e._master(exclude=deck)
@@ -872,6 +870,22 @@ class Engine:
         self._lead_deck = cur.name if cur is not None else None
         return cur
 
+    @staticmethod
+    def _bake_rate(d: Deck):
+        """A deck that stops following keeps the tempo it was playing at: the
+        followed rate becomes its own tempo fader value (the fader range is
+        widened when the offset does not fit), never a snap back to its own
+        BPM. The DJ moves the fader when they want it moved."""
+        r = d.rate_override
+        d.rate_override = None
+        if r is None or abs(r - 1.0) < 1e-6:
+            return
+        for rng in (0.06, 0.08, 0.16, 0.5):
+            if rng >= d.tempo_range and abs(r - 1.0) <= rng + 1e-9:
+                d.tempo_range = rng
+                break
+        d.tempo = float(np.clip((r - 1.0) / d.tempo_range, -1.0, 1.0))
+
     def _apply_sync(self):
         lead = self._lead()                        # the deck everyone follows: its tempo fader rules
         for d in self.decks.values():
@@ -879,8 +893,8 @@ class Engine:
                 # (with SYNC lit on both decks, the master would otherwise follow its follower
                 # and its own tempo fader would do nothing)
                 d.phase_corr = 0.0
-                if d is lead:
-                    d.rate_override = None
+                if d.rate_override is not None and not getattr(d, "gliding", False):
+                    self._bake_rate(d)             # stopped following (lead now / sync off): keep the tempo
                 continue
             m = lead if lead is not None else self._master(exclude=d.name)
             if m is None:

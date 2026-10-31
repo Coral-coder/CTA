@@ -732,3 +732,24 @@ def test_loop_in_is_the_cue_until_the_dj_sets_one():
     eng.loop_in("A")
     _run(eng, 0.05)
     assert abs(d.cue_point / SR - 2.0) < 0.01       # LOOP IN no longer touches it
+
+
+def test_a_deck_keeps_its_mixed_tempo_when_it_stops_following():
+    """B synced to A at 124 (its own 128): stopping A must not snap B back to
+    128 - it keeps playing at 124 and its tempo fader shows that offset."""
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    _load(eng, "B", 128.0)
+    eng.set_playing("A", True)
+    eng.set("B", sync=True)
+    eng.set_playing("B", True)
+    _run(eng, 3)
+    assert abs(eng.decks["B"].bpm - 124.0) < 0.05
+    eng.set_playing("A", False)                    # the outgoing stops: B is the lead now
+    _run(eng, 1)
+    b = eng.decks["B"]
+    assert abs(b.bpm - 124.0) < 0.05                 # no snap to 128
+    assert b.rate_override is None and abs(b.tempo * b.tempo_range - (124.0 / 128.0 - 1.0)) < 1e-3
+    eng.set("B", tempo=0.0)                          # the DJ moves the fader: now it is their call
+    _run(eng, 1)
+    assert abs(b.bpm - 128.0) < 0.05
