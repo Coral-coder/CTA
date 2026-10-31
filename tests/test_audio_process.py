@@ -231,7 +231,7 @@ def test_auto_buffer_walks_the_ladder_on_glitches_and_back_down_when_quiet(monke
         opened.append(self.out_latency)
         self._stream = object()                       # "running", not virtual
     monkeypatch.setattr(Engine, "start", fake_start)
-    monkeypatch.setattr(AS, "list_output_devices", lambda: [], raising=False)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # no PortAudio on the Linux runner
     import multiprocessing as mp
 
     a, b = mp.Pipe()
