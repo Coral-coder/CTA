@@ -3575,6 +3575,27 @@ class DJPanel(QWidget):
             hl.addWidget(chk)
             act.setDefaultWidget(holder)
             menu.addAction(act)
+        from PySide6.QtWidgets import QDoubleSpinBox
+
+        self.jog_speed = QDoubleSpinBox()
+        self.jog_speed.setRange(0.25, 16.0)
+        self.jog_speed.setSingleStep(0.5)
+        self.jog_speed.setDecimals(2)
+        self.jog_speed.setSuffix(" x")
+        self.jog_speed.setToolTip("How far the track moves per turn of the controller's jog wheel")
+        try:
+            self.jog_speed.setValue(float(self.settings.value("dj_jog_speed", 4.0)))
+        except (TypeError, ValueError):
+            self.jog_speed.setValue(4.0)
+        self.jog_speed.valueChanged.connect(self._jog_speed_changed)
+        act = QWidgetAction(menu)
+        holder = QWidget()
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(10, 3, 10, 3)
+        hl.addWidget(QLabel("Jog speed"))
+        hl.addWidget(self.jog_speed)
+        act.setDefaultWidget(holder)
+        menu.addAction(act)
         menu.addSeparator()
         from .shortcuts import HELP, DeckKeys
 
@@ -4240,6 +4261,9 @@ class DJPanel(QWidget):
             self.controller.close()
         self.controller = Controller(self.engine, self.automix, self, device=dev)
         self.controller.scratch_enabled = self.scratch_on()
+        js = getattr(self, "jog_speed", None)
+        self.controller.jog_speed = float(js.value()) if js is not None else \
+            float(self.settings.value("dj_jog_speed", 4.0) or 4.0)
         try:
             if not self.controller.open(port):
                 raise RuntimeError("port not found")
@@ -4796,6 +4820,11 @@ class DJPanel(QWidget):
         for w in self.findChildren(QWidget):
             if isinstance(w, (Waveform, MarkerWave)):
                 w.update()
+
+    def _jog_speed_changed(self, v: float):
+        self.settings.setValue("dj_jog_speed", float(v))
+        if self.controller is not None:
+            self.controller.jog_speed = float(v)
 
     def scratch_on(self) -> bool:
         return self.scratch_chk.isChecked()

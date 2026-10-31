@@ -352,6 +352,7 @@ class Controller:
         self._lock = threading.Lock()
         self.jump_beats = 4
         self.scratch_enabled = True              # off: pressing the jog top does not scratch
+        self.jog_speed = 4.0                     # jog sensitivity (Options -> Jog speed)
         self._last_val: dict[tuple, int] = {}    # last value per control (jitter filter)
         self._ctl_x: dict = {}             # last controller position per (deck, action)
         self._armed: dict = {}             # picked up: the control follows the hand
@@ -562,7 +563,7 @@ class Controller:
                 delta = rel14(ev.value) if ev.type == "cc14" else rel7(ev.value)
             if ev.type == "cc" and not b.center:
                 delta *= 8                        # a 7-bit jog counts coarser than the 14-bit one
-            revs = delta / self.counts_per_rev
+            revs = delta * self.jog_speed / self.counts_per_rev
             now = ev.t
             dt = max(1e-3, min(0.05, now - self._jog_last.get(deck, now - 0.01)))
             self._jog_last[deck] = now
