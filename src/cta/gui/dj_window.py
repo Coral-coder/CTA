@@ -1652,12 +1652,14 @@ class DeckPanel(QFrame):
         for wv in (self.zoom, self.over):
             wv.seek.connect(lambda t, n=name: self.eng.seek(n, t))
             wv.marker.connect(lambda kind, t, n=name: self.dj.set_marker(n, kind, t))
-        self.zoom.scratch.connect(lambda secs: self.dj.scratch_on() and (self.dj.manual_touch(name, "scratch"),
-                                                                          self.scr.move(secs)))
+        # grabbing the waveform or the on-screen platter with the mouse always
+        # scrubs: that is a deliberate grab (Scratch mode only governs the
+        # controller's jog top, which a hand rests on by accident)
+        self.zoom.scratch.connect(lambda secs: (self.dj.manual_touch(name, "scratch"), self.scr.move(secs)))
         self.zoom.scratch_end.connect(self.scr.end)
         self.platter = JogPlatter(col, 112)
-        self.platter.scratch.connect(lambda revs: self.dj.scratch_on() and (self.dj.manual_touch(name, "scratch"),
-                                                                             self.scr.move(revs * 1.8)))
+        self.platter.scratch.connect(lambda revs: (self.dj.manual_touch(name, "scratch"),
+                                                   self.scr.move(revs * 1.8)))
         self.platter.scratch_end.connect(self.scr.end)
         tb = QVBoxLayout()
         self.tempo = ResetSlider(Qt.Vertical, 0, "Tempo")
@@ -3503,10 +3505,11 @@ class DJPanel(QWidget):
         self.platter_chk.setToolTip("Show the jog platters (Full view). You can always scratch on the waveform.")
         self.platter_chk.setChecked(self.settings.value("dj_platter", "true") == "true")
         self.platter_chk.toggled.connect(self._view_changed)
-        self.scratch_chk = QCheckBox("Scratch mode (jog wheel top, platter, waveform drag)")
-        self.scratch_chk.setToolTip("On: a hand on the jog top holds the record and turning it scratches.\n"
-                                    "Off (default): touching the jog never stops a playing track; turning it "
-                                    "bends the pitch (nudge) on a playing deck and searches a stopped one.")
+        self.scratch_chk = QCheckBox("Scratch mode (controller jog top)")
+        self.scratch_chk.setToolTip("On: a hand on the controller's jog top holds the record and turning it "
+                                    "scratches.\nOff (default): touching the jog never stops a playing track; "
+                                    "turning it bends the pitch (nudge) on a playing deck and searches a stopped "
+                                    "one.\nDragging the waveform or the on-screen platter always scrubs.")
         self.scratch_chk.setChecked(self.settings.value("dj_scratch", "false") == "true")
         self.scratch_chk.toggled.connect(self._scratch_toggled)
         self.phase_chk = QCheckBox("SYNC also locks the beat phase")
