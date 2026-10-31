@@ -214,11 +214,11 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
         autostart.refresh()
     except Exception:  # noqa: BLE001
         pass
+    from PySide6.QtCore import QTimer
+
     smoke = os.environ.get("CTA_SMOKE_EXIT_MS")
     if smoke:
         # CI smoke test of the packaged GUI: start, render, quit cleanly
-        from PySide6.QtCore import QTimer
-
         QTimer.singleShot(int(smoke), lambda: (print("GUI SMOKE OK", flush=True), w.quit_app(), app.quit()))
     if crashed:
         QTimer.singleShot(1500, lambda: w.status_label.setText(

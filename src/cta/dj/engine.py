@@ -926,7 +926,11 @@ class Engine:
             take = min(n - got, end - pos)
             if take <= 0 or pos >= d.length:
                 break
-            out[:, got:got + take] = d.audio[:, pos:pos + take]
+            chunk = d.audio[:, pos:pos + take]
+            take = min(take, chunk.shape[1])    # the track may have been swapped under us (load / release)
+            if take <= 0:
+                break
+            out[:, got:got + take] = chunk[:, :take]
             got += take
             pos += take
         d.feed_pos = float(pos) + (d.feed_pos - int(d.feed_pos))

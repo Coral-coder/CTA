@@ -124,3 +124,18 @@ def test_double_click_opens_the_details_page_not_a_player(tmp_data_dir, monkeypa
     assert "Nothing is playing" in against_text(w.lib, 0, None)
     dlg.close()
     w.close()
+
+
+def test_gui_starts_after_an_unclean_exit(tmp_data_dir, monkeypatch):
+    """A crash.log left by the previous session must not stop the next start
+    (2.2.0 raised UnboundLocalError on QTimer there)."""
+    import os
+
+    from cta.gui import app as A
+
+    crash = tmp_data_dir / "crash.log"
+    crash.write_text("Fatal Python error: Segmentation fault\n")
+    monkeypatch.setenv("CTA_SMOKE_EXIT_MS", "300")
+    monkeypatch.setenv("CTA_DATA_DIR", str(tmp_data_dir))
+    rc = A.run_gui(db_path=str(tmp_data_dir / "lib.sqlite3"), background=False)
+    assert rc == 0 and os.path.exists(crash)
