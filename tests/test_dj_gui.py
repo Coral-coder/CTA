@@ -18,7 +18,8 @@ def test_dj_window(tmp_data_dir, monkeypatch):
     from cta.gui.main_window import MainWindow
     from cta.scanner import Scanner, ScanSettings
 
-    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)     # no sound card in CI
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
 
@@ -95,6 +96,7 @@ def test_phone_remote_drives_the_app(tmp_data_dir, monkeypatch):
     from cta.scanner import Scanner, ScanSettings
 
     monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
     music = tmp_data_dir / "music"
@@ -294,6 +296,7 @@ def test_decks_scale_to_a_laptop_screen(tmp_data_dir, monkeypatch):
     from cta.scanner import Scanner, ScanSettings
 
     monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
     music = tmp_data_dir / "music"
@@ -372,6 +375,7 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
     from cta.scanner import Scanner, ScanSettings
 
     monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
     music = tmp_data_dir / "music"
@@ -518,6 +522,7 @@ def test_timeshift_window_rehearses_on_the_preview_only(tmp_data_dir, monkeypatc
     from cta.scanner import Scanner, ScanSettings
 
     monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
     music = tmp_data_dir / "music"
@@ -680,6 +685,7 @@ def test_unload_decks_and_reset_auto_mix_for_the_next_set(tmp_data_dir, monkeypa
     from cta.scanner import Scanner, ScanSettings
 
     monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])   # the audio server scans too
     monkeypatch.setattr(DW, "list_output_devices", lambda: [])
     monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
     music = tmp_data_dir / "music"
