@@ -780,7 +780,13 @@ class EngineClient:
         """In-process only (tests): render a block here and refresh the views at once."""
         if self.server is None:
             raise RuntimeError("render() is for the in-process engine")
-        out = self.server.engine.render(n)
+        from .engine import _VirtualOutput
+
+        eng = self.server.engine
+        if isinstance(eng._stream, _VirtualOutput):
+            eng._stream.stop()                    # the test is the clock now: one renderer per stretcher
+            eng._stream = None
+        out = eng.render(n)
         self._apply_snapshot(self.server._snapshot())
         return out
 
