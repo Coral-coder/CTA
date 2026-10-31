@@ -267,7 +267,7 @@ jobs:
           Copy-Item -Recurse dist\Tempest legacy\CTA
           Copy-Item legacy\CTA\Tempest.exe legacy\CTA\CTA.exe
           Copy-Item legacy\CTA\tempest-cli.exe legacy\CTA\cta-cli.exe
-          Compress-Archive -Path legacy\CTA -DestinationPath "legacy-CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
+          Compress-Archive -Path legacy\CTA -DestinationPath "upgrade-from-CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
 
       # ---- macOS: notarize with the App Store Connect key, staple, then zip ----
       - name: Notarize (macOS)
@@ -309,7 +309,7 @@ jobs:
           cp legacy/CTA.app/Contents/MacOS/Tempest legacy/CTA.app/Contents/MacOS/CTA
           if [ -n "${SIGN_ID:-}" ]; then bash packaging/sign_mac.sh legacy/CTA.app "$SIGN_ID" packaging/entitlements.plist
           else codesign --force --deep --sign - legacy/CTA.app; fi
-          ditto -c -k --sequesterRsrc --keepParent legacy/CTA.app "legacy-CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent legacy/CTA.app "upgrade-from-CTA-${{ steps.ver.outputs.version }}-${{ matrix.target }}.zip"
 
       - name: Remove the signing keychain (macOS)
         if: always() && runner.os == 'macOS'
@@ -321,7 +321,7 @@ jobs:
           name: Tempest-${{ matrix.target }}
           path: |
             Tempest-*.zip
-            legacy-CTA-*.zip
+            upgrade-from-CTA-*.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -356,6 +356,6 @@ jobs:
             ## Download
             - **Windows 10/11 (x64)**: `Tempest-*-windows-x64.zip` → unzip anywhere → run `Tempest.exe`
             - **macOS (Apple Silicon)**: `Tempest-*-macos-arm64.zip` → unzip → drag `Tempest.app` to Applications → open. (If this build is unsigned, right-click → Open the first time.)
-            - The `legacy-CTA-*` zips exist only so installs still named CTA (2.2.x) can update themselves; new users ignore them.
+            - The `upgrade-from-CTA-*` zips exist only so installs still named CTA (2.2.x) can update themselves; new users ignore them.
 
             The AI model is bundled; AI inference uses the GPU through DirectML (Windows) or CoreML (macOS) and falls back to the CPU automatically.
