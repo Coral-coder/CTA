@@ -85,6 +85,12 @@ def apply(r: Rehearsal, x: float, din, dout, eng=None, base: dict | None = None)
     if lv:
         xf = r.value("xf", x)
         ov, iv = r.value("out_vol", x), r.value("in_vol", x)
+        # a lane that never came up (the channel fader was not part of the take, e.g.
+        # mixed on the crossfader alone) must not mute the track: it follows auto-mix
+        if max((p[1] for p in r.lanes.get("in_vol") or []), default=1.0) < 0.3:
+            iv = base["in_vol"] if base is not None else 1.0
+        if max((p[1] for p in r.lanes.get("out_vol") or []), default=1.0) < 0.3:
+            ov = base["out_vol"] if base is not None else 1.0
         if eng is not None and dout.xf_side != din.xf_side and dout.xf_side != 0:
             eng.crossfader = float(np.clip(xf * -dout.xf_side, -1.0, 1.0))
             dout.volume, din.volume = float(np.clip(ov, 0, 1)), float(np.clip(iv, 0, 1))

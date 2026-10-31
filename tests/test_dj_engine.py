@@ -870,3 +870,21 @@ def test_a_load_is_not_lost_while_cue_is_held():
     eng.load_track("A", lt2, only_if_stopped=True)
     eng.render(512)
     assert eng.decks["A"].info.title == "new" and eng.decks["A"].playing
+
+
+def test_a_rehearsal_with_the_incoming_fader_down_never_mutes_the_track():
+    """A take mixed on the crossfader alone recorded the incoming channel at 0:
+    replaying it must not mix out into silence."""
+    from types import SimpleNamespace
+
+    from cta.dj.rehearsal import Rehearsal, apply
+
+    r = Rehearsal.__new__(Rehearsal)
+    r.lanes = {"xf": [[0.0, 0.0], [16.0, 1.0]], "out_vol": [[0.0, 1.0], [16.0, 1.0]],
+               "in_vol": [[0.0, 0.0], [16.0, 0.0]]}
+    eng = Engine()
+    din = SimpleNamespace(volume=0.0, eq=None, filter=0.0, xf_side=1)
+    dout = SimpleNamespace(volume=1.0, eq=None, filter=0.0, xf_side=-1)
+    base = {"out_vol": 0.0, "in_vol": 1.0, "out_eq": [1, 1, 1], "in_eq": [1, 1, 1]}
+    apply(r, 16.0, din, dout, eng, base)
+    assert din.volume == 1.0 and eng._xf_gain(din.xf_side) == 1.0

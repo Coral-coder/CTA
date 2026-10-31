@@ -848,6 +848,9 @@ class AutoMix:
             din.volume = 1.0
             din.eq = np.ones(3)
             din.filter = 0.0
+        elif din.volume < 0.3 or e._xf_gain(din.xf_side) < 0.3:
+            din.volume = 1.0                   # ... but never silent: the new track is the whole show now
+            e.crossfader = 0.0
         din.sync = bool(tr.in_sync_was)        # (it leads now: its tempo is kept either way)
         din.auto_phase = False
         dout.auto_phase = False
