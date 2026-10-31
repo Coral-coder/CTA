@@ -340,6 +340,8 @@ def test_a_stopped_deck_scrubs_under_the_hand_whatever_the_scratch_mode(tmp_data
     assert d.scratching and not d.playing
     assert np.abs(m).max() > 0.0                      # audible: the record moves under the hand
     assert d.play_pos > 0
-    c.handle_raw([0x90, 54, 0])                       # hand off: it stays stopped, silent
+    c.handle_raw([0x90, 54, 0])                       # hand off: it stays stopped, fades out (no click) ...
     m, _ = e.render(512)
-    assert not d.scratching and not d.playing and np.abs(m).max() == 0.0
+    assert not d.scratching and not d.playing and np.abs(m[:, -1]).max() < 1e-6
+    m, _ = e.render(512)                              # ... and is silent after that
+    assert np.abs(m).max() == 0.0

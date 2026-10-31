@@ -722,7 +722,7 @@ class MainWindow(QMainWindow):
         if cur.isValid():
             self.focus_track(self.lib_model.lib_index(cur.row()), select=False)
 
-    def focus_track(self, idx: int, select: bool = True):
+    def focus_track(self, idx: int, select: bool = True, clear_filters: bool = True):
         if self.lib is None or idx is None or idx >= self.lib.n:
             return
         self.current = idx
@@ -739,7 +739,7 @@ class MainWindow(QMainWindow):
         self.seed_label.setText(f"Seed: <b>{t.artist} - {t.title}</b> ({t.bpm:.1f} BPM, {camelot_str(t.key)})")
         if select:
             r = self.lib_model.row_of(idx)
-            if r < 0:   # filtered out: clear filters so it can be shown
+            if r < 0 and clear_filters:   # filtered out: clear filters so it can be shown
                 self.search.blockSignals(True)
                 self.search.clear()
                 self.search.blockSignals(False)
@@ -786,8 +786,15 @@ class MainWindow(QMainWindow):
         t0 = time.perf_counter()
         sug = suggest_next(self.lib, self.current, self.mix_settings(), n=100, exclude=set(self.setlist))
         dt = (time.perf_counter() - t0) * 1000
+        r = self.next_view.currentIndex().row()
+        keep = self.next_model.items[r] if 0 <= r < len(self.next_model.items) else None
         self.next_model.set_items(self.lib, [s.idx for s in sug],
                                   [[f"{s.score * 100:.0f}", f"{s.pitch_pct:+.1f}%"] for s in sug])
+        if sug:
+            # keep the selection (the browse knob / LOAD work from it): the same
+            # track if it is still suggested, else the best suggestion
+            items = self.next_model.items
+            self.next_view.selectRow(items.index(keep) if keep in items else 0)
         self.tabs.setTabText(0, f"Next Track ({len(sug)})")
         log.debug("suggestions in %.1f ms", dt)
 

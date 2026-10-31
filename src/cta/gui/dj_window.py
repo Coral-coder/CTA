@@ -2052,7 +2052,7 @@ class DeckPanel(QFrame):
                 # a track loaded into a deck: it is the one the library shows and
                 # the Next Track list is what mixes from it
                 try:
-                    self.dj.main.focus_track(int(d.info.lib_index))
+                    self.dj.main.focus_track(int(d.info.lib_index), clear_filters=False)
                 except Exception:  # noqa: BLE001
                     log.exception("focusing the loaded track failed")
             self.title.setToolTip(f"{d.info.artist + ' - ' if d.info.artist else ''}{d.info.title}\n"
@@ -3427,6 +3427,8 @@ class DJPanel(QWidget):
     _error = Signal(str)
     _browse_sig = Signal(int)
     _load_sig = Signal(str)
+    _hint_sig = Signal(object, str, float, float)     # controller pickup hints (MIDI thread -> GUI)
+    _cues_sig = Signal(str)                           # cues changed from the controller (MIDI thread -> GUI)
     _devices_sig = Signal(object)
 
     def __init__(self, main_window):
@@ -3472,6 +3474,8 @@ class DJPanel(QWidget):
         self._error.connect(lambda msg: QMessageBox.warning(self, "DJ Mode", msg))
         self._browse_sig.connect(lambda d: self.main.browse_library(d))
         self._load_sig.connect(lambda deck: self.load_selected(deck))
+        self._hint_sig.connect(self._show_pickup_hint)
+        self._cues_sig.connect(lambda deck: QTimer.singleShot(60, lambda: self._save_cues(deck)))
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -4286,7 +4290,11 @@ class DJPanel(QWidget):
 
     # controller callbacks (MIDI thread -> GUI thread via signals)
     def pickup_hint(self, deck, action, app_x: float, ctl_x: float):
-        """The controller's knob has not met the app's value yet (soft takeover)."""
+        """The controller's knob has not met the app's value yet (soft takeover).
+        Called on the MIDI thread: the label is set on the GUI thread."""
+        self._hint_sig.emit(deck, str(action), float(app_x), float(ctl_x))
+
+    def _show_pickup_hint(self, deck, action, app_x: float, ctl_x: float):
         import time as _t
 
         now = _t.monotonic()
@@ -4305,7 +4313,7 @@ class DJPanel(QWidget):
         self._load_sig.emit(deck)
 
     def cues_changed(self, deck: str):
-        QTimer.singleShot(60, lambda: self._save_cues(deck))
+        self._cues_sig.emit(deck)                     # may come from the MIDI thread (no event loop there)
 
     def _save_cues(self, deck: str):
         d = self.engine.decks[deck]

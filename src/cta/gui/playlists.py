@@ -287,6 +287,8 @@ class PlaylistPanel(QWidget):
                                 "(The songs stay in your library.)") != QMessageBox.Yes:
             return
         self.lists.remove(pl)
+        if getattr(self, "_undo_sort", None) and self._undo_sort[0] is pl:
+            self._undo_sort = None
         self._save()
         self._fill_combo()
 
@@ -384,7 +386,7 @@ class PlaylistPanel(QWidget):
         after = sum(score_from(lib, a, s).total[b] for a, b in zip(order, order[1:]))
         known = {lib.paths[i] for i in items}
         missing = [p for p in pl["paths"] if p not in known]          # files no longer in the library stay (at the end)
-        self._undo_sort = (self.combo.currentIndex(), list(pl["paths"]))
+        self._undo_sort = (pl, list(pl["paths"]), None)
         pl["paths"] = [lib.paths[i] for i in order] + missing
         self._save()
         self.refresh()
@@ -394,13 +396,18 @@ class PlaylistPanel(QWidget):
 
     def undo_sort(self):
         u = getattr(self, "_undo_sort", None)
-        if not u or not (0 <= u[0] < len(self.lists)):
-            return
-        self.lists[u[0]]["paths"] = list(u[1])
         self._undo_sort = None
+        if not u:
+            return
+        pl, before, _after = u
+        k = next((i for i, x in enumerate(self.lists) if x is pl), -1)
+        if k < 0:
+            return                                     # that playlist is gone: nothing to undo
+        added = [p for p in pl["paths"] if p not in set(before)]    # e.g. tracks the live set logged since
+        pl["paths"] = list(before) + added
         self._save()
-        if u[0] != self.combo.currentIndex():
-            self.combo.setCurrentIndex(u[0])
+        if k != self.combo.currentIndex():
+            self.combo.setCurrentIndex(k)
         else:
             self.refresh()
 

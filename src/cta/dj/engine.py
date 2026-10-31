@@ -184,6 +184,8 @@ class Deck:
     _mode: str = "vinyl"
     _eq: ThreeBandEQ | None = None
     _last_gain: float = 0.0
+    _tail: object = None                     # last output frame: a stop fades from it instead of cutting
+    _scr_gain: float = 0.0                   # a held record is silent: level follows the hand's speed
 
     # ---- derived ----------------------------------------------------------
     @property
@@ -474,7 +476,9 @@ class Engine:
             d.playing = True
             d.start_pos = d.play_pos
             if e.master_deck is None:
+                # a nominal master only - not a MASTER press: the deck already on air keeps the lead
                 e.master_deck = deck
+                e._lead_master_seen = deck
         elif not on:
             d.cue_preview = False
             d.playing = False
@@ -897,7 +901,7 @@ class Engine:
 
     def _apply_sync(self):
         lead = self._lead()                        # the deck everyone follows: its tempo fader rules
-        hand = any(x.nudge != 0.0 for x in self.decks.values() if x.loaded and x.playing)
+        hand = any(x.nudge != 0.0 for x in self.decks.values() if x.loaded and x.playing and not x.cue_preview)
         lead_name = lead.name if lead is not None else None
         if lead_name != getattr(self, "_sync_lead_prev", None):
             # a new master (MASTER pressed, a handover): it is in charge of the
@@ -997,7 +1001,7 @@ class Engine:
         newpos = float(idx[-1] + rate) if n else d.play_pos
         if d.loop is not None and newpos >= d.loop[1]:
             newpos = d.loop[0] + (newpos - d.loop[0]) % max(d.loop[1] - d.loop[0], 1)
-        newpos = max(newpos, 0.0)                    # the record stops at its start when pulled back
+        newpos = min(max(newpos, 0.0), max(float(d.length - 1), 0.0))   # the record stops at its ends
         d.play_pos = d.feed_pos = newpos
         return y
 
@@ -1054,6 +1058,11 @@ class Engine:
         if not d.loaded:
             return None
         if not d.playing and not d.scratching:     # a hand on a stopped record still scrubs audibly
+            d._scr_gain = 0.0
+            tail, d._tail = d._tail, None
+            if tail is not None and np.any(tail):
+                # just stopped: fade from where the waveform was instead of a hard cut (no click)
+                return (tail[:, None] * np.linspace(1.0, 0.0, n, dtype=np.float32)[None, :]).astype(np.float32)
             if d._last_gain > 0:
                 d._last_gain = 0.0
             return None
@@ -1072,6 +1081,14 @@ class Engine:
                 d._rb_reset = True
                 d._mode = "vinyl"
             y = self._render_vinyl(d, n, rate)
+        if d.scratching:
+            # a record held still is silent (no DC thump); the sound follows the hand's speed
+            g = float(min(1.0, abs(rate) / 0.08))
+            if g != d._scr_gain or g < 1.0:
+                y = y * np.linspace(d._scr_gain, g, n, dtype=np.float32)[None, :]
+            d._scr_gain = g
+        else:
+            d._scr_gain = 1.0
         if d.play_pos >= d.length - 1 and d.loop is None and d.playing:
             d.playing = False
             d.end_reached = True
@@ -1104,6 +1121,7 @@ class Engine:
             binc = rate / SR / d.grid.beat_len
             for u in sorted(d.fx):
                 y = self.fx_units[u].process(d.name, y, beat_s, bpos, binc)
+        d._tail = np.array(y[:, -1], dtype=np.float32) if y.shape[1] else None
         return y
 
     def _xf_gain(self, side: int) -> float:

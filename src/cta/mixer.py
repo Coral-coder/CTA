@@ -294,69 +294,82 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None
 
 
 def order_for_flow(lib: Library, items: list[int], s: MixSettings, keep_first: bool = False,
-                   keep_last: bool = False) -> list[int]:
+                   keep_last: bool = False, budget_s: float = 0.6) -> list[int]:
     """Reorder a fixed set of tracks (a playlist) so each one mixes into the
-    next as well as possible: the same transition scores as Next Track,
-    an impossible transition (tempo / key lock) counting as a hard break.
-    Every track stays in the list. keep_first / keep_last pin the opener and
-    the closer. Best start and nearest-neighbour chains, polished with 2-opt
-    and or-opt (moving runs of up to three tracks)."""
+    next as well as possible: the same transition scores as Next Track, an
+    impossible transition (tempo / key lock) counting as a hard break. Every
+    track stays in the list; keep_first / keep_last pin the opener and the
+    closer. Greedy chains from the best openers, then moves of runs of up to
+    three tracks, each scored by its change only, within budget_s seconds
+    (it runs on the GUI thread: it never freezes the window)."""
+    import time as _time
+
+    deadline = _time.perf_counter() + budget_s
     seq = [int(i) for i in items if 0 <= int(i) < lib.n]
     n = len(seq)
     if n < 3:
         return seq
-    # pairwise transition quality, rows = from, columns = to
     m = np.zeros((n, n))
     for r, a in enumerate(seq):
         sc = score_from(lib, a, s)
         row = sc.total[seq]
         ok = (sc.loose if sc.loose is not None else sc.valid)[seq]
         m[r] = np.where(ok, row, row - 1.0)        # a transition that cannot be mixed costs a full point
-    np.fill_diagonal(m, -np.inf)
+    np.fill_diagonal(m, -1e9)
 
     def total(order):
-        return float(sum(m[order[k], order[k + 1]] for k in range(len(order) - 1)))
+        o = np.asarray(order)
+        return float(m[o[:-1], o[1:]].sum())
 
     def chain(start):
-        left = set(range(n)) - {start}
+        free = np.ones(n, bool)
+        free[start] = False
         if keep_last:
-            left.discard(n - 1)
+            free[n - 1] = False
         out = [start]
-        while left:
-            cur = out[-1]
-            nxt = max(left, key=lambda j: m[cur, j])
-            out.append(nxt)
-            left.discard(nxt)
+        while free.any():
+            j = int(np.argmax(np.where(free, m[out[-1]], -np.inf)))
+            out.append(j)
+            free[j] = False
         if keep_last:
             out.append(n - 1)
         return out
 
     starts = [0] if keep_first else [k for k in range(n) if not (keep_last and k == n - 1)]
-    if len(starts) > 60:                             # a huge list: try the best openers only
-        openness = m.max(axis=1) - np.where(np.isfinite(m), m, -1.0).mean(axis=0)
-        starts = sorted(starts, key=lambda k: -openness[k])[:60]
+    if len(starts) > 40:                             # a long list: the best openers only
+        starts = sorted(starts, key=lambda k: -float(np.sort(m[k])[-3:].mean()))[:40]
     best = max((chain(k) for k in starts), key=total)
+
+    def e(x, y):
+        return 0.0 if x is None or y is None else float(m[x, y])
     lo = 1 if keep_first else 0
-    hi = n - 1 if keep_last else n
     improved = True
-    while improved:
+    while improved and _time.perf_counter() < deadline:
         improved = False
-        for i in range(lo, hi - 1):                  # 2-opt: reverse a stretch
-            for j in range(i + 1, hi):
-                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
-                if total(cand) > total(best) + 1e-9:
-                    best, improved = cand, True
-        for ln in (1, 2, 3):                         # or-opt: move a run somewhere else
-            for i in range(lo, hi - ln + 1):
+        for ln in (1, 2, 3):
+            hi = n - (1 if keep_last else 0)
+            i = lo
+            while i + ln <= hi and _time.perf_counter() < deadline:
                 run = best[i:i + ln]
+                p = best[i - 1] if i > 0 else None
+                q = best[i + ln] if i + ln < n else None
+                lost = e(p, run[0]) + e(run[-1], q) - e(p, q)
                 rest = best[:i] + best[i + ln:]
-                for j in range(lo, len(rest) - (1 if keep_last else 0) + 1):
-                    cand = rest[:j] + run + rest[j:]
-                    if total(cand) > total(best) + 1e-9:
-                        best, improved = cand, True
-                        break
-                if improved:
-                    break
+                first_j = 1 if keep_first else 0
+                last_j = len(rest) - (1 if keep_last else 0)
+                gain_best, j_best = 1e-9, -1
+                for j in range(first_j, last_j + 1):
+                    if j == i:
+                        continue
+                    x = rest[j - 1] if j > 0 else None
+                    y = rest[j] if j < len(rest) else None
+                    g = e(x, run[0]) + e(run[-1], y) - e(x, y) - lost
+                    if g > gain_best:
+                        gain_best, j_best = g, j
+                if j_best >= 0:
+                    best = rest[:j_best] + run + rest[j_best:]
+                    improved = True
+                i += 1
     return [seq[k] for k in best]
 
 

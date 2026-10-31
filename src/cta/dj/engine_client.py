@@ -864,6 +864,8 @@ class EngineClient:
         v = self.decks.get(deck)
         if v is not None:
             with self._apply_lock:
+                for k in kw:                      # held first: no snapshot can put the old value back
+                    self._holds[("deck", deck, k)] = float("inf")
                 for k, val in kw.items():
                     try:
                         setattr(v, k, np.asarray(val, np.float64) if k == "eq" else val)

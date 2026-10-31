@@ -372,10 +372,13 @@ class Controller:
         self._seen.clear()
         self._armed.clear()
         self._sent.clear()
+        self._ctl_x.clear()
         log.info("MIDI mapping for %s: back to the built-in map", self.device)
         return True
 
     def set_bindings(self, bindings: list[Binding], learned: bool = True):
+        self._ctl_x.clear()
+        self._armed.clear()
         self.bindings = bindings
         self.learned = learned
         self._index()
@@ -648,6 +651,8 @@ class Controller:
         (a nudge the sync lock then respects), and searches a stopped one."""
         e = self.eng
         d = e.decks[deck]
+        if self._touch.get(deck) and d.playing and not self.scratch_enabled and d.scratching:
+            e.jog_release(deck)                   # PLAY pressed with a hand on the jog: the music goes on
         if self._touch.get(deck) and (self.scratch_enabled or not d.playing):
             # platter held: the record follows your hand (scratch); a stopped
             # deck scrubs this way whatever the scratch mode
@@ -663,8 +668,13 @@ class Controller:
     def tick(self):
         """Called ~60x/s from the UI: stop scratch motion when the hand stops."""
         now = time.perf_counter()
-        for deck, held in self._touch.items():
-            if held and now - self._jog_last.get(deck, 0) > 0.03 and self.eng.decks[deck].scratching:
+        for deck, held in list(self._touch.items()):      # the MIDI thread may add a deck meanwhile
+            d = self.eng.decks[deck]
+            if not (held and d.scratching):
+                continue
+            if d.playing and not self.scratch_enabled:
+                self.eng.jog_release(deck)               # started under the hand: never hold a playing deck
+            elif now - self._jog_last.get(deck, 0) > 0.03:
                 self.eng.scratch(deck, 0.0, True)
 
     # ---- LEDs -------------------------------------------------------------------------
