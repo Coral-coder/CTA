@@ -858,7 +858,17 @@ class EngineClient:
         raise AttributeError(name)
 
     def set(self, deck: str, **kw):
-        """Set plain deck attributes (volume, eq, tempo, keylock, sync, ...)."""
+        """Set plain deck attributes (volume, eq, tempo, keylock, sync, ...).
+        The GUI's view takes the new value at once (sliders and the
+        controller's pickup follow the hand, not the next snapshot)."""
+        v = self.decks.get(deck)
+        if v is not None:
+            with self._apply_lock:
+                for k, val in kw.items():
+                    try:
+                        setattr(v, k, np.asarray(val, np.float64) if k == "eq" else val)
+                    except Exception:  # noqa: BLE001
+                        pass
         self._send("call", "eng", "set", (deck,), kw, hold=tuple(("deck", deck, k) for k in kw))
 
     def start(self, device_label=None, block=None, master_chans=(0, 1), phones_chans=None, phones_label=None):

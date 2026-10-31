@@ -895,12 +895,18 @@ class JogPlatter(QWidget):
         c = QPointF(r.center())
         a = np.radians(self.angle - 90)
         lr = r.width() * 0.34
-        lab = self._label(lr)
-        p.save()
-        p.translate(c)
-        p.rotate(self.angle)
-        p.drawPixmap(QPointF(-lab.width() / 2, -lab.height() / 2), lab)
-        p.restore()
+        if self.scope is None:
+            lab = self._label(lr)
+            p.save()
+            p.translate(c)
+            p.rotate(self.angle)
+            p.drawPixmap(QPointF(-lab.width() / 2, -lab.height() / 2), lab)
+            p.restore()
+        else:
+            # XY scope instead of the album art (either or): a plain dark centre
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(14, 14, 18))
+            p.drawEllipse(c, lr, lr)
         # spinning marker on the vinyl, outside the label
         rad0, rad1 = lr + 3, r.width() / 2 - 9
         p.setPen(QPen(QColor(240, 240, 245), 4, Qt.SolidLine, Qt.RoundCap))

@@ -612,7 +612,7 @@ class Controller:
         armed = self._armed.get(key, False)
         sent = self._sent.get(key)
         if armed and sent is not None and abs(app - sent) > PICKUP_TOL:
-            armed = False                       # the app moved it meanwhile: meet it again
+            armed = False                         # moved by something else (mouse, auto-mix): pick it up again
         if not armed:
             met = abs(x - app) <= PICKUP_TOL or (prev is not None and (prev - app) * (x - app) <= 0.0)
             if not met:
