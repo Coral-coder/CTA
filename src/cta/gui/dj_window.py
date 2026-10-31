@@ -80,7 +80,8 @@ class Knob(QDial):
         self.setValue(default)
         self.setNotchesVisible(True)
         self.setFixedSize(size, size)
-        self.setToolTip(tip + ("\n" if tip else "") + "Drag up / down (Shift: fine) · double-click to reset")
+        self.setToolTip(tip + ("\n" if tip else "")
+                        + "Drag up / down (Shift: fine) · double-click or right-click to reset")
 
     # drag like a hardware knob: up = more, down = less, from where it is now
     # (a click never jumps it to the mouse); Shift = fine
@@ -91,6 +92,11 @@ class Knob(QDial):
             self._drag = (ev.position().y(), float(self.value()))
             self._fine = bool(ev.modifiers() & Qt.ShiftModifier)
             self.setSliderDown(True)
+            ev.accept()
+            return
+        if ev.button() == Qt.RightButton:          # right-click: back to the default (like double-click)
+            self._drag = None
+            self.setValue(self.default)
             ev.accept()
             return
         super().mousePressEvent(ev)
@@ -141,11 +147,16 @@ class ResetSlider(QSlider):
         super().__init__(orientation)
         self.default = default
         if tip:
-            self.setToolTip(tip + "\nDrag from where it is (Shift: fine) · double-click to reset")
+            self.setToolTip(tip + "\nDrag from where it is (Shift: fine) · double-click or right-click to reset")
 
     # drag from where it is - clicking the track never jumps the handle to the
     # mouse (a fader you grab mid-mix must not leap); Shift = fine
     def mousePressEvent(self, ev):
+        if ev.button() == Qt.RightButton:          # right-click: back to the default (like double-click)
+            self._drag = None
+            self.setValue(self.default)
+            ev.accept()
+            return
         if ev.button() == Qt.LeftButton:
             self._drag = (self._along(ev), float(self.value()))
             self._fine = bool(ev.modifiers() & Qt.ShiftModifier)
@@ -3430,6 +3441,7 @@ class DJPanel(QWidget):
         self.automix.rehearsal_fill = self.settings.value("ts_fill", "true") == "true"
         self.controller: Controller | None = None
         self.session = time.strftime("%Y-%m-%d ") + uuid.uuid4().hex[:6]
+        self._set_started: float | None = None         # the set's playlist is named after this moment
         self._logged: dict[str, tuple[str, float]] = {}
         self._played: set[int] = set()
         self.set_seed: int | None = None     # the song the set started from: auto-picks stay in its genre
@@ -4524,6 +4536,7 @@ class DJPanel(QWidget):
                 self.automix.stop()
         am = self.automix
         n = 0
+        self._set_started = None                   # the next track on air opens a new set playlist
         for name, d in self.engine.decks.items():
             if not d.loaded or (d.playing and not all_decks):
                 continue
@@ -4620,6 +4633,9 @@ class DJPanel(QWidget):
                 try:
                     self.main.db.add_history(time.time(), d.info.path, n, self.session)
                     self.main.track_played(d.info.lib_index)
+                    if self._set_started is None:
+                        self._set_started = time.time() - 30.0        # when this set's first track went on
+                    self.main.playlists.log_played(int(d.info.lib_index), self._set_started)
                 except Exception:  # noqa: BLE001
                     log.exception("history failed")
                 self._logged[n] = (d.info.path, -1.0)

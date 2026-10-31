@@ -6,6 +6,7 @@ to the next. Double-click a suggestion, or right-click it, to keep it.
 from __future__ import annotations
 
 import os
+import time
 
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtGui import QColor, QFont
@@ -230,6 +231,28 @@ class PlaylistPanel(QWidget):
         if pl is None:
             return []
         return [i for i in (self._index_of(p) for p in pl["paths"]) if i >= 0]
+
+    # ---- the set as it happens ------------------------------------------------------------
+    def log_played(self, idx: int, started: float):
+        """Every track that went on air lands in a playlist named after the
+        moment the set started ("Set 2026-10-31 21:04"), made on its first
+        track; a track is added once per set."""
+        lib = self.lib
+        if lib is None or not (0 <= idx < lib.n):
+            return
+        name = time.strftime("Set %Y-%m-%d %H:%M", time.localtime(started))
+        k = next((i for i, pl in enumerate(self.lists) if pl["name"] == name), -1)
+        if k < 0:
+            self.lists.append({"name": name, "paths": []})
+            k = len(self.lists) - 1
+            self._fill_combo(self.combo.currentIndex() if self.combo.currentIndex() >= 0 else k)
+        path = lib.paths[idx]
+        if path in self.lists[k]["paths"]:
+            return
+        self.lists[k]["paths"].append(path)
+        self._save()
+        if k == self.combo.currentIndex():
+            self.refresh()
 
     # ---- editing ---------------------------------------------------------------------
     def new_list(self, _=False, name: str | None = None) -> int:

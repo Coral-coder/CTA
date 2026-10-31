@@ -489,8 +489,21 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
     assert d.playing and not d.cue_preview
     eng.set_playing("A", False)
 
-    # playlists: two songs get a dimmed bridge between them; accepting it adds it
+    # every set becomes a playlist named after when it started; a track is in it once
     pl = w.playlists
+    t0 = 1_800_000_000.0
+    pl.log_played(0, t0)
+    pl.log_played(1, t0)
+    pl.log_played(0, t0)
+    import time as _time
+
+    name = _time.strftime("Set %Y-%m-%d %H:%M", _time.localtime(t0))
+    assert [p["name"] for p in pl.lists].count(name) == 1
+    assert pl.items(next(p for p in pl.lists if p["name"] == name)) == [0, 1]
+    pl.lists = [p for p in pl.lists if p["name"] != name]          # out of the way of the checks below
+    pl._save()
+    pl._fill_combo()
+    # playlists: two songs get a dimmed bridge between them; accepting it adds it
     k = pl.new_list(name="Friday")
     pl.add_tracks([0, 2], playlist=k)
     assert pl.items() == [0, 2]
@@ -680,6 +693,9 @@ def test_knobs_turn_with_vertical_drag_and_never_jump():
     ev(QEvent.MouseButtonRelease, 2, 6)
     ev(QEvent.MouseMove, 2, -500)                 # not held: nothing
     assert k.value() == 45
+    p = QPointF(2, 6)
+    app.sendEvent(k, QMouseEvent(QEvent.MouseButtonPress, p, p, Qt.RightButton, Qt.RightButton, Qt.NoModifier))
+    assert k.value() == 50                        # right-click: back to the default
 
 
 def test_faders_and_crossfader_drag_from_where_they_are():
@@ -706,6 +722,9 @@ def test_faders_and_crossfader_drag_from_where_they_are():
     assert fader.value() == 500
     drag(fader, [(10, 100), (10, 60), (10, 60)])   # 40 px up: +200
     assert fader.value() == 700
+    p = QPointF(10, 60)
+    app.sendEvent(fader, QMouseEvent(QEvent.MouseButtonPress, p, p, Qt.RightButton, Qt.RightButton, Qt.NoModifier))
+    assert fader.value() == 1000                   # right-click: back to the default
     xf = ResetSlider(Qt.Horizontal, 0)
     xf.setRange(-100, 100)
     xf.resize(216, 20)

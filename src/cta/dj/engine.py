@@ -133,6 +133,7 @@ class Deck:
     grid: BeatGrid | None = None
     info: TrackInfo = field(default_factory=TrackInfo)
     peaks: np.ndarray | None = None          # waveform overview for the UI
+    cue_by_dj: bool = False                  # the DJ set the cue (else LOOP IN moves it)
     play_pos: float = 0.0                    # source frame being heard now
     feed_pos: float = 0.0                    # source frame fed to the stretcher
     playing: bool = False
@@ -375,6 +376,7 @@ class Engine:
             d.cue_point = max(cue, 0.0) * SR
         else:
             d.cue_point = max(grid.first_beat, 0.0) * SR if grid else 0.0
+        d.cue_by_dj = False                  # the automatic cue: LOOP IN moves it until the DJ sets one
         eng._seek(d, d.cue_point)
         target_lufs = -10.0
         d.gain = float(np.clip(10 ** ((target_lufs - info.loudness) / 20), 0.25, 4.0))
@@ -434,6 +436,7 @@ class Engine:
         def f(e):
             d = e.decks[deck]
             d.cue_point = max(0.0, seconds) * SR
+            d.cue_by_dj = True
             if not d.playing:
                 e._seek(d, d.cue_point)
         self.cmd(f)
@@ -495,6 +498,7 @@ class Engine:
                 # only with quantise on)
                 p = e._quant(d, e.heard_pos(d))
                 d.cue_point = max(0.0, p)
+                d.cue_by_dj = True
                 e._seek(d, d.cue_point)
         self.cmd(f)
 
@@ -677,6 +681,7 @@ class Engine:
                 e._jump(d, d.hotcues[i])
                 if not d.playing:
                     d.cue_point = d.hotcues[i]
+                    d.cue_by_dj = True
         self.cmd(f)
 
     def hotcue_delete(self, deck: str, i: int):
@@ -689,6 +694,8 @@ class Engine:
             d._loop_in = p
             if d.loop is not None:
                 d.loop = None
+            if not getattr(d, "cue_by_dj", False):
+                d.cue_point = p                 # no cue of the DJ's own yet: LOOP IN is the cue
         self.cmd(f)
 
     def loop_out(self, deck: str, beats: float | None = None):

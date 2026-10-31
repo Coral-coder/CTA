@@ -87,6 +87,8 @@ Weights and limits are yours to set. Double-click a suggestion to *follow* it an
 
 **Details page.** Double-click any track: the numbers, how it feels (energy, tone, busyness, family), how it would sit after what is playing (energy step, tempo change, key, style fit), a map of its sections with the energy per bar and the first drop, and the full waveform with its mix markers. Load it to a deck or add it to the setlist from there. (Double-click never opens an external player; that stays in the right-click menu.)
 
+**Every set becomes a playlist.** The moment the first track goes on air, a playlist named after that moment (*Set 2026-10-31 21:04*) appears under Playlists and every track that plays 30 s or more is added to it in order - your set, kept. Unloading the decks for the next set starts a new one.
+
 **Never the same song twice.** Auto-mix and auto-load skip anything played this session, queued, loading or on a deck - including other files of the same song. The **Played** column shows `● now` (this session) or `✓ 3×` (before); played tracks are dimmed.
 
 **Export & drag.** Setlists and history export to **M3U8** (Serato, Traktor, VirtualDJ, Engine DJ, rekordbox), **rekordbox XML**, **Traktor NML** (with BPM and key) and **CSV**. Tracks dragged out of any list carry their audio files, so they drop straight onto a Traktor deck, a rekordbox playlist, Finder or Explorer.
@@ -105,11 +107,11 @@ Weights and limits are yours to set. Double-click a suggestion to *follow* it an
 ### Decks
 
 - **Transport:** PLAY, **CUE** (reacts on press; hold to preview, drag off or press PLAY while holding and it keeps playing), CUP, FLX (flux: after a loop or jump the track carries on where it would have been).
-- **Loops:** auto loops 1–32 beats, IN / OUT (OUT with no IN loops the chosen length at once), ½ / ×2, beat jump.
+- **Loops:** auto loops 1–32 beats, IN / OUT (OUT with no IN loops the chosen length at once), ½ / ×2, beat jump. **LOOP IN is the cue point** until you set a cue of your own on that track (the first-beat cue is only a default).
 - **8 hot cues** per track, saved. **Key shift** ±12 semitones and **KEY SYNC** (the smallest transposition that makes the deck harmonic with the master). Beat-grid nudge and *set beat 1 here*, saved per track.
 - **Waveforms** coloured by frequency - **Rainbow** (default), **Spectrum**, **Three-band**, **Fire**, **Ice**, **Classic**, with a saturation slider - plus a beat grid, a scrolling zoom (**− / +**, **⛓ sync zoom**) and the whole-track overview (drag it to scrub).
 - **Scratching:** drag the waveform or grab the spinning platter (the album art turns on the record); let go and it carries on. **Options → Scratch** turns it off. **XY scope on the platters** draws each deck's stereo image.
-- **Every control drags from where it is** - knobs, faders, crossfader, tempo fader. A click never jumps a control to the mouse; Shift = fine; double-click resets (crossfader to centre).
+- **Every control drags from where it is** - knobs, faders, crossfader, tempo fader. A click never jumps a control to the mouse; Shift = fine; double-click **or right-click** resets (crossfader to centre).
 - **What you see is what you hear.** The playhead, cue point, hot cues and loop points line up with the sound: positions are drawn as late as the output plays, and CUE / hot cues / loop IN-OUT / beat 1 pressed while playing land on what you *heard* at that moment.
 
 ### Mix markers

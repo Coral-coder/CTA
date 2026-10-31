@@ -714,3 +714,21 @@ def test_cue_and_play_on_a_synced_deck_never_bends_the_deck_already_playing():
     eng.set("B", tempo=0.5, tempo_range=0.08)
     _run(eng, 3)
     assert abs(eng.decks["A"].bpm - eng.decks["B"].bpm) < 0.05 and eng.decks["B"].bpm > 128.5
+
+
+def test_loop_in_is_the_cue_until_the_dj_sets_one():
+    """Fresh load: LOOP IN moves the cue point there (the automatic first-beat
+    cue is only a default). A cue the DJ set stays put."""
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    d = eng.decks["A"]
+    eng.quantize = False
+    eng.seek("A", 5.0)
+    eng.loop_in("A")
+    _run(eng, 0.05)
+    assert abs(d.cue_point / SR - 5.0) < 0.01
+    eng.set_cue("A", 2.0)                            # the DJ's own cue
+    eng.seek("A", 9.0)
+    eng.loop_in("A")
+    _run(eng, 0.05)
+    assert abs(d.cue_point / SR - 2.0) < 0.01       # LOOP IN no longer touches it
