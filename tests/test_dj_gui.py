@@ -444,6 +444,19 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
     # double-clicking the deck title shows what mixes next from that track
     dj.decks["A"].title.doubleClicked.emit()
     assert w.current == 0 and w.tabs.currentIndex() == 0
+    # Serato-style layout: every deck's waveform rides in the stack across the top, playheads in line
+    dj.set_wave_layout("stacked")
+    assert dj.stack_w.isVisibleTo(dj) and dj.decks["A"].zoom.parent() is dj.stack_rows["A"]
+    assert dj.stack_rows["A"].isVisibleTo(dj) and not dj.stack_rows["C"].isVisibleTo(dj)
+    dj.show_cd.setChecked(True)
+    assert dj.stack_rows["C"].isVisibleTo(dj) and dj.automix.decks == ("A", "B", "C", "D")
+    dj.show_cd.setChecked(False)
+    assert dj.automix.decks == ("A", "B")
+    app.processEvents()
+    dj.stack_w.grab()
+    dj.set_wave_layout("decks")
+    assert not dj.stack_w.isVisibleTo(dj) and dj.decks["A"].zoom.parent() is dj.decks["A"].w_body
+    assert dj.settings.value("dj_wave_layout") == "decks"
     # Traktor keys: W plays deck A, W again pauses, Q holds the cue preview
     key(Qt.Key_W)
     assert d.playing

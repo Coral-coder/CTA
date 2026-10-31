@@ -1680,6 +1680,7 @@ class DeckPanel(QFrame):
         body.addWidget(self.platter, 0, Qt.AlignVCenter)
         body.addWidget(self.zoom, 1)
         body.addWidget(self.w_tempo)
+        self.body_lay = body                       # the zoom moves out of here in the stacked layout
         self.w_body = wrap(body, 4)
         outer.addWidget(self.w_body, 1)
 
@@ -3539,9 +3540,22 @@ class DJPanel(QWidget):
         menu.addAction(act)
         set_wave_theme(self.settings.value("dj_wave_theme2", "Rainbow"))
         set_wave_saturation(float(self.settings.value("dj_wave_sat", 1.0)))
-        wmenu = menu.addMenu("Waveform colours")
         from PySide6.QtGui import QActionGroup
 
+        lmenu = menu.addMenu("Waveform layout")
+        lgrp = QActionGroup(lmenu)
+        self.layout_acts = {}
+        for key, label, tip in (("decks", "In each deck (classic)", "The zoomed waveform sits in its deck"),
+                                ("stacked", "Stacked across the top (Serato style)",
+                                 "All decks' waveforms ride in parallel above the decks, playheads in one line - "
+                                 "beats line up visually; the Three-band colours look most like Serato")):
+            a = lmenu.addAction(label, lambda key=key: self.set_wave_layout(key))
+            a.setCheckable(True)
+            a.setToolTip(tip)
+            lgrp.addAction(a)
+            self.layout_acts[key] = a
+        lmenu.setToolTipsVisible(True)
+        wmenu = menu.addMenu("Waveform colours")
         grp = QActionGroup(wmenu)
         for name in WAVE_THEMES:
             a = wmenu.addAction(name, lambda name=name: self.set_wave_theme(name))
@@ -3634,8 +3648,34 @@ class DJPanel(QWidget):
         grid.setContentsMargins(0, 0, 0, 0)
         decks_w = QWidget()
         decks_w.setLayout(grid)
+        # Serato-style option: every deck's waveform in one stack across the top, playheads in line
+        self.stack_w = QFrame()
+        self.stack_w.setObjectName("stack")
+        self.stack_w.setStyleSheet("#stack { background: #0e0f12; border: 1px solid #0b0b0b; border-radius: 3px; }")
+        sl = QVBoxLayout(self.stack_w)
+        sl.setContentsMargins(2, 2, 2, 2)
+        sl.setSpacing(1)
+        self.stack_rows = {}
+        for n in "ABCD":
+            row = QWidget()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(2)
+            tag = QLabel(n)
+            tag.setFixedWidth(18)
+            tag.setAlignment(Qt.AlignCenter)
+            c = DECK_COLORS[n]
+            tag.setStyleSheet(f"background: {c.name()}; color: #111; font-weight: 800; border-radius: 2px;")
+            rl.addWidget(tag)
+            self.stack_rows[n] = row
+            sl.addWidget(row)
+        self.stack_w.hide()
+        outer.addWidget(self.stack_w)
         outer.addWidget(decks_w, 1)
         outer.addWidget(self.mixer.xf_bar)
+        self.wave_layout = "decks"
+        self.set_wave_layout(str(self.settings.value("dj_wave_layout", "decks")), save=False)
+        self.automix.set_decks("ABCD" if self.show_cd.isChecked() else "AB")
         self.global_w.setVisible(self.tools_chk.isChecked())
         self.tools_chk.toggled.connect(self._tools_toggled)
         self._toggle_cd(False)
@@ -3835,6 +3875,9 @@ class DJPanel(QWidget):
     def _toggle_cd(self, on):
         self.decks["C"].setVisible(on)
         self.decks["D"].setVisible(on)
+        self.automix.set_decks("ABCD" if on else "AB")        # four decks: auto-mix goes round the table
+        for n in "CD":
+            self.stack_rows[n].setVisible(on and self.wave_layout == "stacked")
 
     # ---- audio ---------------------------------------------------------------
     def start_audio(self, quiet: bool = False):
@@ -4679,6 +4722,38 @@ class DJPanel(QWidget):
         if on:                                    # line the others up with deck A
             for p in self.decks.values():
                 p.zoom.set_span(self.decks["A"].zoom.span)
+
+    def set_wave_layout(self, mode: str, save: bool = True):
+        """"decks": the zoomed waveform in each deck; "stacked": all of them in
+        one panel across the top, Serato style (the deck keeps its overview,
+        platter and tempo fader)."""
+        mode = "stacked" if mode == "stacked" else "decks"
+        self.wave_layout = mode
+        if save:
+            self.settings.setValue("dj_wave_layout", mode)
+        for n, p in self.decks.items():
+            row = self.stack_rows[n]
+            lay = row.layout()
+            if mode == "stacked":
+                if p.zoom.parent() is not row:
+                    p.body_lay.removeWidget(p.zoom)
+                    p.body_lay.insertStretch(1, 1)
+                    lay.addWidget(p.zoom, 1)
+                    p.zoom.setMinimumHeight(64)
+                row.setVisible(n in "AB" or self.show_cd.isChecked())
+            else:
+                if p.zoom.parent() is row:
+                    lay.removeWidget(p.zoom)
+                    item = p.body_lay.takeAt(1)          # the stretch that filled the gap
+                    del item
+                    p.body_lay.insertWidget(1, p.zoom, 1)
+                    p.zoom.setMinimumHeight(48)
+                row.setVisible(False)
+            p.zoom.show()
+            p.apply_view(force=True)
+        self.stack_w.setVisible(mode == "stacked")
+        for key, a in getattr(self, "layout_acts", {}).items():
+            a.setChecked(key == mode)
 
     def set_wave_theme(self, name: str):
         set_wave_theme(name)

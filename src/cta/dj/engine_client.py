@@ -261,6 +261,10 @@ class AutoMixView:
         self.queue = list(items)
         self._call("set_queue", list(items))
 
+    def set_decks(self, decks):
+        self.decks = tuple(decks)
+        self._call("set_decks", "".join(decks))
+
     def queue_clear(self):
         self.queue = []
         self._call("queue_clear")

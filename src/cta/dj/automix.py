@@ -177,7 +177,8 @@ class AutoMix:
         self.eng = engine
         self.load_fn = load_fn
         self.s = settings or AutoMixSettings()
-        self.decks = decks
+        self.decks = tuple(decks)
+        self._last_deck: str | None = None   # the deck the next track went to last: rotate from there
         self.queue: deque = deque()
         self.active = False
         self.meta: dict[str, _Meta] = {}
@@ -206,6 +207,15 @@ class AutoMix:
     def set_queue(self, items):
         with self._lock:
             self.queue = deque(items)
+
+    def set_decks(self, decks):
+        """Which decks auto-mix may use ("AB" or "ABCD"); with four, the next
+        track always goes to the next free deck round the table, so a track
+        that just finished is never reloaded over at once and the DJ can keep
+        working on it."""
+        self.decks = tuple(decks)
+        if self._last_deck not in self.decks:
+            self._last_deck = None
 
     def start(self, from_queue: bool = False):
         """from_queue: when nothing is playing, start with the first queued
@@ -419,8 +429,12 @@ class AutoMix:
 
     def _free_deck(self) -> str | None:
         """A deck that is neither playing, loading, nor holding the prepared
-        next track."""
-        for d in self.decks:
+        next track - the next one round the table after the last used."""
+        order = list(self.decks)
+        if self._last_deck in order:
+            k = order.index(self._last_deck) + 1
+            order = order[k:] + order[:k]
+        for d in order:
             dk = self.eng.decks[d]
             if dk.playing or d in self._loading or d in self.meta:
                 continue
@@ -446,6 +460,7 @@ class AutoMix:
         self.used_items.append(item)
         self._loading.add(deck)
         self._loading_item[deck] = item
+        self._last_deck = deck
         gen = self._load_gen.get(deck, 0)
 
         def job():

@@ -170,7 +170,7 @@ def test_positions_run_on_between_snapshots():
         ts = [d.time for _ in range(200) if not time.sleep(0.002)]
         steps = np.diff(ts)
         assert (steps >= -1e-6).all(), steps.min()           # never a step back (a block's quantisation)
-        assert np.median(steps) < 0.004 and steps.max() < 0.06  # no 33 ms stalls (a busy box may hiccup once)
+        assert (steps > 0).mean() > 0.8 and steps.max() < 0.06   # moves on nearly every read; no 33 ms stalls
         eng.loop_beats("A", 4)
         assert _wait(lambda: d.loop is not None)
         time.sleep(1.0)

@@ -651,3 +651,33 @@ def test_cue_and_loops_land_where_the_dj_hears_them():
         eng.cue_release("A")
     finally:
         eng._stream = None
+
+
+def test_automix_uses_four_decks_round_the_table():
+    """With decks C/D enabled auto-mix rotates A -> B -> C -> D -> A: the next
+    track never lands on the deck that just finished."""
+    from types import SimpleNamespace
+
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    tracks = {}
+    for i in range(5):
+        a = _stereo(124.0, 24)
+        tracks[f"t{i}"] = SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, 124.0), peaks=None,
+                                          info=TrackInfo(title=f"t{i}", bpm=124.0, loudness=-10, lib_index=i))
+    eng = Engine()
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4), synchronous_loads=True)
+    am.set_decks("ABCD")
+    am.set_queue([f"t{i}" for i in range(5)])
+    am.start()
+    landed = []
+    for _ in range(int(150 * SR / 1024)):
+        eng.render(1024)
+        for n in "ABCD":
+            t = eng.decks[n].info.title
+            if eng.decks[n].loaded and (not landed or landed[-1] != (n, t)) and (n, t) not in landed:
+                landed.append((n, t))
+        if len(landed) >= 5:
+            break
+    assert [n for n, _t in landed[:5]] == ["A", "B", "C", "D", "A"], landed
+    assert [t for _n, t in landed[:5]] == ["t0", "t1", "t2", "t3", "t4"]

@@ -83,6 +83,16 @@ the bar between them to give the decks more or less room.
   skip, pause, blend length), the MAIN level and limiter, FX 2 and the
   recorder. Hide it under **Options**. The auto-mix queue is a tab next to
   the library.
+- **Waveform layout (Options):** *In each deck* (classic), or **Stacked
+  across the top (Serato style)** - every deck's zoomed waveform rides in
+  parallel in one panel above the decks with the playheads in one line, so
+  the beats of A, B (and C, D) line up visually; the decks keep their
+  overview strip, platter and tempo fader. The *Three-band* colours look
+  most like Serato.
+- **Four decks in auto-mix:** with **Decks C/D** on, auto-mix uses all four
+  round the table (A → B → C → D → A) - the next track never lands on the
+  deck that just finished, so you can keep working a track while the mix
+  carries on.
 - **Decks:** header (title, key, BPM, time), waveform with the tempo
   fader, SYNC / MASTER / KEY with beat jump, overview, then one transport
   row (play, CUE, CUP, FLX, loop sizes 1–32, IN / OUT / LOOP). The **⌃**
