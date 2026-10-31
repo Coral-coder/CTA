@@ -55,8 +55,9 @@ def test_dj_window(tmp_data_dir, monkeypatch):
     assert eng.decks["A"].loaded and eng.decks["B"].loaded
     dj._tick()
     app.processEvents()
-    # the track loaded last is the one the library shows; Next Track lists what mixes from it
-    assert w.current == eng.decks["B"].info.lib_index
+    # the track loaded last (either deck: the loads run in threads) is the one the
+    # library shows; Next Track lists what mixes from it
+    assert w.current in {eng.decks["A"].info.lib_index, eng.decks["B"].info.lib_index}
     # the controller's browse knob and LOAD work on the right panel's open tab
     w.tabs.setCurrentIndex(0)                                   # Next Track
     assert w.next_model.rowCount() >= 1
