@@ -813,3 +813,36 @@ def test_seek_by_moves_from_the_engines_own_position():
     eng.seek_by("A", -100.0)
     eng.render(64)
     assert eng.decks["A"].play_pos == 0.0
+
+
+def test_automix_brings_a_parked_crossfader_to_the_centre():
+    """Crossfader parked on the outgoing deck's side: the blend still reaches the
+    incoming track (no mixing out into silence)."""
+    from types import SimpleNamespace
+
+    from cta.dj.automix import AutoMix, AutoMixSettings
+
+    tracks = {}
+    for name, bpm in (("t1", 124.0), ("t2", 124.0)):
+        a = _stereo(bpm, 50)
+        tracks[name] = SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, bpm), peaks=None,
+                                       info=TrackInfo(title=name, bpm=bpm, loudness=-10))
+    eng = Engine()
+    am = AutoMix(eng, lambda item: tracks[item], AutoMixSettings(mix_bars=4, phrase_bars=4),
+                 synchronous_loads=True)
+    am.set_queue(["t1", "t2"])
+    am.start()
+    eng.render(1024)
+    first = next(d.name for d in eng.decks.values() if d.playing)
+    eng.crossfader = -1.0 if eng.decks[first].xf_side < 0 else 1.0     # hard on the first deck's side
+    block = 1024
+    for _ in range(int(80 * SR / block)):
+        eng.render(block)
+        if am.history == ["t1", "t2"] and am.tr is None:
+            break
+    assert am.history == ["t1", "t2"]
+    second = next(d for d in eng.decks.values() if d.playing)
+    assert second.name != first
+    assert abs(eng.crossfader) < 1e-3 and eng._xf_gain(second.xf_side) == 1.0
+    m, _ = eng.render(block)
+    assert np.sqrt(np.mean(m ** 2)) > 1e-3                              # the incoming is heard

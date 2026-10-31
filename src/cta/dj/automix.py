@@ -91,6 +91,7 @@ class _Transition:
     echo_on: bool = False
     rehearsal: object = None         # a Rehearsal: replay the DJ's own pre-mixed moves
     in_sync_was: bool | None = None  # the DJ's SYNC buttons before the blend: given back after it
+    xf_from: float | None = None     # where the crossfader was when the blend began
     out_sync_was: bool | None = None
 
     @property
@@ -737,6 +738,13 @@ class AutoMix:
         if tr.in_loop_on and x >= tr.in_release - 1e-6:
             din.loop = None                    # let the incoming run on into its drop
             tr.in_loop_on = False
+        if tr.style != "rehearsed" and (din.xf_side or dout.xf_side) and abs(e.crossfader) > 1e-4:
+            # the crossfader would hide one of the two decks (the incoming stays silent
+            # behind it): bring it to the centre over the first 4 beats - the channel
+            # faders do the mix, both decks are heard
+            if tr.xf_from is None:
+                tr.xf_from = float(e.crossfader)
+            e.crossfader = float(tr.xf_from * (1.0 - np.clip(x / 4.0, 0.0, 1.0)))
         if tr.style == "rehearsed":
             from .rehearsal import apply
 
