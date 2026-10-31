@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sign a PyInstaller .app for distribution outside the App Store (Developer ID +
 # hardened runtime), inside out: every Mach-O file first, then the bundle.
-#   sign_mac.sh <CTA.app> <signing identity> [entitlements.plist]
+#   sign_mac.sh <Tempest.app> <signing identity> [entitlements.plist]
 set -euo pipefail
 APP="$1"; ID="$2"; ENT="${3:-$(dirname "$0")/entitlements.plist}"
 opts=(--force --options runtime --timestamp --sign "$ID")

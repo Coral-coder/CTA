@@ -84,7 +84,7 @@ class Bridge(QObject):
             self.stop_share()
 
     def pairing_code(self) -> str:
-        """The code to paste into the CTA you take along (host editable there)."""
+        """The code to paste into the Tempest you take along (host editable there)."""
         from ..dj.stream import lan_addresses
 
         host = str(self.settings.value("share_host", "") or "") or (lan_addresses() or ["your-public-address"])[0]
@@ -205,7 +205,7 @@ class BridgeSettings(QWidget):
         row = QHBoxLayout()
         self.share = QCheckBox("Share this library")
         self.share.setChecked(settings.value("share_enabled", "false") == "true")
-        self.share.setToolTip("Serve the catalogue and the files to a CTA holding the pairing code (keeps "
+        self.share.setToolTip("Serve the catalogue and the files to a Tempest holding the pairing code (keeps "
                               "running in the tray with the mix server)")
         row.addWidget(self.share)
         row.addWidget(QLabel("port"))
@@ -223,7 +223,7 @@ class BridgeSettings(QWidget):
         row = QHBoxLayout()
         self.code = QLineEdit()
         self.code.setReadOnly(True)
-        self.code.setToolTip("Paste this into Settings → Library bridge on the CTA you take along")
+        self.code.setToolTip("Paste this into Settings → Library bridge on the Tempest you take along")
         row.addWidget(self.code, 1)
         b = QPushButton("Copy")
         b.clicked.connect(lambda: QApplication.clipboard().setText(self.code.text()))
@@ -246,7 +246,7 @@ class BridgeSettings(QWidget):
                              "Download now"))
         row = QHBoxLayout()
         self.paste = QLineEdit()
-        self.paste.setPlaceholderText("Paste a pairing code (CTA-SHARE|host:port|key|fingerprint)")
+        self.paste.setPlaceholderText("Paste a pairing code (TEMPEST-SHARE|host:port|key|fingerprint)")
         row.addWidget(self.paste, 1)
         b = QPushButton("Add")
         b.clicked.connect(self._add)

@@ -44,7 +44,7 @@ ICONS = {"/apple-touch-icon.png": "app-icon-180.png", "/apple-touch-icon-precomp
          "/icon-512.png": "app-icon-512.png", "/favicon.ico": "app-icon-180.png"}
 
 MANIFEST = json.dumps({
-    "name": "CTA live remote", "short_name": "CTA", "display": "standalone", "orientation": "portrait",
+    "name": "Tempest live remote", "short_name": "Tempest", "display": "standalone", "orientation": "portrait",
     "background_color": "#121316", "theme_color": "#121316",
     "icons": [{"src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
               {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}],

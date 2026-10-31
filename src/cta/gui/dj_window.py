@@ -2487,7 +2487,7 @@ class AudioSettings(QDialog):
         self.dev = QComboBox()
         self.dev.setMinimumWidth(320)
         row.addWidget(self.dev, 1)
-        b_rescan = _btn("↻ Rescan", tip="Look for devices plugged in or paired since CTA started "
+        b_rescan = _btn("↻ Rescan", tip="Look for devices plugged in or paired since Tempest started "
                         "(the music keeps playing)")
         b_rescan.clicked.connect(lambda: self.rescan(force=True))
         row.addWidget(b_rescan)
@@ -2510,7 +2510,7 @@ class AudioSettings(QDialog):
             self.safety.addItem(label, key)
         self.safety.setCurrentIndex(max(self.safety.findData(settings.value("dj_safety", "auto")), 0))
         self.safety.setToolTip("How much audio the sound card holds in reserve. More = the music never "
-                               "glitches when the computer is busy or CTA is in the background; less = "
+                               "glitches when the computer is busy or Tempest is in the background; less = "
                                "buttons answer a few milliseconds sooner.")
         form.addRow("Output safety", self.safety)
         self.own_proc = QCheckBox("Audio engine in its own process (recommended)")
@@ -2590,7 +2590,7 @@ class AudioSettings(QDialog):
         self._fill_clock()
         self.clock.currentIndexChanged.connect(lambda _i: self._clock_live())
         self.rec_dir = QPushButton(settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music",
-                                                                          "CTA Recordings")))
+                                                                          "Tempest Recordings")))
         self.rec_dir.clicked.connect(self._pick_dir)
         form.addRow("Recordings folder", self.rec_dir)
         self.port = QSpinBox()
@@ -2598,7 +2598,7 @@ class AudioSettings(QDialog):
         self.port.setValue(int(settings.value("stream_port", 8000)))
         form.addRow("Phone stream port", self.port)
         note = QLabel("<small>Bluetooth plays audio 150-300 ms late. Set its delay (or <b>Measure</b> it by tapping "
-                      "along) and CTA keeps master and headphones in time and draws the waveforms that late, "
+                      "along) and Tempest keeps master and headphones in time and draws the waveforms that late, "
                       "so what you see is what you hear.<br>DDJ-T1: choose its sound card, master 1-2, headphones "
                       "3-4. Use a bigger buffer if you hear crackles.</small>")
         note.setWordWrap(True)
@@ -2724,7 +2724,7 @@ class AudioSettings(QDialog):
         auto.setToolTip("Use what the driver reports")
         info = QLabel("")
         info.setStyleSheet("color: #9a9ba3;")
-        b = _btn("Measure…", tip="Tap along with clicks on this output: CTA works out how late it plays")
+        b = _btn("Measure…", tip="Tap along with clicks on this output: Tempest works out how late it plays")
         b.clicked.connect(lambda: self._measure(which))
         auto.toggled.connect(lambda on: sp.setEnabled(not on))
         auto.setChecked(True)                   # _load_delays fills it in for the chosen device
@@ -2994,7 +2994,7 @@ class TapCalibration(QDialog):
 
 class LearnWizard(QDialog):
     """Controller setup, one control at a time. Move or press the control for
-    the step shown; CTA shows what it heard; press SPACE to keep it and go on
+    the step shown; Tempest shows what it heard; press SPACE to keep it and go on
     (Backspace: listen again, S or Space with nothing heard: keep what is set).
     Nothing changes until you confirm a step, so a fader that keeps sending
     while you move it can never run through the list."""
@@ -3202,10 +3202,10 @@ class LearnWizard(QDialog):
         from ..dj.midi import ddj_t1_default
 
         if "DDJ-T1" not in (self.ctl.device or "").upper():
-            QMessageBox.information(self, "Controller setup", "CTA has a built-in map for the Pioneer DDJ-T1 only; "
+            QMessageBox.information(self, "Controller setup", "Tempest has a built-in map for the Pioneer DDJ-T1 only; "
                                     "other controllers are set up with this guide.")
             return
-        if QMessageBox.question(self, "Controller setup", "Replace this controller's mapping with CTA's built-in "
+        if QMessageBox.question(self, "Controller setup", "Replace this controller's mapping with Tempest's built-in "
                                 "DDJ-T1 map (every control, from Pioneer's MIDI list)?") != QMessageBox.Yes:
             return
         bs = ddj_t1_default()
@@ -3230,7 +3230,7 @@ class LearnWizard(QDialog):
         self.ctl.set_bindings(bs, learned=True)        # used from now on, every time it connects
         msg = f"Imported the {name} mapping: {len(bs)} controls, saved for this controller."
         if unused:
-            msg += "\n\nNot used by CTA: " + ", ".join(unused)
+            msg += "\n\nNot used by Tempest: " + ", ".join(unused)
         self.heard.setText(msg.split("\n")[0])
         QMessageBox.information(self, "Import Traktor mapping", msg)
         self._show()
@@ -3275,7 +3275,7 @@ class HistoryDialog(QDialog):
         idx = [lib.paths.index(p) for _ts, p, _d, _s in self._rows() if p in lib.paths]
         if not idx:
             return
-        name = f"CTA history {time.strftime('%Y-%m-%d')}"
+        name = f"Tempest history {time.strftime('%Y-%m-%d')}"
         path, _ = QFileDialog.getSaveFileName(self, "Export history", f"{name}.m3u8",
                                               "M3U8 (*.m3u8);;Traktor NML (*.nml);;rekordbox XML (*.xml);;CSV (*.csv)")
         if path:
@@ -4103,10 +4103,10 @@ class DJPanel(QWidget):
             r.close()
             self.main.status_label.setText(f"Recording saved: {r.path}")
             return
-        folder = self.settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music", "CTA Recordings"))
+        folder = self.settings.value("rec_dir", os.path.join(os.path.expanduser("~"), "Music", "Tempest Recordings"))
         try:
             os.makedirs(folder, exist_ok=True)
-            path = os.path.join(folder, f"CTA mix {time.strftime('%Y-%m-%d %H%M%S')}.wav")
+            path = os.path.join(folder, f"Tempest mix {time.strftime('%Y-%m-%d %H%M%S')}.wav")
             eng.recorder = Recorder(path)
             self.main.status_label.setText(f"Recording to {path}")
         except Exception as e:  # noqa: BLE001
@@ -4155,11 +4155,12 @@ class DJPanel(QWidget):
             self.stream = None
             _sync_check(self.b_stream, False)
             self._error.emit(f"Could not start the phone remote on port {port}:\n{e}\n\n"
-                             "Another program (or another copy of CTA) may be using it - change the port under Audio….")
+                             "Another program (or another copy of Tempest) may be using it - change the port "
+                             "under Audio….")
             return
         _sync_check(self.b_stream, True)
         self.stream_lbl.setText(f"Phone: <a href='#' style='color:#6fb3ff'>{self.stream.urls[0]}</a>")
-        self.stream_lbl.setToolTip("Click for the QR code and PIN. Windows may ask to allow CTA through the "
+        self.stream_lbl.setToolTip("Click for the QR code and PIN. Windows may ask to allow Tempest through the "
                                    "firewall - allow it on private networks.")
         if show_info:
             self.show_remote_info()

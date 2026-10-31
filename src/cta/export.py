@@ -13,7 +13,7 @@ from .keys import camelot_str, key_name
 from .library import Library
 
 
-def write_m3u8(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
+def write_m3u8(lib: Library, seq: list[int], path: str, name: str = "Tempest setlist"):
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write("#EXTM3U\n")
         f.write(f"#PLAYLIST:{name}\n")
@@ -48,7 +48,7 @@ def write_rekordbox_xml(lib: Library, playlists: dict[str, list[int]], path: str
     tid = {i: n + 1 for n, i in enumerate(used)}
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<DJ_PLAYLISTS Version="1.0.0">',
-             '  <PRODUCT Name="CTA" Version="1.0" Company="CTA"/>',
+             '  <PRODUCT Name="Tempest" Version="1.0" Company="Tempest"/>',
              f'  <COLLECTION Entries="{len(used)}">']
     for i in used:
         t = lib.track(i)
@@ -77,7 +77,7 @@ def _nml_key(key: int) -> str:
     return str(key) if key is not None and key >= 0 else ""
 
 
-def write_traktor_nml(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
+def write_traktor_nml(lib: Library, seq: list[int], path: str, name: str = "Tempest setlist"):
     """Traktor Pro playlist (.nml): import via Traktor's browser
     (right-click Playlists > Import Playlist)."""
     entries, keys = [], []
@@ -111,7 +111,7 @@ def write_traktor_nml(lib: Library, seq: list[int], path: str, name: str = "CTA 
         f.write(xml)
 
 
-def export(lib: Library, seq: list[int], path: str, name: str = "CTA setlist"):
+def export(lib: Library, seq: list[int], path: str, name: str = "Tempest setlist"):
     ext = os.path.splitext(path)[1].lower()
     if ext in (".m3u", ".m3u8"):
         write_m3u8(lib, seq, path, name)

@@ -23,7 +23,7 @@ def _track_mime(lib_index: int) -> QMimeData:
 
 
 class _DragMixin:
-    """Rows can be dragged onto a CTA deck - and, as audio files, onto other
+    """Rows can be dragged onto a Tempest deck - and, as audio files, onto other
     apps: Traktor decks and playlists, rekordbox, Serato, Finder / Explorer."""
 
     def flags(self, index):
@@ -38,7 +38,7 @@ class _DragMixin:
             return None
         rows = sorted({ix.row() for ix in indexes})
         idx = [self._lib_index_for_row(r) for r in rows]
-        m = _track_mime(idx[0])                     # CTA decks: the first track
+        m = _track_mime(idx[0])                     # Tempest decks: the first track
         lib = getattr(self, "lib", None)
         if lib is not None:
             m.setUrls([QUrl.fromLocalFile(lib.paths[i]) for i in idx if 0 <= i < lib.n])

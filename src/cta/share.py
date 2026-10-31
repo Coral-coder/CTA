@@ -1,9 +1,9 @@
 """Library bridge: play the collection on the computer at home from anywhere.
 
-The home CTA **shares** its library: a small HTTPS server hands out the
+The home Tempest **shares** its library: a small HTTPS server hands out the
 catalogue (every track's tags, analysis - BPM, key, AI style, sound
 vectors -, beat grid, cues and mix markers) and the audio files themselves,
-to anyone holding the **pairing key**. The CTA you take along **mirrors**
+to anyone holding the **pairing key**. The Tempest you take along **mirrors**
 that catalogue into its own library - the tracks show up, can be searched,
 suggested and queued like local ones - and downloads a file the moment a
 deck or the auto-mix needs it (or ahead of time, for a whole setlist).
@@ -45,14 +45,14 @@ CHUNK = 1 << 18                # file streaming chunk
 # --------------------------------------------------------------------------
 
 def make_code(host: str, port: int, key: str, fingerprint: str | None) -> str:
-    """CTA-SHARE|host:port|key|fingerprint  (the away machine may edit the host)."""
-    return f"CTA-SHARE|{host}:{port}|{key}|{fingerprint or ''}"
+    """TEMPEST-SHARE|host:port|key|fingerprint  (the away machine may edit the host)."""
+    return f"TEMPEST-SHARE|{host}:{port}|{key}|{fingerprint or ''}"
 
 
 def parse_code(code: str) -> dict:
     parts = [p.strip() for p in code.strip().split("|")]
-    if len(parts) < 3 or parts[0] != "CTA-SHARE":
-        raise ValueError("That is not a CTA sharing code (it starts with CTA-SHARE|)")
+    if len(parts) < 3 or parts[0] not in ("TEMPEST-SHARE", "CTA-SHARE"):
+        raise ValueError("That is not a Tempest sharing code (it starts with TEMPEST-SHARE|)")
     hostport = parts[1]
     if hostport.startswith("["):                     # [ipv6]:port
         host, _, port = hostport[1:].partition("]:")
@@ -81,7 +81,7 @@ def ensure_cert(data_dir: str) -> tuple[str, str, str] | None:
             from cryptography.x509.oid import NameOID
 
             key = ec.generate_private_key(ec.SECP256R1())
-            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "CTA library share")])
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Tempest library share")])
             now = datetime.datetime.now(datetime.timezone.utc)
             cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
                     .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))

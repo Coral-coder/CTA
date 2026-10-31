@@ -19,8 +19,9 @@ def test_versions():
 RELEASE = {
     "tag_name": "v1.2.0", "body": "notes", "html_url": "https://x/rel", "draft": False, "prerelease": False,
     "assets": [
-        {"name": "CTA-1.2.0-windows-x64.zip", "browser_download_url": "https://x/w.zip", "size": 10},
-        {"name": "CTA-1.2.0-macos-arm64.zip", "browser_download_url": "https://x/m.zip", "size": 20},
+        {"name": "legacy-CTA-1.2.0-windows-x64.zip", "browser_download_url": "https://x/lw.zip", "size": 11},
+        {"name": "Tempest-1.2.0-windows-x64.zip", "browser_download_url": "https://x/w.zip", "size": 10},
+        {"name": "Tempest-1.2.0-macos-arm64.zip", "browser_download_url": "https://x/m.zip", "size": 20},
         {"name": "SHA256SUMS.txt", "browser_download_url": "https://x/sums"},
     ],
 }
@@ -30,15 +31,19 @@ def test_release_asset_selection():
     r = updater.release_from_json(RELEASE, "windows-x64")
     assert r.version == "1.2.0" and r.asset_url == "https://x/w.zip" and r.installable
     r = updater.release_from_json(RELEASE, "macos-arm64")
-    assert r.asset_name == "CTA-1.2.0-macos-arm64.zip"
+    assert r.asset_name == "Tempest-1.2.0-macos-arm64.zip"
+    # an old-style release (before the rename) still updates
+    old = {"tag_name": "v1.1.0", "assets": [{"name": "CTA-1.1.0-windows-x64.zip", "browser_download_url": "u",
+                                            "size": 1}]}
+    assert updater.release_from_json(old, "windows-x64").asset_name == "CTA-1.1.0-windows-x64.zip"
     r = updater.release_from_json(RELEASE, None)
     assert not r.installable
 
 
 def test_parse_sums():
     h = "a" * 64
-    sums = updater.parse_sums(f"{h}  CTA-1.2.0-windows-x64.zip\n{'b' * 64} *other.zip\ngarbage\n")
-    assert sums == {"CTA-1.2.0-windows-x64.zip": h, "other.zip": "b" * 64}
+    sums = updater.parse_sums(f"{h}  Tempest-1.2.0-windows-x64.zip\n{'b' * 64} *other.zip\ngarbage\n")
+    assert sums == {"Tempest-1.2.0-windows-x64.zip": h, "other.zip": "b" * 64}
 
 
 def test_not_frozen_cannot_self_update():
@@ -62,17 +67,20 @@ def test_extract_rejects_path_traversal(tmp_path):
 def test_extract_layout(tmp_path):
     p = tmp_path / "u.zip"
     with zipfile.ZipFile(p, "w") as z:
-        z.writestr("CTA/marker.txt", "new")
+        z.writestr("Tempest/marker.txt", "new")
     new = updater.extract(str(p), str(tmp_path / "out"))
-    assert os.path.basename(new) == "CTA"
+    assert os.path.basename(new) == "Tempest"
     assert open(os.path.join(new, "marker.txt")).read() == "new"
+    with zipfile.ZipFile(p, "w") as z:                        # a zip laid out under the old name still installs
+        z.writestr("CTA/marker.txt", "old")
+    assert os.path.basename(updater.extract(str(p), str(tmp_path / "out2"))) == "CTA"
 
 
 def test_helper_scripts_have_rollback():
-    ps = updater.windows_script(123, r"C:\Apps\CTA", r"C:\Apps\.cta-update-1\payload\CTA",
+    ps = updater.windows_script(123, r"C:\Apps\Tempest", r"C:\Apps\.cta-update-1\payload\Tempest",
                                 r"C:\Apps\.cta-update-1", r"C:\log.txt", True)
     assert "Wait-Process -Id 123" in ps and "UPDATE OK" in ps and "Move-Item -LiteralPath $old" in ps
-    sh = updater.posix_script(123, "/a/CTA.app", "/a/.s/payload/CTA.app", "/a/.s", "/l", False)
+    sh = updater.posix_script(123, "/a/Tempest.app", "/a/.s/payload/Tempest.app", "/a/.s", "/l", False)
     assert 'mv "$TARGET.old" "$TARGET"' in sh and "UPDATE OK" in sh
 
 
@@ -83,12 +91,12 @@ def test_mac_update_target_escapes_translocation(tmp_path, monkeypatch):
     apps.mkdir()
     monkeypatch.setattr(updater.sys, "platform", "darwin")
     monkeypatch.setattr(updater, "install_root",
-                        lambda: "/private/var/folders/x/AppTranslocation/ABC/d/CTA.app")
+                        lambda: "/private/var/folders/x/AppTranslocation/ABC/d/Tempest.app")
     real_makedirs = os.makedirs
     monkeypatch.setattr(updater.os, "makedirs",
                         lambda p, exist_ok=False: real_makedirs(str(apps) if p == "/Applications" else p,
                                                                 exist_ok=exist_ok))
-    dest = os.path.join("/Applications", "CTA.app")          # the separator differs on Windows runners
+    dest = os.path.join("/Applications", "Tempest.app")      # the separator differs on Windows runners
     monkeypatch.setattr(updater, "_writable", lambda p: p == dest)
     assert updater.update_target() == dest
     # a normal, writable install updates in place
@@ -100,10 +108,10 @@ def test_mac_update_target_escapes_translocation(tmp_path, monkeypatch):
 def test_posix_helper_installs_to_a_new_place(tmp_path):
     import subprocess
 
-    new = tmp_path / "stage" / "payload" / "CTA"
+    new = tmp_path / "stage" / "payload" / "Tempest"
     new.mkdir(parents=True)
     (new / "marker").write_text("v2")
-    target = tmp_path / "Apps" / "CTA"                 # not there yet (first update from a read-only copy)
+    target = tmp_path / "Apps" / "Tempest"             # not there yet (first update from a read-only copy)
     log = tmp_path / "update.log"
     sh = updater.posix_script(999999, str(target), str(new), str(tmp_path / "stage"), str(log), False)
     script = tmp_path / "u.sh"
@@ -115,3 +123,24 @@ def test_posix_helper_installs_to_a_new_place(tmp_path):
     (new / "marker").write_text("v3")
     subprocess.run(["bash", str(script)], check=True, timeout=60)
     assert (target / "marker").read_text() == "v3"
+
+
+def test_data_folder_and_settings_migrate_from_the_old_name(tmp_path, monkeypatch):
+    """The first start after the rename finds the CTA data folder and moves
+    it; settings saved under the old name are carried over."""
+    import importlib
+
+    from cta import paths
+
+    old = tmp_path / "CTA"
+    old.mkdir()
+    (old / "library.sqlite3").write_text("db")
+    monkeypatch.delenv("CTA_DATA_DIR", raising=False)
+    monkeypatch.delenv("TEMPEST_DATA_DIR", raising=False)
+    monkeypatch.setattr(paths, "user_data_dir", lambda name, appauthor=False: str(tmp_path / name))
+    monkeypatch.setattr(paths, "_migrated", False)
+    d = paths.data_dir()
+    assert d == str(tmp_path / "Tempest") and (tmp_path / "Tempest" / "library.sqlite3").read_text() == "db"
+    assert not old.exists()
+    assert paths.log_path().endswith("tempest.log")
+    importlib.reload(paths)                              # back to the real locations for the other tests

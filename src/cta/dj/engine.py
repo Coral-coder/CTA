@@ -276,7 +276,7 @@ class Engine:
         self.scope_prev: np.ndarray | None = None
         self.reset_on_load = True              # gain / EQ / filter back to neutral when a track loads
         # the sound card's cushion: "low" = the least delay; seconds = more headroom
-        # against the system pausing CTA (background, busy machine) - no glitches live
+        # against the system pausing Tempest (background, busy machine) - no glitches live
         self.out_latency: str | float = 0.05
         self.phase_lock = True                 # SYNC = tempo + beat phase; False: tempo only (phase by hand)
         self._lead_deck: str | None = None     # the deck the synced ones follow right now (sticky)

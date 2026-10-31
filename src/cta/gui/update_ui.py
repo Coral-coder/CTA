@@ -42,11 +42,11 @@ class UpdateController(QObject):
             log.exception("update cleanup failed")
             result = None
         if result == "ok":
-            self.win.status_label.setText(f"Updated to CTA {__version__}")
+            self.win.status_label.setText(f"Updated to Tempest {__version__}")
         elif result and result.startswith("failed"):
             QMessageBox.warning(self.win, "Update",
                                 f"The last update could not be installed ({result[7:]}).\n"
-                                f"CTA {__version__} is still installed and working.")
+                                f"Tempest {__version__} is still installed and working.")
         if os.environ.get("CTA_SMOKE_EXIT_MS"):
             return
         if self.auto_enabled() and time.time() - float(self.settings.value("update_last_check", 0)) > CHECK_INTERVAL:
@@ -84,8 +84,8 @@ class UpdateController(QObject):
         if not updater.is_newer(rel.version):
             if manual:
                 QMessageBox.information(self.win, "Check for updates",
-                                        f"You have the latest version (CTA {__version__}).")
-                self.win.status_label.setText("CTA is up to date")
+                                        f"You have the latest version (Tempest {__version__}).")
+                self.win.status_label.setText("Tempest is up to date")
             return
         if not manual and self.settings.value("update_skip_version", "") == rel.version:
             return
@@ -98,9 +98,9 @@ class UpdateController(QObject):
         box = QMessageBox(self.win)
         box.setWindowTitle("Update available")
         box.setIcon(QMessageBox.Information)
-        box.setText(f"<b>CTA {rel.version}</b> is available (you have {__version__}).")
+        box.setText(f"<b>Tempest {rel.version}</b> is available (you have {__version__}).")
         box.setInformativeText("Your library, settings and setlists are kept.\n\n"
-                               "Update now? CTA restarts when it's done.")
+                               "Update now? Tempest restarts when it's done.")
         if notes:
             box.setDetailedText(notes)
         b_now = box.addButton("Update now", QMessageBox.AcceptRole)
@@ -120,7 +120,7 @@ class UpdateController(QObject):
         if not ok or not rel.installable:
             msg = why if not ok else "This release has no build for your platform."
             r = QMessageBox.question(self.win, "Update",
-                                     f"CTA can't update itself here:\n{msg}\n\nOpen the download page instead?")
+                                     f"Tempest can't update itself here:\n{msg}\n\nOpen the download page instead?")
             if r == QMessageBox.Yes:
                 QDesktopServices.openUrl(QUrl(rel.url))
             return
@@ -133,8 +133,8 @@ class UpdateController(QObject):
             self.win.stop_scan()
         self._cancel = False
         self._busy = True
-        dlg = QProgressDialog(f"Downloading CTA {rel.version}…", "Cancel", 0, 100, self.win)
-        dlg.setWindowTitle("Updating CTA")
+        dlg = QProgressDialog(f"Downloading Tempest {rel.version}…", "Cancel", 0, 100, self.win)
+        dlg.setWindowTitle("Updating Tempest")
         dlg.setWindowModality(Qt.WindowModal)
         dlg.setMinimumDuration(0)
         dlg.setAutoClose(False)
@@ -177,13 +177,13 @@ class UpdateController(QObject):
                 return
             QMessageBox.warning(self.win, "Update failed",
                                 f"The update could not be prepared:\n{err}\n\n"
-                                "Nothing was changed; CTA keeps running as before.")
+                                "Nothing was changed; Tempest keeps running as before.")
             return
         try:
             updater.launch_swap(new_root, relaunch=True)
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self.win, "Update failed", f"Could not start the installer:\n{e}")
             return
-        self.win.status_label.setText("Installing update - CTA will restart…")
+        self.win.status_label.setText("Installing update - Tempest will restart…")
         self.win.quit_app()
         QApplication.instance().quit()

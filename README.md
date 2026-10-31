@@ -1,4 +1,6 @@
-<h1 align="center">CTA</h1>
+<h1 align="center">Tempest</h1>
+
+<p align="center"><sub>formerly CTA</sub></p>
 
 <p align="center">
   <b>The DJ library that knows your music - and mixes it.</b><br>
@@ -15,7 +17,7 @@
 
 ---
 
-## Why CTA
+## Why Tempest
 
 - **It hears what tags can't tell you.** Every track is analysed once: BPM to 0.005, key with its Camelot code, energy, and the AI's take on genre and style (400 Discogs styles, plus a "sounds like" fingerprint). Tech House is not Deep House.
 - **It answers instantly.** The whole library lives in memory as vectors: the best next track in about 1 ms, a 40-track setlist from 50 000 tracks in well under a second.
@@ -47,15 +49,15 @@ Grab the latest build from the [Releases](https://github.com/coral-coder/CTA/rel
 
 | Platform | File | Run |
 |---|---|---|
-| Windows 10 / 11 x64 | `CTA-x.y.z-windows-x64.zip` | unzip, run `CTA\CTA.exe` |
-| macOS (Apple Silicon) | `CTA-x.y.z-macos-arm64.zip` | unzip, right-click `CTA.app` → **Open** (first time only; signed builds open directly) |
+| Windows 10 / 11 x64 | `Tempest-x.y.z-windows-x64.zip` | unzip, run `Tempest\Tempest.exe` |
+| macOS (Apple Silicon) | `Tempest-x.y.z-macos-arm64.zip` | unzip, right-click `Tempest.app` → **Open** (first time only; signed builds open directly) |
 
-CTA keeps itself up to date from then on - see [Updates](#updates).
+Tempest keeps itself up to date from then on - see [Updates](#updates).
 
 ## Five minutes to a set
 
-1. **Add Folder…** and point CTA at your music. The scan starts by itself, in parallel across every core; the AI runs on the GPU (DirectML on Windows - any DX12 card; CoreML on the Mac). Re-scans only touch new or changed files.
-2. CTA opens in **DJ mode** (decks above the library). Click any track: the **Next Track** tab ranks every compatible track by tempo, key, sound, genre and energy.
+1. **Add Folder…** and point Tempest at your music. The scan starts by itself, in parallel across every core; the AI runs on the GPU (DirectML on Windows - any DX12 card; CoreML on the Mac). Re-scans only touch new or changed files.
+2. Tempest opens in **DJ mode** (decks above the library). Click any track: the **Next Track** tab ranks every compatible track by tempo, key, sound, genre and energy.
 3. Drag a track to a deck (or right-click → **Load to Deck A**), press **PLAY**.
 4. Queue a few tracks (right-click → **Queue in auto-mix**, or just tick *Auto-load best next track*) and press **▶ AUTO-MIX**. It beat-matches, phrase-aligns and blends them.
 5. Take over whenever you like - touch a fader, EQ, the crossfader or a deck. Auto-mix steps back, learns what you did, and carries on when you're done.
@@ -81,7 +83,7 @@ Weights and limits are yours to set. Double-click a suggestion to *follow* it an
 
 **Setlist Builder.** Length, an optional tempo ramp (122 → 128), an energy curve (steady / build / peak / wave / cooldown) and a variety amount; a beam search finds the sequence with the best transitions overall.
 
-**Playlists.** Drag tracks in or right-click → *Add to playlist*. Between every two songs CTA shows a dimmed **bridge** suggestion - the track that best links them; double-click to keep it, right-click for another. *Queue in auto-mix* plays a playlist as a mix.
+**Playlists.** Drag tracks in or right-click → *Add to playlist*. Between every two songs Tempest shows a dimmed **bridge** suggestion - the track that best links them; double-click to keep it, right-click for another. *Queue in auto-mix* plays a playlist as a mix.
 
 **Details page.** Double-click any track: the numbers, how it feels (energy, tone, busyness, family), how it would sit after what is playing (energy step, tempo change, key, style fit), a map of its sections with the energy per bar and the first drop, and the full waveform with its mix markers. Load it to a deck or add it to the setlist from there. (Double-click never opens an external player; that stays in the right-click menu.)
 
@@ -91,7 +93,7 @@ Weights and limits are yours to set. Double-click a suggestion to *follow* it an
 
 ## DJ mode
 
-`Ctrl+D` toggles it. The decks sit above the library in a Traktor-style layout; drag the divider to give them more room. CTA fits a 1280-pixel laptop screen, and **Settings → Interface size** scales everything 70–150 %.
+`Ctrl+D` toggles it. The decks sit above the library in a Traktor-style layout; drag the divider to give them more room. Tempest fits a 1280-pixel laptop screen, and **Settings → Interface size** scales everything 70–150 %.
 
 ### Layout
 
@@ -149,7 +151,7 @@ Per channel: GAIN, HI / MID / LOW (kill when fully left, Linkwitz-Riley crossove
 
 ## Auto-mix
 
-Press **▶ AUTO-MIX** with tracks queued (or *Auto-load best next track* on) and CTA plays a continuous mix. **Transition now** blends into the other deck from the next bar whenever you ask.
+Press **▶ AUTO-MIX** with tracks queued (or *Auto-load best next track* on) and Tempest plays a continuous mix. **Transition now** blends into the other deck from the next bar whenever you ask.
 
 ### How it DJs
 
@@ -198,14 +200,14 @@ Drag to reorder; ✕, Delete or drag out to remove; **Clear queue**. With auto-m
 
 **📱 Phone remote:** scan the QR code (same Wi-Fi; a 6-digit PIN keeps others out). The phone shows album art, the decks with spinning records, the mixer, the queue and tonight's history. Skip (mixed in), **cut now**, go back, pause the whole mix (it fades), search and pick a **seed song** for a new set, play a track next, edit the queue, fix **IN / OUT / OUT END markers** with pinch-zoom and drag, set outro and blend lengths, and **Listen** - *Live* (~0.2 s behind) or *Radio* (keeps playing with the screen locked). On iPhone, *Add to Home Screen* makes it an app. Away from home, use a VPN such as Tailscale.
 
-**Server mode:** *Start CTA in the background when I log in* runs it hidden in the tray with the phone remote up - a mix server or radio station you drive from the phone. Without a sound card the mix still runs for the stream and recordings. **History** logs every track that plays 30 s or more and exports as M3U8 / NML / XML / CSV.
+**Server mode:** *Start Tempest in the background when I log in* runs it hidden in the tray with the phone remote up - a mix server or radio station you drive from the phone. Without a sound card the mix still runs for the stream and recordings. **History** logs every track that plays 30 s or more and exports as M3U8 / NML / XML / CSV.
 
 ## Library bridge: your home collection, anywhere
 
-Your collection lives at home; the laptop you take out has CTA too. **Settings → Library bridge** joins them.
+Your collection lives at home; the laptop you take out has Tempest too. **Settings → Library bridge** joins them.
 
 1. **At home:** tick **Share this library**, set the port (8008) and the address the laptop will reach you at (a hostname or public IP with the port forwarded - or a tunnel such as [Tailscale](https://tailscale.com), which gives a stable address with no router changes). **Copy** the pairing code. Sharing keeps running with the mix server in the tray.
-2. **On the laptop:** paste the code under **Home libraries on this machine** → **Add**. CTA checks the key and fetches the whole catalogue - tags, BPM, key, AI style and sound vectors, beat grids, cues, markers - nothing is re-analysed. The tracks appear in your library marked **⬇** until downloaded; search, suggestions, setlists and auto-mix treat them as your own.
+2. **On the laptop:** paste the code under **Home libraries on this machine** → **Add**. Tempest checks the key and fetches the whole catalogue - tags, BPM, key, AI style and sound vectors, beat grids, cues, markers - nothing is re-analysed. The tracks appear in your library marked **⬇** until downloaded; search, suggestions, setlists and auto-mix treat them as your own.
 3. **Playing:** load one to a deck (or let auto-mix queue it) and it downloads first - progress on the deck title; the queue is fetched ahead of time. Right-click → **Download now** (a track, a selection, the whole setlist) before the gig. Downloads resume and stay in the data folder under `remote/`.
 4. **Sync now** refreshes the catalogue (also at start-up); **Remove** forgets a home library, optionally with its downloads.
 
@@ -213,7 +215,9 @@ Security: a 32-byte key, TLS with a certificate the laptop pins from the pairing
 
 ## Updates
 
-CTA checks GitHub Releases at start-up (at most every 12 hours) and on **Check for Updates**: **Update now**, **Later** or **Skip this version**. The zip is downloaded, verified against the release's SHA-256 sums, unpacked next to the install and test-run; only then does CTA close, a helper swaps the folders (keeping the old version until the swap has worked, rolling back if it fails) and restarts. Your library, settings and analysis data are never touched. On the Mac an app run straight from Downloads is installed to **/Applications** first so it can update itself in place.
+**Renamed from CTA (2.3.0).** Everything carries over by itself: the data folder, library, analysis, settings, learned mixes, recordings and the start-at-login entry move from the CTA names to the Tempest ones on first start. Installs still named CTA update themselves through `legacy-CTA-*` zips for a while; the new app folder is simply called Tempest.
+
+Tempest checks GitHub Releases at start-up (at most every 12 hours) and on **Check for Updates**: **Update now**, **Later** or **Skip this version**. The zip is downloaded, verified against the release's SHA-256 sums, unpacked next to the install and test-run; only then does Tempest close, a helper swaps the folders (keeping the old version until the swap has worked, rolling back if it fails) and restarts. Your library, settings and analysis data are never touched. On the Mac an app run straight from Downloads is installed to **/Applications** first so it can update itself in place.
 
 **Signed Mac builds.** With the signing secrets in the repository (`DEVELOPER_ID_P12`, `DEVELOPER_ID_P12_PASSWORD`, and the App Store Connect key `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8`, handed out by the **Dev_deploy_setup** hub: *Create Developer ID certificate* and *Set up app repo*) every release is signed with the hardened runtime, notarized and stapled, and the updater only accepts a new version signed by the same team.
 
@@ -232,25 +236,25 @@ The model is ~18 MB and uses well under 1 GB of VRAM. Decoding and DSP run on th
 
 ## If something goes wrong
 
-The data folder is `%LOCALAPPDATA%\CTA` (Windows) or `~/Library/Application Support/CTA` (macOS) - Settings shows the path.
+The data folder is `%LOCALAPPDATA%\Tempest` (Windows) or `~/Library/Application Support/Tempest` (macOS) - Settings shows the path.
 
-- `cta.log` - what CTA was doing, with errors.
+- `tempest.log` - what Tempest was doing, with errors (`cta.log` before 2.3).
 - `audio.log` - the audio process (rewritten each launch); the reason for any "Audio process restarted".
-- `crash.log` - written if CTA itself crashes (for example in an audio driver).
+- `crash.log` - written if Tempest itself crashes (for example in an audio driver).
 
 A sound card that stops responding is reopened within seconds; the phone shows a red banner when the mix or the connection has stopped. Dropouts on a weak machine: **Audio… → Output safety → Safe**.
 
 ## Command line
 
-Windows builds include `cta-cli.exe`; on the Mac run `CTA.app/Contents/MacOS/CTA <command>`.
+Windows builds include `tempest-cli.exe`; on the Mac run `Tempest.app/Contents/MacOS/Tempest <command>`.
 
 ```
-cta scan "D:\Music"                     # add a folder and analyse it
-cta list --search "tech house"
-cta next "artist - title"               # best next tracks
-cta setlist "artist - title" -n 30 --end-bpm 128 --curve build -o set.m3u8
-cta update --check                      # or: cta update
-cta selftest                            # decoding, DSP, AI, DB, engine, stream: all checked
+tempest scan "D:\Music"                     # add a folder and analyse it
+tempest list --search "tech house"
+tempest next "artist - title"               # best next tracks
+tempest setlist "artist - title" -n 30 --end-bpm 128 --curve build -o set.m3u8
+tempest update --check                  # or: tempest update
+tempest selftest                          # decoding, DSP, AI, DB, engine, stream: all checked
 ```
 
 ## Development
@@ -258,7 +262,7 @@ cta selftest                            # decoding, DSP, AI, DB, engine, stream:
 ```
 pip install -e ".[dev]"
 pytest -q                 # the full suite (engine, auto-mix, GUI, audio process, bridge)
-python -m cta             # start the GUI
+python -m cta             # start the GUI (the Python package keeps its old name)
 pyinstaller packaging/cta.spec
 ```
 

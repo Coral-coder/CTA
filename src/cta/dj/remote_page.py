@@ -5,10 +5,10 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#121316"><meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="CTA">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><meta name="apple-mobile-web-app-title" content="Tempest">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="icon" type="image/png" href="/icon-512.png">
 <link rel="manifest" href="/manifest.webmanifest">
-<title>CTA live remote</title>
+<title>Tempest live remote</title>
 <style>
 :root{--bg:#121316;--card:#1d1f24;--card2:#25272e;--fg:#eceef2;--mut:#9a9ca6;--acc:#3d8bff;--a:#2fa8ff;--b:#ff8a2f;
 --ok:#3ddc84;--bad:#ff4d5e;--r:14px}
@@ -60,15 +60,15 @@ display:none;z-index:10;max-width:90%;box-shadow:0 6px 24px #0008}
 .hint{font-size:12px;color:var(--mut);margin-top:6px}
 #alert{display:none;background:#5a1620;color:#ffd9de;border-radius:12px;padding:10px 12px;margin-bottom:10px;font-weight:600}
 </style></head><body>
-<div id="gate"><div class="card"><div style="font-size:42px">🎧</div><h3>Connect to CTA</h3>
-<p class="mut">Enter the PIN shown in CTA on your computer (DJ decks → 📱 Phone remote).</p>
+<div id="gate"><div class="card"><div style="font-size:42px">🎧</div><h3>Connect to Tempest</h3>
+<p class="mut">Enter the PIN shown in Tempest on your computer (DJ decks → 📱 Phone remote).</p>
 <input id="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN" maxlength="12">
 <div style="height:10px"></div><button class="pri" style="width:100%" onclick="setPin()">Connect</button>
 <p id="gerr" class="small" style="color:var(--bad)"></p></div></div>
 <div id="toast"></div>
 
 <div id="alert"></div>
-<div id="top"><span class="logo">CTA</span><span class="mut small grow ell" id="conn">connecting…</span>
+<div id="top"><span class="logo">Tempest</span><span class="mut small grow ell" id="conn">connecting…</span>
 <button id="lmode" class="mini" onclick="toggleMode()" title="Live: about 0.2 s behind the PC. Radio: keeps playing with the screen locked, a few seconds behind."></button>
 <button id="listen" onclick="listen()">🔈 Listen</button></div>
 
@@ -134,7 +134,7 @@ async function api(path, body) {
     {method: 'POST', headers: {'X-CTA-Key': PIN, 'Content-Type': 'application/json'}, body: JSON.stringify(body)});
   if (r.status === 401) {
     if (!triedStored && STORED && STORED !== PIN) { triedStored = true; PIN = STORED; keepPin(); return api(path, body); }
-    gate(true, PIN ? 'Wrong PIN - CTA shows the current one under 📱 Phone remote' : ''); throw new Error('auth');
+    gate(true, PIN ? 'Wrong PIN - Tempest shows the current one under 📱 Phone remote' : ''); throw new Error('auth');
   }
   if (r.status === 429) { gate(true, 'Too many attempts - wait a minute'); throw new Error('auth'); }
   const j = await r.json();
@@ -551,12 +551,12 @@ async function poll() {
     // the PC answers but its audio is not moving: say so instead of pretending
     if (S.frames !== frames) { frames = S.frames; framesT = lastT; }
     const playing = !S.paused && S.decks.some(d => d.playing);
-    alertMsg(playing && lastT - framesT > 3500 ? '⚠ The mix has stopped on the PC (audio device not responding). CTA is trying to reconnect it…' : '');
+    alertMsg(playing && lastT - framesT > 3500 ? '⚠ The mix has stopped on the PC (audio device not responding). Tempest is trying to reconnect it…' : '');
     render();
   } catch (e) {
     if (e.message === 'auth') return;
     $('conn').textContent = 'reconnecting…';
-    if (performance.now() - lastT > 4000) alertMsg('⚠ Lost connection to CTA - is the PC on, awake and on this Wi-Fi?');
+    if (performance.now() - lastT > 4000) alertMsg('⚠ Lost connection to Tempest - is the PC on, awake and on this Wi-Fi?');
   }
 }
 let prev = performance.now();

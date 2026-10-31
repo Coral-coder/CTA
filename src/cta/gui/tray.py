@@ -1,4 +1,4 @@
-"""System tray icon: CTA keeps serving the phone remote with the window closed."""
+"""System tray icon: Tempest keeps serving the phone remote with the window closed."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ class Tray(QObject):
         self._noticed = False
         self.icon = QSystemTrayIcon(QApplication.windowIcon(), win)
         self.menu = QMenu()
-        a_open = QAction("Open CTA", self.menu)
+        a_open = QAction("Open Tempest", self.menu)
         a_open.triggered.connect(win.show_from_tray)
         self.a_remote = QAction("Phone remote (QR code && PIN)…", self.menu)
         self.a_remote.triggered.connect(self._remote)
@@ -23,7 +23,7 @@ class Tray(QObject):
         self.a_login = QAction("Start at login", self.menu)
         self.a_login.setCheckable(True)
         self.a_login.toggled.connect(self._login)
-        a_quit = QAction("Quit CTA", self.menu)
+        a_quit = QAction("Quit Tempest", self.menu)
         a_quit.triggered.connect(win.quit_app)
         for a in (a_open, self.a_remote, self.a_pause):
             self.menu.addAction(a)
@@ -69,7 +69,7 @@ class Tray(QObject):
             if on:
                 self.win.settings.setValue("server_mode", "true")
         except OSError as e:
-            self.icon.showMessage("CTA", f"Could not change the start-up setting: {e}")
+            self.icon.showMessage("Tempest", f"Could not change the start-up setting: {e}")
 
     def refresh(self):
         from .. import autostart
@@ -81,7 +81,7 @@ class Tray(QObject):
         self.a_pause.setEnabled(dj is not None)
         if dj is not None:
             self.a_pause.setText("Resume mix" if dj.engine.paused else "Pause mix")
-        tip = "CTA"
+        tip = "Tempest"
         if dj is not None and dj.stream is not None:
             tip += " mix server - " + dj.stream.urls[0]
             m = dj.engine._master()
@@ -92,7 +92,7 @@ class Tray(QObject):
     def hidden_notice(self):
         if not self._noticed:
             self._noticed = True
-            self.icon.showMessage("CTA is still running",
+            self.icon.showMessage("Tempest is still running",
                                   "The mix server keeps running in the tray. Right-click the icon to quit.",
                                   QSystemTrayIcon.Information, 4000)
 

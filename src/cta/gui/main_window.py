@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import __version__, paths
+from .. import APP_NAME, __version__, paths
 from ..db import Database
 from ..export import export
 from ..keys import camelot_str, key_name, parse_key
@@ -182,10 +182,10 @@ class SettingsDialog(QDialog):
         lay.addWidget(QLabel("<b>Mix server (phone remote)</b>"))
         from .. import autostart
 
-        self.server_mode = QCheckBox("Run the mix server whenever CTA is open (keeps running in the tray)")
+        self.server_mode = QCheckBox("Run the mix server whenever Tempest is open (keeps running in the tray)")
         self.server_mode.setChecked(settings.value("server_mode", "false") == "true")
-        self.login = QCheckBox("Start CTA in the background when I log in")
-        self.login.setToolTip("CTA starts hidden in the system tray with the phone remote running")
+        self.login = QCheckBox("Start Tempest in the background when I log in")
+        self.login.setToolTip("Tempest starts hidden in the system tray with the phone remote running")
         self.login.setChecked(autostart.is_enabled())
         self.login.toggled.connect(lambda on: on and self.server_mode.setChecked(True))
         lay.addWidget(self.server_mode)
@@ -228,7 +228,7 @@ class SettingsDialog(QDialog):
         self.bridge_ui.save()
         if int(self.s.value("ui_scale", 100)) != self.ui_scale.currentData():
             self.s.setValue("ui_scale", self.ui_scale.currentData())
-            QMessageBox.information(self, "Interface size", "The new interface size applies when CTA restarts.")
+            QMessageBox.information(self, "Interface size", "The new interface size applies when Tempest restarts.")
         from .. import autostart
 
         if self.login.isChecked() != autostart.is_enabled():
@@ -257,7 +257,9 @@ class MainWindow(QMainWindow):
     def __init__(self, db: Database, settings: QSettings | None = None):
         super().__init__()
         self.db = db
-        self.settings = settings if settings is not None else QSettings("CTA", "CTA")
+        from .app import app_settings
+
+        self.settings = settings if settings is not None else app_settings()
         self.lib: Library | None = None
         self.current: int | None = None          # library index of the focused track
         self.setlist: list[int] = []
@@ -268,7 +270,7 @@ class MainWindow(QMainWindow):
         self._quitting = False
         self._want_server = False
 
-        self.setWindowTitle(f"CTA {__version__} - DJ Library & Setlist Builder")
+        self.setWindowTitle(f"{APP_NAME} {__version__} - DJ Library & Setlist Builder")
         self.resize(1500, 900)
         self.updates = UpdateController(self, self.settings)
         from .bridge import Bridge
@@ -671,8 +673,8 @@ class MainWindow(QMainWindow):
 
     def _first_run(self):
         r = QMessageBox.question(
-            self, "Welcome to CTA",
-            "Your library is empty.\n\nAdd your music folder now? CTA will analyse BPM, key, energy "
+            self, "Welcome to Tempest",
+            "Your library is empty.\n\nAdd your music folder now? Tempest will analyse BPM, key, energy "
             "and genre for every track. Re-scans only process new or changed files.")
         if r == QMessageBox.Yes:
             self.add_folder()
@@ -885,7 +887,7 @@ class MainWindow(QMainWindow):
             return
         last = self.settings.value("export_dir", os.path.expanduser("~"))
         seed = self.lib.track(self.setlist[0])
-        name = f"CTA {time.strftime('%Y-%m-%d %H%M')} - {seed.title}"[:80]
+        name = f"Tempest {time.strftime('%Y-%m-%d %H%M')} - {seed.title}"[:80]
         safe = "".join(c for c in name if c not in '<>:"/\\|?*')
         path, flt = QFileDialog.getSaveFileName(
             self, "Export setlist", os.path.join(last, safe + ".m3u8"),

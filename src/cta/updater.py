@@ -3,7 +3,7 @@
 Flow: check the latest release -> download the zip for this platform ->
 verify its SHA-256 against the release's SHA256SUMS.txt -> unpack next to
 the install -> run the new build once (``--version``) to prove it starts ->
-hand over to a tiny helper script that waits for CTA to exit, swaps the
+hand over to a tiny helper script that waits for Tempest to exit, swaps the
 install folders (keeping the old one until the swap succeeded, rolling back
 otherwise) and relaunches.
 
@@ -28,14 +28,14 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 
-from . import __version__, net, paths
+from . import APP_NAME, LEGACY_NAME, __version__, net, paths
 
 log = logging.getLogger(__name__)
 
 REPO = "Coral-coder/CTA"
 API_LATEST = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
-USER_AGENT = f"CTA/{__version__}"
+USER_AGENT = f"Tempest/{__version__}"
 
 
 class UpdateError(Exception):
@@ -101,11 +101,11 @@ def _writable(path: str) -> bool:
 
 
 def update_target() -> str | None:
-    """Where the new version goes. Normally where CTA runs from. On a Mac,
+    """Where the new version goes. Normally where Tempest runs from. On a Mac,
     an app opened straight from Downloads runs from a hidden read-only copy
     ("App Translocation") or a place the user can't write to: then the update
     goes to /Applications (or ~/Applications) instead - and from there on
-    CTA updates itself in place."""
+    Tempest updates itself in place."""
     root = install_root()
     if root is None:
         return None
@@ -118,7 +118,7 @@ def update_target() -> str | None:
             os.makedirs(folder, exist_ok=True)
         except OSError:
             continue
-        dest = os.path.join(folder, "CTA.app")
+        dest = os.path.join(folder, f"{APP_NAME}.app")
         if _writable(dest):
             return dest
     return None
@@ -133,7 +133,7 @@ def can_self_update(need_release_build: bool = True) -> tuple[bool, str]:
     target = update_target()
     if target is None or not _writable(target):
         parent = os.path.dirname(target or root)
-        return False, f"No write permission for {parent}. Move CTA to a folder you own, or update manually."
+        return False, f"No write permission for {parent}. Move Tempest to a folder you own, or update manually."
     return True, ""
 
 
@@ -159,8 +159,10 @@ def release_from_json(d: dict, target: str | None = "auto") -> Release:
         name = a.get("name", "")
         if name == "SHA256SUMS.txt":
             sums_url = a.get("browser_download_url")
-        elif target and name.endswith(f"-{target}.zip"):
-            asset_name, asset_url, size = name, a.get("browser_download_url"), int(a.get("size") or 0)
+        elif target and name.endswith(f"-{target}.zip") and not name.startswith("legacy-"):
+            # the Tempest zip wins; a legacy-named one (for installs still called Tempest) is a fallback
+            if asset_name is None or name.startswith(f"{APP_NAME}-"):
+                asset_name, asset_url, size = name, a.get("browser_download_url"), int(a.get("size") or 0)
     return Release(version=tag.lstrip("vV"), tag=tag, notes=d.get("body") or "",
                    url=d.get("html_url") or RELEASES_PAGE, asset_name=asset_name, asset_url=asset_url,
                    asset_size=size, sums_url=sums_url)
@@ -257,8 +259,11 @@ def download_release(rel: Release, progress=None, cancelled=None) -> str:
     return zpath
 
 
-def _payload_name() -> str:
-    return "CTA.app" if sys.platform == "darwin" else "CTA"
+def _payload_names() -> tuple[str, ...]:
+    """Top-level folder of a release zip: the current name, or the old one."""
+    if sys.platform == "darwin":
+        return (f"{APP_NAME}.app", f"{LEGACY_NAME}.app")
+    return (APP_NAME, LEGACY_NAME)
 
 
 def extract(zpath: str, dest: str) -> str:
@@ -282,18 +287,22 @@ def extract(zpath: str, dest: str) -> str:
                     mode = (m.external_attr >> 16) & 0o777
                     if mode:
                         os.chmod(os.path.join(dest, m.filename), mode)
-    new = os.path.join(dest, _payload_name())
-    if not os.path.isdir(new):
-        raise UpdateError("update archive has an unexpected layout")
-    return new
+    for name in _payload_names():
+        new = os.path.join(dest, name)
+        if os.path.isdir(new):
+            return new
+    raise UpdateError("update archive has an unexpected layout")
 
 
 def _cli_path(app_root: str) -> str:
+    """The command-line entry of an install (new name, or the old one in a legacy install)."""
     if sys.platform == "darwin":
-        return os.path.join(app_root, "Contents", "MacOS", "CTA")
-    if sys.platform == "win32":
-        return os.path.join(app_root, "cta-cli.exe")
-    return os.path.join(app_root, "cta-cli")
+        names = [os.path.join(app_root, "Contents", "MacOS", n) for n in (APP_NAME, LEGACY_NAME)]
+    elif sys.platform == "win32":
+        names = [os.path.join(app_root, n) for n in ("tempest-cli.exe", "cta-cli.exe")]
+    else:
+        names = [os.path.join(app_root, n) for n in ("tempest-cli", "cta-cli")]
+    return next((n for n in names if os.path.exists(n)), names[0])
 
 
 def _mac_signature(app: str) -> dict | None:
@@ -342,7 +351,7 @@ def verify_build(new_root: str, expect_version: str | None) -> str:
     except Exception as e:  # noqa: BLE001
         raise UpdateError(f"new build failed to start: {e}") from e
     out = (r.stdout + r.stderr).strip()
-    m = re.search(r"CTA (\S+)", out)
+    m = re.search(r"Tempest (\S+)", out)
     if r.returncode != 0 or not m:
         raise UpdateError(f"new build failed to start: {out[-300:]}")
     if expect_version and parse_version(m.group(1)) != parse_version(expect_version):
@@ -351,7 +360,7 @@ def verify_build(new_root: str, expect_version: str | None) -> str:
 
 
 # --------------------------------------------------------------------------
-# swap (performed by a helper after CTA exits)
+# swap (performed by a helper after Tempest exits)
 # --------------------------------------------------------------------------
 
 def _ps_quote(s: str) -> str:
@@ -363,7 +372,7 @@ def _sh_quote(s: str) -> str:
 
 
 def windows_script(pid: int, target: str, new: str, stage: str, log_file: str, relaunch: bool) -> str:
-    gui = os.path.join(target, "CTA.exe")
+    gui = os.path.join(target, f"{APP_NAME}.exe")
     return f"""$ErrorActionPreference = 'Stop'
 try {{ Start-Transcript -LiteralPath {_ps_quote(log_file + ".transcript")} -Append | Out-Null }} catch {{ }}
 $log = {_ps_quote(log_file)}
@@ -374,7 +383,7 @@ $stage = {_ps_quote(stage)}
 $old = $target + '.old'
 $relaunch = ${'true' if relaunch else 'false'}
 try {{
-    L "waiting for CTA (pid {pid}) to exit"
+    L "waiting for Tempest (pid {pid}) to exit"
     try {{ Wait-Process -Id {pid} -Timeout 180 -ErrorAction Stop }} catch {{ }}
     Start-Sleep -Milliseconds 800
     if (Test-Path -LiteralPath $old) {{ Remove-Item -LiteralPath $old -Recurse -Force }}
@@ -383,7 +392,7 @@ try {{
         try {{ Move-Item -LiteralPath $target -Destination $old; $moved = $true; break }}
         catch {{ Start-Sleep -Milliseconds 750 }}
     }}
-    if (-not $moved) {{ throw "the CTA folder is still in use" }}
+    if (-not $moved) {{ throw "the Tempest folder is still in use" }}
     try {{ Move-Item -LiteralPath $new -Destination $target }}
     catch {{ Move-Item -LiteralPath $old -Destination $target; throw }}
     L "UPDATE OK"
@@ -398,7 +407,7 @@ if ($relaunch) {{ Start-Process -FilePath {_ps_quote(gui)} }}
 
 def posix_script(pid: int, target: str, new: str, stage: str, log_file: str, relaunch: bool) -> str:
     launch = (f"open {_sh_quote(target)}" if sys.platform == "darwin"
-              else f"nohup {_sh_quote(os.path.join(target, 'CTA'))} >/dev/null 2>&1 &")
+              else f"nohup {_sh_quote(os.path.join(target, APP_NAME))} >/dev/null 2>&1 &")
     # macOS: a downloaded app is "quarantined" and run from a hidden read-only copy;
     # clearing the flag lets the installed app run (and update) from where it is
     unq = 'xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null' if sys.platform == "darwin" else ":"
@@ -408,7 +417,7 @@ TARGET={_sh_quote(target)}
 NEW={_sh_quote(new)}
 STAGE={_sh_quote(stage)}
 log() {{ echo "$(date '+%Y-%m-%dT%H:%M:%S') $1" >> "$LOG"; }}
-log "waiting for CTA (pid {pid}) to exit"
+log "waiting for Tempest (pid {pid}) to exit"
 for i in $(seq 1 360); do kill -0 {pid} 2>/dev/null || break; sleep 0.5; done
 sleep 0.5
 rm -rf "$TARGET.old"
@@ -447,7 +456,7 @@ def launch_swap(new_root: str, relaunch: bool = True, pid: int | None = None) ->
     if target is None:
         raise UpdateError("not running from an installed build")
     pid = pid or os.getpid()
-    stage = os.path.dirname(os.path.dirname(new_root))     # <stage>/payload/<CTA or CTA.app>
+    stage = os.path.dirname(os.path.dirname(new_root))     # <stage>/payload/<Tempest or Tempest.app>
     log_file = update_log_path()
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} staged {new_root} -> {target}\n")

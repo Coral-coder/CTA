@@ -82,7 +82,7 @@ def test_server_pin_routes_and_rate_limit():
     base = f"http://127.0.0.1:{port}"
     try:
         code, body, _ = _get(base + "/")
-        assert code == 200 and b"CTA live" in body and b"apple-touch-icon" in body
+        assert code == 200 and b"Tempest live" in body and b"apple-touch-icon" in body
         code, body, ctype = _get(base + "/apple-touch-icon.png")
         assert code == 200 and body[:4] == b"\x89PNG" and ctype == "image/png"
         assert json.loads(_get(base + "/manifest.webmanifest")[1])["display"] == "standalone"

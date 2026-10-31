@@ -275,7 +275,7 @@ def cmd_selftest(args):
             icon = urllib.request.urlopen(f"http://127.0.0.1:{port}/apple-touch-icon.png", timeout=5).read()
         finally:
             srv.stop()
-        if b"CTA live remote" not in page or icon[:4] != b"\x89PNG":
+        if b"Tempest live remote" not in page or icon[:4] != b"\x89PNG":
             raise RuntimeError("phone page or home-screen icon missing")
         print(f"phone remote / mix server: OK (QR {len(q.get_matrix())} modules)")
     except Exception as e:  # noqa: BLE001
@@ -321,7 +321,7 @@ def cmd_update(args):
         updater.launch_swap(new_root, relaunch=not args.no_relaunch)
         print(f"update staged from {args.from_zip}; it is applied as soon as this process exits")
         return 0
-    print(f"CTA {__version__} - checking {updater.REPO} for updates…")
+    print(f"Tempest {__version__} - checking {updater.REPO} for updates…")
     rel = updater.check_latest()
     if not updater.is_newer(rel.version) and not args.force:
         print(f"You are up to date (latest release {rel.version}).")
@@ -342,14 +342,14 @@ def cmd_update(args):
             print(f"\rdownloading {done * 100 // total}%", end="", flush=True)
 
     new_root = updater.prepare_update(rel, prog)
-    print("\nverified; installing - CTA will restart" if not args.no_relaunch else "\nverified; installing")
+    print("\nverified; installing - Tempest will restart" if not args.no_relaunch else "\nverified; installing")
     updater.launch_swap(new_root, relaunch=not args.no_relaunch)
     return 0
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="cta", description="CTA - DJ library analyser and setlist builder")
-    p.add_argument("--version", action="version", version=f"CTA {__version__}")
+    p = argparse.ArgumentParser(prog="tempest", description="Tempest - DJ library analyser and setlist builder")
+    p.add_argument("--version", action="version", version=f"Tempest {__version__}")
     p.add_argument("--db", help="database file (default: per-user data folder)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.add_argument("--background", action="store_true",
@@ -400,7 +400,7 @@ def build_parser():
     s = sub.add_parser("update", help="check for and install a new version")
     s.add_argument("--check", action="store_true", help="only check, do not install")
     s.add_argument("--force", action="store_true", help="reinstall even if up to date")
-    s.add_argument("--no-relaunch", action="store_true", help="do not restart CTA afterwards")
+    s.add_argument("--no-relaunch", action="store_true", help="do not restart Tempest afterwards")
     s.add_argument("--from-zip", help=argparse.SUPPRESS)
     s.add_argument("--expect-version", help=argparse.SUPPRESS)
     s.set_defaults(fn=cmd_update)
@@ -409,7 +409,7 @@ def build_parser():
     s.add_argument("--out", help="write the list to this file (default: print it)")
     s.set_defaults(fn=cmd_devices)
 
-    s = sub.add_parser("output-helper", help=argparse.SUPPRESS)       # extra output device, fed by CTA
+    s = sub.add_parser("output-helper", help=argparse.SUPPRESS)       # extra output device, fed by Tempest
     s.add_argument("--device", required=True)
     s.add_argument("--chans", default="0,1")
     s.add_argument("--block", type=int, default=512)

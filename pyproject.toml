@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cta"
+name = "tempest-dj"
 dynamic = ["version"]
-description = "DJ library analyser: BPM, key, AI genre/style and instant setlist building"
+description = "Tempest - the DJ library that knows your music and mixes it: BPM, key, AI style, auto-DJ"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -29,6 +29,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "pyinstaller>=6.6"]
 
 [project.scripts]
+tempest = "cta.cli:main"
 cta = "cta.cli:main"
 
 [tool.setuptools.dynamic]

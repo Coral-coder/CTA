@@ -101,3 +101,8 @@ def test_home_library_is_mirrored_and_downloaded_on_demand(tmp_path, tls):
         assert Library(away_db).n == 0 and not os.path.exists(path)
     finally:
         srv.stop()
+
+
+def test_old_pairing_codes_still_parse():
+    assert parse_code("CTA-SHARE|h:1|k|")["key"] == "k"
+    assert make_code("h", 1, "k", None).startswith("TEMPEST-SHARE|")

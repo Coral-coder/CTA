@@ -1,6 +1,6 @@
 """HTTPS for the packaged app. A frozen Python has no certificate store of
 its own (the Mac build failed every GitHub check with CERTIFICATE_VERIFY_FAILED),
-so requests verify against the certifi bundle shipped with CTA, with the
+so requests verify against the certifi bundle shipped with Tempest, with the
 system's own store as a fallback."""
 
 from __future__ import annotations

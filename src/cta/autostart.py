@@ -1,4 +1,4 @@
-"""Start CTA (as a background mix server) when the user logs in.
+"""Start Tempest (as a background mix server) when the user logs in.
 
 Windows: HKCU\\...\\Run registry value. macOS: a LaunchAgent. Linux: an XDG
 autostart entry. Everything is per user; nothing needs admin rights.
@@ -10,8 +10,10 @@ import os
 import shlex
 import sys
 
-NAME = "CTA"
-MAC_LABEL = "com.cta.mixserver"
+NAME = "Tempest"
+MAC_LABEL = "app.tempest.mixserver"
+LEGACY_NAME = "CTA"
+LEGACY_LABEL = "com.cta.mixserver"
 
 
 def command() -> list[str]:
@@ -96,14 +98,46 @@ def set_enabled(on: bool) -> None:
         return
     os.makedirs(os.path.dirname(fn), exist_ok=True)
     with open(fn, "w", encoding="utf-8") as fh:
-        fh.write("[Desktop Entry]\nType=Application\nName=CTA mix server\n"
+        fh.write("[Desktop Entry]\nType=Application\nName=Tempest mix server\n"
                  f"Exec={shlex.join(args)}\nX-GNOME-Autostart-enabled=true\nNoDisplay=false\n")
+
+
+def _legacy_enabled() -> bool:
+    try:
+        if sys.platform == "win32":
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as k:
+                winreg.QueryValueEx(k, LEGACY_NAME)
+                return True
+        if sys.platform == "darwin":
+            return os.path.exists(os.path.expanduser(f"~/Library/LaunchAgents/{LEGACY_LABEL}.plist"))
+    except OSError:
+        pass
+    return False
+
+
+def _drop_legacy() -> None:
+    try:
+        if sys.platform == "win32":
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0,
+                                winreg.KEY_SET_VALUE) as k:
+                winreg.DeleteValue(k, LEGACY_NAME)
+        elif sys.platform == "darwin":
+            os.remove(os.path.expanduser(f"~/Library/LaunchAgents/{LEGACY_LABEL}.plist"))
+    except OSError:
+        pass
 
 
 def refresh() -> None:
     """Keep an enabled entry pointing at the current executable (e.g. after
-    the app folder was moved)."""
-    if is_enabled():
+    the app folder was moved); an entry left by the old CTA name is replaced."""
+    legacy = _legacy_enabled()
+    if legacy:
+        _drop_legacy()
+    if is_enabled() or legacy:
         try:
             set_enabled(True)
         except OSError:

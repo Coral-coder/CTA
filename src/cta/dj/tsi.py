@@ -5,7 +5,7 @@ A .tsi is XML; the controller mapping is the base64 entry
 size, body). Each device (DEVI) has its name and its list of inputs (DDCI)
 and outputs (DDCO), every one a DCDT frame that starts with the control's
 name. Traktor's built-in controllers (the Pioneer DDJ-T1 among them) are
-listed by control name, not MIDI message: CTA supplies the MIDI messages
+listed by control name, not MIDI message: Tempest supplies the MIDI messages
 for those devices from the maker's MIDI list.
 """
 
@@ -90,14 +90,14 @@ def read_tsi(path: str) -> list[dict]:
     return devices
 
 
-# Traktor's DDJ-T1 control names that CTA plays (others are listed as not used)
+# Traktor's DDJ-T1 control names that Tempest plays (others are listed as not used)
 _COVERED = re.compile(r"\.(Loop Active|Auto Loop|Key Lock|Cue Delete|HotCue|Loop Size|EQ\.|Vol$|FX[12] Assign|"
                       r"Cue$|Sync|Master|Load)|X Fader|Dry/Wet|Parameter 1|Browse$|Browse Push|Favorites|"
                       r"Main Vol|HP Mix|HP Vol|^Shift$|Needle\.Search")
 
 
 def tsi_bindings(path: str):
-    """(device name, bindings, controls CTA does not use) from a Traktor .tsi."""
+    """(device name, bindings, controls Tempest does not use) from a Traktor .tsi."""
     from .midi import ddj_t1_default
 
     devices = read_tsi(path)
@@ -106,5 +106,5 @@ def tsi_bindings(path: str):
             unused = sorted({re.sub(r"\b[A-D]\.", "", n) for n in dev["inputs"] if not _COVERED.search(n)})
             return dev["name"], ddj_t1_default(), unused
     names = ", ".join(d["name"] for d in devices) or "none"
-    raise TsiError(f"Controllers in this file: {names}. CTA can import the Pioneer DDJ-T1 from a Traktor "
+    raise TsiError(f"Controllers in this file: {names}. Tempest can import the Pioneer DDJ-T1 from a Traktor "
                    "mapping so far; for other controllers use the guided setup.")

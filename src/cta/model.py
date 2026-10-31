@@ -70,7 +70,7 @@ def download_model(progress=None) -> str:
     """Download and verify the model into the user data dir."""
     dest = os.path.join(paths.models_dir(), MODEL_FILE)
     tmp = dest + ".part"
-    req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "CTA/1.0"})
+    req = urllib.request.Request(MODEL_URL, headers={"User-Agent": "Tempest/1.0"})
     with net.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0

@@ -1,8 +1,8 @@
 # PyInstaller spec - builds a self-contained folder (onedir: fast start-up,
 # no temp-dir extraction, antivirus friendly).
-#   Windows: CTA.exe (GUI) + cta-cli.exe (console) side by side
-#   macOS:   CTA.app (the app binary also accepts CLI commands)
-#   Linux:   CTA + cta-cli
+#   Windows: Tempest.exe (GUI) + tempest-cli.exe (console) side by side
+#   macOS:   Tempest.app (the app binary also accepts CLI commands)
+#   Linux:   Tempest + tempest-cli
 import os
 import sys
 
@@ -65,7 +65,7 @@ icon = icon if os.path.exists(icon) else None
 gui = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="CTA",
+    name="Tempest",
     console=False,
     disable_windowed_traceback=False,
     upx=False,
@@ -78,21 +78,21 @@ if sys.platform != "darwin":
     cli = EXE(
         pyz, a.scripts, [],
         exclude_binaries=True,
-        name="cta-cli",
+        name="tempest-cli",
         console=True,
         upx=False,
         icon=icon,
     )
     exes.append(cli)
 
-coll = COLLECT(*exes, a.binaries, a.datas, strip=False, upx=False, name="CTA")
+coll = COLLECT(*exes, a.binaries, a.datas, strip=False, upx=False, name="Tempest")
 
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="CTA.app",
+        name="Tempest.app",
         icon=icon,
-        bundle_identifier="app.cta.djlibrary",
+        bundle_identifier="app.tempest.dj",
         version=__version__,
         info_plist={
             "CFBundleShortVersionString": __version__,
@@ -100,7 +100,7 @@ if sys.platform == "darwin":
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "NSRequiresAquaSystemAppearance": False,
-            # never "App Nap" a DJ app: a minimised / background CTA keeps full
+            # never "App Nap" a DJ app: a minimised / background Tempest keeps full
             # timing, so the audio never glitches
             "NSAppSleepDisabled": True,
             "LSAppNapIsDisabled": True,

@@ -36,6 +36,22 @@ def _dark_palette(app):
     app.setPalette(p)
 
 
+def app_settings():
+    """The app's QSettings; the first time, everything saved under the old
+    Tempest name is carried over."""
+    from PySide6.QtCore import QSettings
+
+    from .. import APP_NAME, LEGACY_NAME
+
+    s = QSettings(APP_NAME, APP_NAME)
+    if not s.allKeys():
+        old = QSettings(LEGACY_NAME, LEGACY_NAME)
+        for k in old.allKeys():
+            s.setValue(k, old.value(k))
+        s.sync()
+    return s
+
+
 def _instance_name() -> str:
     import getpass
     import hashlib
@@ -50,7 +66,7 @@ def _instance_name() -> str:
 
 
 def _signal_running_instance(name: str, msg: str) -> bool:
-    """True when another CTA is running (it was told to show itself)."""
+    """True when another Tempest is running (it was told to show itself)."""
     from PySide6.QtNetwork import QLocalSocket
 
     s = QLocalSocket()
@@ -109,7 +125,7 @@ def _crash_log():
         f = open(fn, "a", encoding="utf-8")  # noqa: SIM115 - kept open for faulthandler
         import time
 
-        f.write(f"\n--- CTA {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
+        f.write(f"\n--- Tempest {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
         f.flush()
         faulthandler.enable(file=f, all_threads=True)
         return f, crashed
@@ -126,10 +142,8 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
 
     if QApplication.instance() is None and "QT_SCALE_FACTOR" not in os.environ:
         # Settings -> Interface size (small laptop screens); must be set before Qt starts
-        from PySide6.QtCore import QSettings
-
         try:
-            pct = int(QSettings("CTA", "CTA").value("ui_scale", 100))
+            pct = int(app_settings().value("ui_scale", 100))
         except (TypeError, ValueError):
             pct = 100
         if pct != 100 and 50 <= pct <= 200:
@@ -143,8 +157,10 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
 
     gc.set_threshold(20000, 20, 1000)
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("CTA")
-    app.setOrganizationName("CTA")
+    from .. import APP_NAME
+
+    app.setApplicationName(APP_NAME)
+    app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
     _dark_palette(app)
     from .theme import QSS
@@ -165,7 +181,7 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
         msg = "".join(traceback.format_exception(etype, value, tb))
         log.error("unhandled exception:\n%s", msg)
         try:
-            QMessageBox.critical(None, "CTA - unexpected error",
+            QMessageBox.critical(None, "Tempest - unexpected error",
                                  f"{value}\n\nDetails were written to {paths.log_path()}")
         except Exception:  # noqa: BLE001
             pass
@@ -184,12 +200,12 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
     name = _instance_name()
     if not os.environ.get("CTA_SMOKE_EXIT_MS") and \
             _signal_running_instance(name, "background" if background else "show"):
-        log.info("CTA is already running - asked it to show itself")
+        log.info("Tempest is already running - asked it to show itself")
         return 0
 
     crash_file, crashed = _crash_log()
     if crashed:
-        log.warning("the previous CTA session ended without closing cleanly - details (if any) in %s",
+        log.warning("the previous Tempest session ended without closing cleanly - details (if any) in %s",
                     os.path.join(paths.data_dir(), "crash.log"))
 
     db = Database(db_path or paths.db_path())
@@ -222,7 +238,7 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
         QTimer.singleShot(int(smoke), lambda: (print("GUI SMOKE OK", flush=True), w.quit_app(), app.quit()))
     if crashed:
         QTimer.singleShot(1500, lambda: w.status_label.setText(
-            "CTA did not close cleanly last time - crash details were saved to crash.log in the data folder"))
+            "Tempest did not close cleanly last time - crash details were saved to crash.log in the data folder"))
     rc = app.exec()
     if crash_file is not None:
         try:

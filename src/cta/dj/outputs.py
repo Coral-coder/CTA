@@ -2,7 +2,7 @@
 line outputs up, device rescans and latency calibration.
 
 Bluetooth speakers and headphones play audio 150-300 ms after it was
-rendered. CTA keeps one "delay" per output (what the driver reports, or
+rendered. Tempest keeps one "delay" per output (what the driver reports, or
 what the DJ measured with the tap test) and uses it to
 
 * delay the faster output so master and headphones stay in time, and
@@ -157,7 +157,7 @@ _keep_awake = []          # macOS activity token: must stay referenced for the a
 
 
 def raise_priority(audio_process: bool = False) -> None:
-    """Keep the music steady when CTA is minimised or in the background.
+    """Keep the music steady when Tempest is minimised or in the background.
 
     Windows: above-normal priority (HIGH for the audio process), no power
     throttling ("efficiency mode" slows background apps on Windows 11) and
@@ -304,13 +304,15 @@ def _mac_no_app_nap():
 
 
 def cli_command() -> list[str]:
-    """How to run CTA's command line (frozen builds or from source)."""
+    """How to run Tempest's command line (frozen builds or from source)."""
     import os
     import sys
 
     if getattr(sys, "frozen", False):
         if sys.platform == "win32":
-            cli = os.path.join(os.path.dirname(sys.executable), "cta-cli.exe")
+            d = os.path.dirname(sys.executable)
+            cli = next((p for p in (os.path.join(d, "tempest-cli.exe"), os.path.join(d, "cta-cli.exe"))
+                        if os.path.exists(p)), os.path.join(d, "tempest-cli.exe"))
             if os.path.exists(cli):
                 return [cli]
         return [sys.executable]

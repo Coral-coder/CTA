@@ -269,7 +269,7 @@ def test_live_stream_serves_mp3_and_status():
     srv = StreamServer(eng, port=port, status_fn=lambda: {"decks": [], "automix": "off"})
     srv.start()
     try:
-        assert b"CTA live" in urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read()
+        assert b"Tempest live" in urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5).read()
         got = bytearray()
         done = threading.Event()
 

@@ -50,7 +50,7 @@ class _Invoker(QObject):
         done = threading.Event()
         self._sig.emit((fn, box, done))
         if not done.wait(timeout):
-            raise TimeoutError("CTA is busy - try again")
+            raise TimeoutError("Tempest is busy - try again")
         if "error" in box:
             raise box["error"]
         return box.get("result")
