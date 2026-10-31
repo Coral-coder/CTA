@@ -325,3 +325,21 @@ def test_reset_to_builtin_forgets_the_custom_mapping(tmp_path, monkeypatch):
     bs, learned = M.load_mapping("PIONEER DDJ-T1")
     assert not learned and len(bs) == len(M.ddj_t1_default())
     assert not M.Controller(Engine(), device="other").reset_to_builtin()
+
+
+def test_a_stopped_deck_scrubs_under_the_hand_whatever_the_scratch_mode(tmp_data_dir):
+    e = _engine()
+    c = Controller(e, device="PIONEER DDJ-T1")
+    c.scratch_enabled = False
+    d = e.decks["A"]
+    assert not d.playing
+    c.handle_raw([0x90, 54, 127])                     # hand down on a stopped record
+    c.handle_raw([0xB0, 1, 0])
+    c.handle_raw([0xB0, 33, 20])                      # ... and a push forward
+    m, _ = e.render(512)
+    assert d.scratching and not d.playing
+    assert np.abs(m).max() > 0.0                      # audible: the record moves under the hand
+    assert d.play_pos > 0
+    c.handle_raw([0x90, 54, 0])                       # hand off: it stays stopped, silent
+    m, _ = e.render(512)
+    assert not d.scratching and not d.playing and np.abs(m).max() == 0.0

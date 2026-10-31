@@ -501,11 +501,10 @@ class Controller:
         elif a == "phones_cue" and pressed:
             e.set(deck, cue_phones=not e.decks[deck].cue_phones)
         elif a == "jog_touch":
-            if not self.scratch_enabled:
-                return                            # scratch off: the jog only nudges / searches
             self._touch[deck] = pressed
             if pressed:
-                e.scratch(deck, 0.0, True)
+                if self.scratch_enabled or not e.decks[deck].playing:
+                    e.scratch(deck, 0.0, True)    # the hand holds the record (a stopped one always scrubs)
             else:
                 e.jog_release(deck)
         elif a == "jog":
@@ -649,8 +648,9 @@ class Controller:
         (a nudge the sync lock then respects), and searches a stopped one."""
         e = self.eng
         d = e.decks[deck]
-        if self.scratch_enabled and self._touch.get(deck) and d.playing:
-            # platter held: the record follows your hand (scratch)
+        if self._touch.get(deck) and (self.scratch_enabled or not d.playing):
+            # platter held: the record follows your hand (scratch); a stopped
+            # deck scrubs this way whatever the scratch mode
             e.scratch(deck, (revs / dt) * REV_SECONDS, True)
         elif d.playing:
             # outer ring: temporary pitch bend to nudge the phase
@@ -664,7 +664,7 @@ class Controller:
         """Called ~60x/s from the UI: stop scratch motion when the hand stops."""
         now = time.perf_counter()
         for deck, held in self._touch.items():
-            if held and now - self._jog_last.get(deck, 0) > 0.03:
+            if held and now - self._jog_last.get(deck, 0) > 0.03 and self.eng.decks[deck].scratching:
                 self.eng.scratch(deck, 0.0, True)
 
     # ---- LEDs -------------------------------------------------------------------------

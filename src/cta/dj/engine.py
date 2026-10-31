@@ -1053,7 +1053,7 @@ class Engine:
     def _render_deck(self, d: Deck, n: int) -> np.ndarray | None:
         if not d.loaded:
             return None
-        if not d.playing:
+        if not d.playing and not d.scratching:     # a hand on a stopped record still scrubs audibly
             if d._last_gain > 0:
                 d._last_gain = 0.0
             return None
@@ -1072,7 +1072,7 @@ class Engine:
                 d._rb_reset = True
                 d._mode = "vinyl"
             y = self._render_vinyl(d, n, rate)
-        if d.play_pos >= d.length - 1 and d.loop is None:
+        if d.play_pos >= d.length - 1 and d.loop is None and d.playing:
             d.playing = False
             d.end_reached = True
             if self.master_deck == d.name:

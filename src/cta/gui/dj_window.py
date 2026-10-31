@@ -996,10 +996,6 @@ class _Scratcher:
         if not d.loaded:
             return
         now = time.perf_counter()
-        if not d.playing:
-            if seconds:
-                self.eng.seek(self.deck, d.time + seconds)      # paused: search
-            return
         if not self.active:
             self.active = True
             self.last_t = now
