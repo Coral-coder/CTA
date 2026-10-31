@@ -3414,6 +3414,7 @@ class DJPanel(QWidget):
         self.automix = self.engine.automix
         from ..dj.learn import MixLearner
 
+        self._downloading: dict[str, str] = {}
         self.learner = MixLearner(main_window.db, self.automix)
         self.automix.learner = self.learner
         self.learner.on_change = self._push_learned
@@ -4346,6 +4347,11 @@ class DJPanel(QWidget):
 
         def job():
             try:
+                self._downloading[deck] = path
+                try:
+                    self.main.bridge.ensure_local(path)        # a home-library track: fetched first
+                finally:
+                    self._downloading.pop(deck, None)
                 lt = load_track(path, bpm, info, self.main.db)
                 # never replaces a deck that started playing meanwhile
                 self.engine.load_track(deck, lt, only_if_stopped=True)
@@ -4363,6 +4369,7 @@ class DJPanel(QWidget):
 
     def _automix_load(self, idx):
         path, bpm, info = self._track_info(idx)
+        self.main.bridge.ensure_local(path)                     # a home-library track: fetched first
         return load_track(path, bpm, info, self.main.db)
 
     # ---- auto-mix --------------------------------------------------------------------
@@ -4434,6 +4441,9 @@ class DJPanel(QWidget):
         lib = self.main.lib
         if lib is None:
             return
+        # home-library tracks in the queue are fetched now, not when the deck needs them
+        self.main.bridge.download_many(int(i) for i in self.automix.queue
+                                       if isinstance(i, (int, np.integer)) and 0 <= int(i) < lib.n)
         for i in list(self.automix.queue):
             if not isinstance(i, (int, np.integer)) or not 0 <= int(i) < lib.n:
                 continue
@@ -4706,6 +4716,10 @@ class DJPanel(QWidget):
 
     def _tick(self):
         self._offer_unload()
+        for deck, path in list(self._downloading.items()):        # a deck waiting for a home-library file
+            txt = self.main.bridge.progress_text(path)
+            if txt:
+                self.decks[deck].title.setText(txt)
         # with a controller attached its knobs set the levels: loading a track keeps them
         want_reset = self.controller is None
         if want_reset != self.engine.reset_on_load:

@@ -121,11 +121,12 @@ def _table(model) -> QTableView:
 # --------------------------------------------------------------------------
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings: QSettings, db: Database, parent=None):
+    def __init__(self, settings: QSettings, db: Database, parent=None, bridge=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.s = settings
         self.db = db
+        self.bridge = bridge
         lay = QVBoxLayout(self)
 
         lay.addWidget(QLabel("<b>Music folders</b>"))
@@ -189,13 +190,17 @@ class SettingsDialog(QDialog):
         self.login.toggled.connect(lambda on: on and self.server_mode.setChecked(True))
         lay.addWidget(self.server_mode)
         lay.addWidget(self.login)
+        from .bridge import BridgeSettings
+
+        self.bridge_ui = BridgeSettings(settings, bridge, self)
+        lay.addWidget(self.bridge_ui)
         lay.addWidget(QLabel(f"<small>Data folder: {paths.data_dir()}</small>"))
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
-        self.resize(560, 460)
+        self.resize(640, 760)
 
     def _add(self):
         d = QFileDialog.getExistingDirectory(self, "Add music folder")
@@ -220,6 +225,7 @@ class SettingsDialog(QDialog):
         self.s.setValue("ai_device", self.device.currentText())
         self.s.setValue("auto_update_check", "true" if self.auto_update.isChecked() else "false")
         self.s.setValue("server_mode", "true" if self.server_mode.isChecked() else "false")
+        self.bridge_ui.save()
         if int(self.s.value("ui_scale", 100)) != self.ui_scale.currentData():
             self.s.setValue("ui_scale", self.ui_scale.currentData())
             QMessageBox.information(self, "Interface size", "The new interface size applies when CTA restarts.")
@@ -265,6 +271,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"CTA {__version__} - DJ Library & Setlist Builder")
         self.resize(1500, 900)
         self.updates = UpdateController(self, self.settings)
+        from .bridge import Bridge
+
+        self.bridge = Bridge(self)
+        self.bridge.synced.connect(self._bridge_synced)
+        self.bridge.sync_failed.connect(lambda name, e: self.status_label.setText(f"Home library {name}: {e}"))
+        self.bridge.downloaded.connect(self._bridge_downloaded)
         self._build_ui()
         geo = self.settings.value("geometry")
         if geo is not None:
@@ -651,6 +663,11 @@ class MainWindow(QMainWindow):
         if self._want_server:
             self._want_server = False
             QTimer.singleShot(0, self.start_server)
+        if not getattr(self, "_bridge_started", False):
+            self._bridge_started = True
+            self.bridge.apply_share_setting()          # home side: share when asked
+            if self.bridge.remotes() and not os.environ.get("CTA_NO_BRIDGE_SYNC"):
+                self.bridge.sync()                      # away side: fresh catalogue in the background
 
     def _first_run(self):
         r = QMessageBox.question(
@@ -911,6 +928,8 @@ class MainWindow(QMainWindow):
         self._add_deck_actions(m, i)
         m.addSeparator()
         m.addAction("Details…\t(double-click)", lambda: self.show_details(i))
+        if not all(self.lib.local[j] for j in (sel if i in sel else [i])):
+            m.addAction("Download now (from home)", lambda: self.download_selected(sel if i in sel else [i]))
         m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show in folder", lambda: self.reveal(i))
         m.addSeparator()
@@ -946,6 +965,8 @@ class MainWindow(QMainWindow):
         m = QMenu(self)
         self._add_deck_actions(m, i)
         m.addSeparator()
+        if not all(self.lib.local[j] for j in self.setlist):
+            m.addAction("Download the whole setlist (from home)", lambda: self.download_selected(self.setlist))
         m.addAction("Preview in default player", lambda: self.play(i))
         m.addAction("Show next-track options for this", lambda: (self.focus_track(i), self.tabs.setCurrentIndex(0)))
         m.addAction("Regenerate everything after this", lambda: self._regen_after(r))
@@ -1100,6 +1121,35 @@ class MainWindow(QMainWindow):
         self.db.add_folder(os.path.normpath(d))
         self.start_scan()
 
+    def _bridge_synced(self, lib_id: str, stats: dict):
+        self.status_label.setText(f"Home library synced: {stats['added']} new, {stats['updated']} known, "
+                                  f"{stats['removed']} gone")
+        self.reload_library()
+
+    def _bridge_downloaded(self, path: str):
+        if self.lib is None:
+            return
+        try:
+            i = self.lib.paths.index(path)
+        except ValueError:
+            return
+        err = self.bridge.downloader.error(path)
+        if err:
+            self.status_label.setText(f"Download failed: {self.lib.titles[i]} - {err}")
+            return
+        self.lib.local[i] = True
+        r = self.lib_model.row_of(i)
+        if r >= 0:
+            self.lib_model.dataChanged.emit(self.lib_model.index(r, 0),
+                                            self.lib_model.index(r, self.lib_model.columnCount() - 1))
+        self.status_label.setText(f"Downloaded {self.lib.titles[i]}")
+
+    def download_selected(self, idxs):
+        self.bridge.download_many([i for i in idxs if not self.lib.local[i]])
+        n = sum(1 for i in idxs if not self.lib.local[i])
+        self.status_label.setText(f"Downloading {n} track{'s' if n != 1 else ''} from home…" if n
+                                  else "Already here")
+
     def show_blend_map(self):
         """What blends with what: the style families and their neighbours."""
         from ..styles import FAMILIES, NEIGHBOURS
@@ -1128,7 +1178,7 @@ class MainWindow(QMainWindow):
         self._blend_dlg = dlg
 
     def open_settings(self):
-        dlg = SettingsDialog(self.settings, self.db, self)
+        dlg = SettingsDialog(self.settings, self.db, self, bridge=self.bridge)
         if dlg.exec() and self.settings.value("server_mode", "false") == "true" and not self.server_running():
             self.start_server()
 
@@ -1244,6 +1294,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         if getattr(self, "dj", None) is not None:
             self.dj.shutdown()
+        self.bridge.close()
         if self._scan_worker is not None:
             self._scan_worker.scanner.stop()
         if self._scan_thread is not None:

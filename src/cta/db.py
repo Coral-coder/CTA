@@ -71,6 +71,8 @@ MIGRATIONS = [
     ("grid_ver", "INTEGER"),      # 1 = fitted, 2 = downbeat refined, 3 = edited by the DJ
     ("phrase_origin", "INTEGER"), # bar (mod 8) where phrases start
     ("mix_out_end", "REAL"),      # DJ-set outro end (seconds): where the outgoing track is gone
+    ("remote", "TEXT"),           # library bridge: JSON {"lib": home library id, "id": its track id, "size": bytes}
+    ("local", "INTEGER NOT NULL DEFAULT 1"),   # 0: mirrored from home, not downloaded yet
 ]
 
 TRACK_FIELDS = [

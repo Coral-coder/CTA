@@ -559,6 +559,39 @@ If the sound card stops responding, CTA reopens it by itself within a few
 seconds. The phone remote shows a red banner when the PC's mix has stopped
 or the phone has lost the connection.
 
+## Library bridge: your home collection, anywhere
+
+Your main collection lives on the computer at home; the laptop you take
+to a gig has CTA too. **Settings → Library bridge** connects them:
+
+1. **At home:** tick **Share this library**, pick a port (8008) and put in
+   the address the laptop will reach you at (a hostname or your public IP
+   with the port forwarded on your router - or a tunnel such as
+   [Tailscale](https://tailscale.com), which gives you a stable address
+   and needs no router changes). **Copy** the pairing code. Sharing keeps
+   running with the mix server in the tray.
+2. **On the laptop:** paste the code under **Home libraries on this
+   machine** and press **Add**. CTA contacts home, checks the key, and
+   fetches the whole catalogue: every track with its tags, BPM, key, AI
+   style and sound vectors, beat grid, cues and mix markers - nothing is
+   re-analysed. The tracks appear in your library marked **⬇** (blue)
+   until downloaded; search, suggestions, the Setlist Builder and the
+   auto-mix treat them like your own.
+3. **Playing:** load one to a deck (or let the auto-mix queue it) and it
+   is downloaded first - the deck title shows the progress; anything in
+   the auto-mix queue is fetched ahead of time. Right-click → **Download
+   now** (one track, a selection, or the whole setlist) to fetch before
+   the gig. Downloads land in the data folder under `remote/` and stay;
+   a download that was cut off resumes.
+4. **Sync now** refreshes the catalogue (new tracks at home show up; ones
+   deleted at home disappear here); it also runs at start-up. **Remove**
+   forgets a home library (optionally deleting its downloads).
+
+Security: the key is 32 random bytes and the connection is encrypted with
+a certificate the laptop pins from the pairing code (no certificate
+authority involved); wrong keys are rate-limited. **New key** at home
+revokes every paired laptop.
+
 ## Updates
 
 CTA keeps itself up to date. At start-up (at most every 12 hours) it checks

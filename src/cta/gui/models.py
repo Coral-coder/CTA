@@ -184,7 +184,7 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
             if name == "Artist":
                 return lib.artists[i]
             if name == "Title":
-                return lib.titles[i]
+                return lib.titles[i] if lib.local[i] else "⬇ " + lib.titles[i]
             if name == "BPM":
                 b = lib.bpm[i]
                 return (f"{b:.2f}".rstrip("0").rstrip(".") if b else "") + (" *" if lib.bpm_overridden[i] else "")
@@ -207,9 +207,13 @@ class LibraryModel(_DragMixin, QAbstractTableModel):
             return QColor(255, 120, 90) if lib.session_played[i] else QColor(120, 200, 130)
         elif role == Qt.ForegroundRole and lib.session_played[i]:
             return QColor(120, 122, 130)          # already played this session: dimmed
+        elif role == Qt.ForegroundRole and not lib.local[i]:
+            return QColor(140, 160, 200)          # at home, not downloaded yet
         elif role == Qt.TextAlignmentRole and name in ("BPM", "Energy", "Time"):
             return int(Qt.AlignRight | Qt.AlignVCenter)
         elif role == Qt.ToolTipRole:
+            if not lib.local[i]:
+                return "In your home library - downloaded when a deck needs it (right-click: Download now)"
             if name == "AI Genre" and lib.styles[i]:
                 return "\n".join(f"{lab.replace('---', ' / ')}: {p:.0%}" for lab, p in lib.styles[i])
             if name in ("Title", "Artist"):

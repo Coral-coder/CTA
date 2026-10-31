@@ -72,6 +72,11 @@ class Library:
         self.albums = [r["album"] or "" for r in rows]
         self.tag_genres = [r["tag_genre"] or "" for r in rows]
         self.genres = [r["genre"] or "" for r in rows]
+        # library bridge: mirrored from a home library (remote JSON) - local once downloaded
+        keys = rows[0].keys() if rows else ()
+        self.remote = [(r["remote"] if "remote" in keys else None) or "" for r in rows]
+        self.local = np.array([bool(r["local"]) if "local" in keys and r["local"] is not None else True
+                               for r in rows], bool) if n else np.zeros(0, bool)
         self.styles = []
         self.parent_genres = []
         for r in rows:
