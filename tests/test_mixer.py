@@ -189,3 +189,20 @@ def test_a_style_lock_never_starves_a_set(tmp_path):
     lib = Library(db)
     seq = build_setlist(lib, 0, SetlistOptions(length=3, mix=MixSettings(max_pitch_pct=40)))
     assert len(seq) == 3
+
+
+def test_order_for_flow_keeps_every_track_and_mixes_better(tmp_path):
+    from cta.mixer import order_for_flow, score_from
+
+    lib = Library(_fake_db(str(tmp_path / "x.db")))
+    s = MixSettings(max_pitch_pct=6)
+    items = list(range(0, 60, 3))                       # "just a bunch of tracks"
+
+    def quality(seq):
+        return sum(score_from(lib, a, s).total[b] for a, b in zip(seq, seq[1:]))
+    order = order_for_flow(lib, items, s)
+    assert sorted(order) == sorted(items) and len(order) == len(items)
+    assert quality(order) > quality(items) * 1.1
+    pinned = order_for_flow(lib, items, s, keep_first=True, keep_last=True)
+    assert pinned[0] == items[0] and pinned[-1] == items[-1] and sorted(pinned) == sorted(items)
+    assert order_for_flow(lib, items[:2], s) == items[:2]

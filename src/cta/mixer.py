@@ -293,6 +293,73 @@ def build_setlist(lib: Library, seed_idx: int, opt: SetlistOptions, exclude=None
     return max(beams, key=lambda b: b[0])[1]
 
 
+def order_for_flow(lib: Library, items: list[int], s: MixSettings, keep_first: bool = False,
+                   keep_last: bool = False) -> list[int]:
+    """Reorder a fixed set of tracks (a playlist) so each one mixes into the
+    next as well as possible: the same transition scores as Next Track,
+    an impossible transition (tempo / key lock) counting as a hard break.
+    Every track stays in the list. keep_first / keep_last pin the opener and
+    the closer. Best start and nearest-neighbour chains, polished with 2-opt
+    and or-opt (moving runs of up to three tracks)."""
+    seq = [int(i) for i in items if 0 <= int(i) < lib.n]
+    n = len(seq)
+    if n < 3:
+        return seq
+    # pairwise transition quality, rows = from, columns = to
+    m = np.zeros((n, n))
+    for r, a in enumerate(seq):
+        sc = score_from(lib, a, s)
+        row = sc.total[seq]
+        ok = (sc.loose if sc.loose is not None else sc.valid)[seq]
+        m[r] = np.where(ok, row, row - 1.0)        # a transition that cannot be mixed costs a full point
+    np.fill_diagonal(m, -np.inf)
+
+    def total(order):
+        return float(sum(m[order[k], order[k + 1]] for k in range(len(order) - 1)))
+
+    def chain(start):
+        left = set(range(n)) - {start}
+        if keep_last:
+            left.discard(n - 1)
+        out = [start]
+        while left:
+            cur = out[-1]
+            nxt = max(left, key=lambda j: m[cur, j])
+            out.append(nxt)
+            left.discard(nxt)
+        if keep_last:
+            out.append(n - 1)
+        return out
+
+    starts = [0] if keep_first else [k for k in range(n) if not (keep_last and k == n - 1)]
+    if len(starts) > 60:                             # a huge list: try the best openers only
+        openness = m.max(axis=1) - np.where(np.isfinite(m), m, -1.0).mean(axis=0)
+        starts = sorted(starts, key=lambda k: -openness[k])[:60]
+    best = max((chain(k) for k in starts), key=total)
+    lo = 1 if keep_first else 0
+    hi = n - 1 if keep_last else n
+    improved = True
+    while improved:
+        improved = False
+        for i in range(lo, hi - 1):                  # 2-opt: reverse a stretch
+            for j in range(i + 1, hi):
+                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
+                if total(cand) > total(best) + 1e-9:
+                    best, improved = cand, True
+        for ln in (1, 2, 3):                         # or-opt: move a run somewhere else
+            for i in range(lo, hi - ln + 1):
+                run = best[i:i + ln]
+                rest = best[:i] + best[i + ln:]
+                for j in range(lo, len(rest) - (1 if keep_last else 0) + 1):
+                    cand = rest[:j] + run + rest[j:]
+                    if total(cand) > total(best) + 1e-9:
+                        best, improved = cand, True
+                        break
+                if improved:
+                    break
+    return [seq[k] for k in best]
+
+
 def transition_report(lib: Library, seq: list[int], s: MixSettings) -> list[dict]:
     """Per-transition details for display (pitch change, key relation, score)."""
     out = []

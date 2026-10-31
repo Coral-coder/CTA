@@ -531,6 +531,14 @@ def test_keyboard_cue_button_and_playlists(tmp_data_dir, monkeypatch):
     assert pl.model.data(pl.model.index(1, 6), Qt.ForegroundRole) == DIM
     pl.accept_bridge(1)
     assert pl.items() == [0, 1, 2]
+    # Sort for flow reorders (never drops) the songs; Undo sort brings the old order back
+    pl.lists[k]["paths"].append("/gone/missing.flac")              # a file no longer in the library stays
+    pl.sort_for_flow()
+    assert sorted(pl.items()) == [0, 1, 2] and pl.lists[k]["paths"][-1] == "/gone/missing.flac"
+    pl.lists[k]["paths"] = [pl.lists[k]["paths"][i] for i in (2, 0, 1, 3)]
+    pl.undo_sort()
+    assert pl.items() == [0, 1, 2]
+    pl.lists[k]["paths"].pop()
     # saved with the library
     pl2 = type(pl)(w)
     assert pl2.names() == ["Friday"] and pl2.items() == [0, 1, 2]

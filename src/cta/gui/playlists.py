@@ -156,7 +156,11 @@ class PlaylistPanel(QWidget):
         row.addWidget(self.show_bridges)
         for text, fn, tip in (("▲", lambda: self.move_selected(-1), "Move up"),
                               ("▼", lambda: self.move_selected(1), "Move down"),
-                              ("Remove", self.remove_selected, "Remove the selected songs (Delete)")):
+                              ("Remove", self.remove_selected, "Remove the selected songs (Delete)"),
+                              ("Sort for flow", self.sort_for_flow,
+                               "Reorder this playlist so every track mixes into the next as well as possible "
+                               "(tempo, key, sound, style, energy - the Next Track rules). Nothing is removed; "
+                               "the previous order comes back with Undo sort.")):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.clicked.connect(fn)
@@ -363,6 +367,43 @@ class PlaylistPanel(QWidget):
         self.refresh()
         self._select_pos(j)
 
+    def sort_for_flow(self):
+        """Reorder the current playlist for the best run of transitions."""
+        from ..mixer import order_for_flow
+
+        pl, lib = self.current, self.lib
+        if pl is None or lib is None:
+            return
+        items = self.items(pl)
+        if len(items) < 3:
+            self.main.status_label.setText("Sort for flow needs at least three songs")
+            return
+        s = self.main.mix_settings()
+        before = sum(score_from(lib, a, s).total[b] for a, b in zip(items, items[1:]))
+        order = order_for_flow(lib, items, s)
+        after = sum(score_from(lib, a, s).total[b] for a, b in zip(order, order[1:]))
+        known = {lib.paths[i] for i in items}
+        missing = [p for p in pl["paths"] if p not in known]          # files no longer in the library stay (at the end)
+        self._undo_sort = (self.combo.currentIndex(), list(pl["paths"]))
+        pl["paths"] = [lib.paths[i] for i in order] + missing
+        self._save()
+        self.refresh()
+        n = len(items) - 1
+        self.main.status_label.setText(f"“{pl['name']}” sorted for flow: average transition {before / n * 100:.0f} "
+                                       f"→ {after / n * 100:.0f} (right-click the list → Undo sort to go back)")
+
+    def undo_sort(self):
+        u = getattr(self, "_undo_sort", None)
+        if not u or not (0 <= u[0] < len(self.lists)):
+            return
+        self.lists[u[0]]["paths"] = list(u[1])
+        self._undo_sort = None
+        self._save()
+        if u[0] != self.combo.currentIndex():
+            self.combo.setCurrentIndex(u[0])
+        else:
+            self.refresh()
+
     def remove_selected(self):
         pl = self.current
         sel = self._selected_positions()
@@ -452,6 +493,10 @@ class PlaylistPanel(QWidget):
         if self.model.kinds[r] == "track":
             m.addSeparator()
             m.addAction("Remove from playlist", self.remove_selected)
+        m.addSeparator()
+        m.addAction("Sort for flow", self.sort_for_flow)
+        if getattr(self, "_undo_sort", None):
+            m.addAction("Undo sort", self.undo_sort)
         m.exec(self.view.viewport().mapToGlobal(pos))
 
     # ---- using a playlist ---------------------------------------------------------------
