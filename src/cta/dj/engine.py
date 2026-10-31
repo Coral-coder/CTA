@@ -392,8 +392,13 @@ class Engine:
     def load_track(self, deck: str, lt, only_if_stopped: bool = True):
         """Install a LoadedTrack (from dj.loader) on a deck."""
         def f(e):
-            if only_if_stopped and e.decks[deck].playing:
-                return
+            d = e.decks[deck]
+            if only_if_stopped and d.playing and not d.cue_preview:
+                return                         # never replaces a track that is on air
+            # holding CUE (a preview) or scrubbing a stopped deck is not "on air": the load wins
+            d.cue_preview = False
+            d.scratching = False
+            d.scratch_rate = 0.0
             e._load(e, deck, lt.audio, lt.grid, lt.info, lt.peaks, cue=getattr(lt, "first_beat_t", None),
                     mix_in=getattr(lt, "mix_in", None), mix_out=getattr(lt, "mix_out", None),
                     bands=getattr(lt, "bands", None), mix_out_end=getattr(lt, "mix_out_end", None))

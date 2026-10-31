@@ -846,3 +846,27 @@ def test_automix_brings_a_parked_crossfader_to_the_centre():
     assert abs(eng.crossfader) < 1e-3 and eng._xf_gain(second.xf_side) == 1.0
     m, _ = eng.render(block)
     assert np.sqrt(np.mean(m ** 2)) > 1e-3                              # the incoming is heard
+
+
+def test_a_load_is_not_lost_while_cue_is_held():
+    """Hitting CUE while a track is loading: the load still lands (a cue preview
+    is not "on air"); a deck really playing is never replaced."""
+    from types import SimpleNamespace
+
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    eng.cue_press("A")                                  # CUE held: preview playing
+    eng.render(512)
+    assert eng.decks["A"].playing and eng.decks["A"].cue_preview
+    a = _stereo(128.0, 20)
+    lt = SimpleNamespace(audio=a, grid=fit_grid(a[0], SR, 128.0), peaks=None,
+                         info=TrackInfo(title="new", bpm=128.0, loudness=-10))
+    eng.load_track("A", lt, only_if_stopped=True)
+    eng.render(512)
+    assert eng.decks["A"].info.title == "new" and not eng.decks["A"].playing
+    eng.set_playing("A", True)                          # really on air: a load never replaces it
+    eng.render(512)
+    lt2 = SimpleNamespace(audio=a, grid=lt.grid, peaks=None, info=TrackInfo(title="other", bpm=128.0, loudness=-10))
+    eng.load_track("A", lt2, only_if_stopped=True)
+    eng.render(512)
+    assert eng.decks["A"].info.title == "new" and eng.decks["A"].playing

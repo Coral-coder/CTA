@@ -3457,6 +3457,7 @@ class DJPanel(QWidget):
         from ..dj.learn import MixLearner
 
         self._downloading: dict[str, str] = {}
+        self._load_pending: dict[str, tuple[str, float]] = {}   # deck -> (path, when the load was sent)
         self.learner = MixLearner(main_window.db, self.automix)
         self.automix.learner = self.learner
         self.learner.on_change = self._push_learned
@@ -4523,8 +4524,10 @@ class DJPanel(QWidget):
                 lt = load_track(path, bpm, info, self.main.db)
                 # never replaces a deck that started playing meanwhile
                 self.engine.load_track(deck, lt, only_if_stopped=True)
+                self._load_pending[deck] = (path, time.monotonic())   # _tick checks it arrived
             except Exception as e:  # noqa: BLE001
                 log.exception("load failed")
+                self._load_pending[deck] = (path, 0.0)                # failed: the title goes back now
                 self._error.emit(f"Could not load {path}:\n{e}")
         threading.Thread(target=job, daemon=True, name=f"load-{deck}").start()
 
@@ -4941,6 +4944,16 @@ class DJPanel(QWidget):
 
     def _tick(self):
         self._offer_unload()
+        for deck, (path, t0) in list(self._load_pending.items()):
+            if self.engine.decks[deck].info.path == path:
+                self._load_pending.pop(deck, None)               # it arrived
+            elif time.monotonic() - t0 > 5.0:
+                # the load did not take (the deck went on air meanwhile, or it failed):
+                # never leave the deck saying "Loading…"
+                self._load_pending.pop(deck, None)
+                self.decks[deck]._loaded_path = object()          # the title shows what the deck holds
+                self.main.status_label.setText(f"Deck {deck}: the new track was not loaded (the deck is "
+                                               "playing) - stop it and load again")
         for deck, path in list(self._downloading.items()):        # a deck waiting for a home-library file
             txt = self.main.bridge.progress_text(path)
             if txt:
