@@ -35,8 +35,9 @@ class DeckView:
     """A deck as the GUI sees it: the server's numbers plus what the GUI
     itself loaded (grid, waveform data, track info)."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, scope: str = "deck"):
         self.name = name
+        self._scope = scope
         for k in DECK_SCALARS:
             setattr(self, k, 0.0)
         self.playing = self.cue_preview = self.sync = self.flux = self.cue_phones = self.scratching = False
@@ -70,12 +71,14 @@ class DeckView:
     def time(self) -> float:
         return self.play_pos / SR
 
-    def _apply(self, s: dict, registry: dict):
+    def _apply(self, s: dict, registry: dict, held=()):
         for k in DECK_SCALARS:
-            setattr(self, k, s[k])
+            if (self._scope, self.name, k) not in held:
+                setattr(self, k, s[k])
         self.loop = tuple(s["loop"]) if s["loop"] else None
         self.hotcues = list(s["hotcues"])
-        self.eq = np.asarray(s["eq"], np.float64)
+        if (self._scope, self.name, "eq") not in held:
+            self.eq = np.asarray(s["eq"], np.float64)
         self.fx = set(s["fx"])
         self.length, self.loaded = s["length"], s["loaded"]
         self.base_rate, self.rate, self.bpm = s["base_rate"], s["rate"], s["bpm"]
@@ -117,13 +120,13 @@ class FXView:
 
     def __setattr__(self, name, value):
         if name in self._ATTRS:
+            self._client._send("fx", self._i, name, value, hold=(("fx", self._i, name),))
             self._v[name] = value
-            self._client._send("fx", self._i, name, value)
         else:
             object.__setattr__(self, name, value)
 
-    def _apply(self, s: dict):
-        self._v.update(s)
+    def _apply(self, s: dict, held=()):
+        self._v.update({k: v for k, v in s.items() if ("fx", self._i, k) not in held})
 
 
 class _SettingsView:
@@ -143,11 +146,11 @@ class _SettingsView:
             raise AttributeError(name) from None
 
     def __setattr__(self, name, value):
+        self._client._send("set", self._target, name, value, hold=((self._target, name),))
         self._v[name] = value
-        self._client._send("set", self._target, name, value)
 
-    def _apply(self, s: dict):
-        self._v.update(s)
+    def _apply(self, s: dict, held=()):
+        self._v.update({k: v for k, v in s.items() if (self._target, k) not in held})
 
 
 class AutoMixView:
@@ -176,15 +179,18 @@ class AutoMixView:
         self.decks = ("A", "B")
 
     # ---- state ---------------------------------------------------------------------
-    def _apply(self, s: dict):
+    def _apply(self, s: dict, held=()):
         for k in ("active", "status", "queue", "history", "used_items", "aired", "pending_skip",
                   "resume_after_manual"):
-            setattr(self, k, s[k])
+            if ("am", k) not in held:
+                setattr(self, k, s[k])
         self.meta = set(s["meta"])
         self._loading = set(s["loading"])
-        self._resume_after_takeover = s["resume_after_takeover"]
-        self._rehearsal_fill = s["rehearsal_fill"]
-        self.s._apply(s["s"])
+        if ("am", "resume_after_takeover") not in held:
+            self._resume_after_takeover = s["resume_after_takeover"]
+        if ("am", "rehearsal_fill") not in held:
+            self._rehearsal_fill = s["rehearsal_fill"]
+        self.s._apply(s["s"], held)
         tr = s["tr"]
         self.tr = SimpleNamespace(**tr) if tr else None
 
@@ -194,8 +200,8 @@ class AutoMixView:
 
     @resume_after_takeover.setter
     def resume_after_takeover(self, v: bool):
+        self._client._send("set", "am", "resume_after_takeover", bool(v), hold=(("am", "resume_after_takeover"),))
         self._resume_after_takeover = bool(v)
-        self._client._send("set", "am", "resume_after_takeover", bool(v))
 
     @property
     def rehearsal_fill(self) -> bool:
@@ -203,8 +209,8 @@ class AutoMixView:
 
     @rehearsal_fill.setter
     def rehearsal_fill(self, v: bool):
+        self._client._send("set", "am", "rehearsal_fill", bool(v), hold=(("am", "rehearsal_fill"),))
         self._rehearsal_fill = bool(v)
-        self._client._send("set", "am", "rehearsal_fill", bool(v))
 
     @staticmethod
     def _analyse_deck(d):
@@ -327,10 +333,13 @@ class SessionView:
         self._auto_record = True
         self._fill = True
 
-    def _apply(self, s: dict):
+    def _apply(self, s: dict, held=()):
         self.mode, self.x, self.drop_beat = s["mode"], s["x"], s["drop_beat"]
         self.replaying = True if s["replaying"] else None
-        self._auto_record, self._fill = s["auto_record"], s["fill"]
+        if ("pvs", "auto_record") not in held:
+            self._auto_record = s["auto_record"]
+        if ("pvs", "fill") not in held:
+            self._fill = s["fill"]
         if s.get("lanes") is not None:
             self.lanes = s["lanes"]
         r = s.get("result")
@@ -347,8 +356,8 @@ class SessionView:
 
     @auto_record.setter
     def auto_record(self, v: bool):
+        self._client._send("set", "pvs", "auto_record", bool(v), hold=(("pvs", "auto_record"),))
         self._auto_record = bool(v)
-        self._client._send("set", "pvs", "auto_record", bool(v))
 
     @property
     def fill(self) -> bool:
@@ -356,8 +365,8 @@ class SessionView:
 
     @fill.setter
     def fill(self, v: bool):
+        self._client._send("set", "pvs", "fill", bool(v), hold=(("pvs", "fill"),))
         self._fill = bool(v)
-        self._client._send("set", "pvs", "fill", bool(v))
 
     def rehearse(self, out_beat: float, in_beat: float, lead_beats=None):
         self.result = None
@@ -383,17 +392,19 @@ class PreviewClient:
 
     def __init__(self, client: EngineClient):
         self._client = client
-        self.decks = {n: DeckView(n) for n in "ABCD"}
+        self.decks = {n: DeckView(n, "pvdeck") for n in "ABCD"}
         self._crossfader = 0.0
         self.master_deck = None
         self.session = SessionView(client)
         self.block = client.block
 
-    def _apply(self, s: dict):
+    def _apply(self, s: dict, held=()):
         for n, d in s["decks"].items():
-            self.decks[n]._apply(d, self._client._registry)
-        self._crossfader, self.master_deck = s["crossfader"], s["master_deck"]
-        self.session._apply(s["session"])
+            self.decks[n]._apply(d, self._client._registry, held)
+        if ("pv", "crossfader") not in held:
+            self._crossfader = s["crossfader"]
+        self.master_deck = s["master_deck"]
+        self.session._apply(s["session"], held)
 
     @property
     def crossfader(self) -> float:
@@ -401,8 +412,8 @@ class PreviewClient:
 
     @crossfader.setter
     def crossfader(self, v: float):
+        self._client._send("set", "pv", "crossfader", float(v), hold=(("pv", "crossfader"),))
         self._crossfader = float(v)
-        self._client._send("set", "pv", "crossfader", float(v))
 
     def load_track(self, deck: str, lt, only_if_stopped: bool = True):
         self._client._load("pv", deck, lt, only_if_stopped)
@@ -446,6 +457,13 @@ class EngineClient:
         self._req = 0
         self._lock = threading.Lock()
         self._snap: dict = {}
+        # every command is numbered; a value written here is held against snapshots
+        # until one that already includes that command (ack) arrives, and a snapshot
+        # older than the last applied one is dropped - so nothing ever snaps back
+        self._seq = 0
+        self._holds: dict[tuple, int] = {}
+        self._snap_seq = 0
+        self._apply_lock = threading.Lock()
         self.scope = None
         self.scope_prev = None
         self._scope_buf = np.zeros((2, 2048), np.float32)
@@ -537,29 +555,36 @@ class EngineClient:
             self.ring.close()
 
     # ---- messages -------------------------------------------------------------------------
-    def _send(self, *msg):
+    def _send(self, *msg, hold=()):
         if not self.alive:
             return                              # closed: nothing to talk to any more
-        if self.server is not None:
-            # in-process: dispatch right here and refresh the views, so what was
-            # just asked for is visible at once (tests rely on it)
-            with self._lock:
+        with self._lock:
+            self._seq += 1
+            seq = self._seq
+            if hold:
+                with self._apply_lock:
+                    for key in hold:
+                        self._holds[key] = seq
+            if self.server is not None:
+                # in-process: dispatch right here and refresh the views, so what was
+                # just asked for is visible at once (tests rely on it)
                 try:
-                    self.server._dispatch(msg)
+                    self.server._dispatch(msg, seq)
                 except Exception:  # noqa: BLE001
                     log.exception("audio command failed: %r", msg[:3])
                     return
-            if msg[0] != "quit":
+            else:
                 try:
-                    self._apply_snapshot(self.server._snapshot())
-                except Exception:  # noqa: BLE001
-                    pass
-            return
-        with self._lock:
+                    self._conn.send(("m", seq, msg))
+                except (OSError, ValueError, EOFError, BrokenPipeError) as e:
+                    log.warning("audio process unreachable: %s", e)
+                    self.alive = False
+                return
+        if msg[0] != "quit":
             try:
-                self._conn.send(msg)
-            except (OSError, ValueError, EOFError, BrokenPipeError) as e:
-                log.warning("audio process unreachable: %s", e)
+                self._apply_snapshot(self.server._snapshot())
+            except Exception:  # noqa: BLE001
+                pass
 
     def call(self, target: str, name: str, *args, **kwargs):
         self._send("call", target, name, args, kwargs)
@@ -568,7 +593,7 @@ class EngineClient:
         if not self.alive:
             raise RuntimeError("the audio engine is closed")
         if self.server is not None:
-            with self._lock:
+            with self._lock, self.server._state_lock:
                 value = getattr(self.server._target(target), name)(*args, **kwargs)
             self._apply_snapshot(self.server._snapshot())
             return value
@@ -642,24 +667,38 @@ class EngineClient:
     def _apply_snapshot(self, snap: dict):
         if not snap:
             return
-        self._snap = snap
-        for n, d in snap["decks"].items():
-            self.decks[n]._apply(d, self._registry)
-        for i, s in enumerate(snap["fx"]):
-            if i < len(self.fx_units):
-                self.fx_units[i]._apply(s)
-        self.automix._apply(snap["automix"])
-        self.deck_errors = snap["deck_errors"]
-        self.click_times = snap["click_times"]
-        self.extra_outputs = [SimpleNamespace(**o) for o in snap["extra_outputs"]]
-        for k in ("crossfader", "master_volume", "phones_volume", "cue_mix", "quantize", "phase_lock",
-                  "reset_on_load", "out_latency", "clock", "clock_adjust_s", "master_delay_s", "phones_delay_s",
-                  "click_target", "preview_route", "preview_level"):
-            self._local[k] = snap[k]
-        self._local["sync_outputs"] = None if snap["sync_outputs"] is None else set(snap["sync_outputs"])
-        pv = snap.get("preview")
-        if pv is not None and self.preview is not None:
-            self.preview._apply(pv)
+        with self._apply_lock:
+            seq = snap.get("seq", 0)
+            if seq < self._snap_seq:
+                return                          # older than what is shown already (two threads deliver)
+            self._snap_seq = seq
+            ack = snap.get("ack", 0)
+            for key in [k for k, n in self._holds.items() if n <= ack]:
+                del self._holds[key]
+            held = set(self._holds)
+            old = self._snap
+            for key in held:
+                if key[0] == "eng" and key[1] in old:
+                    snap[key[1]] = old[key[1]]
+            self._snap = snap
+            for n, d in snap["decks"].items():
+                self.decks[n]._apply(d, self._registry, held)
+            for i, s in enumerate(snap["fx"]):
+                if i < len(self.fx_units):
+                    self.fx_units[i]._apply(s, held)
+            self.automix._apply(snap["automix"], held)
+            self.deck_errors = snap["deck_errors"]
+            self.click_times = snap["click_times"]
+            self.extra_outputs = [SimpleNamespace(**o) for o in snap["extra_outputs"]]
+            for k in ("crossfader", "master_volume", "phones_volume", "cue_mix", "quantize", "phase_lock",
+                      "reset_on_load", "out_latency", "clock", "clock_adjust_s", "master_delay_s",
+                      "phones_delay_s", "click_target", "preview_route", "preview_level", "sync_outputs"):
+                if ("eng", k) not in held:
+                    v = snap[k]
+                    self._local[k] = set(v) if k == "sync_outputs" and v is not None else v
+            pv = snap.get("preview")
+            if pv is not None and self.preview is not None:
+                self.preview._apply(pv, held)
         self._drain_ring()
 
     def _drain_ring(self):
@@ -733,7 +772,7 @@ class EngineClient:
 
     # ---- the engine API ------------------------------------------------------------------------
     def __getattr__(self, name):
-        if name in ("set", "set_playing", "toggle_play", "cue_press", "cue_release", "seek", "set_cue",
+        if name in ("set_playing", "toggle_play", "cue_press", "cue_release", "seek", "set_cue",
                     "set_markers", "loop_beats", "hotcue", "hotcue_delete", "set_hotcues", "loop_in", "loop_out",
                     "loop_resize", "beatjump", "key_sync", "set_grid", "grid_downbeat_here", "phase_snap",
                     "set_master", "jog", "scratch", "jog_release", "set_paused", "unload", "update_alignment",
@@ -742,6 +781,10 @@ class EngineClient:
         if name in ("start_virtual",):
             return lambda *a, **k: self.call("eng", name, *a, **k)
         raise AttributeError(name)
+
+    def set(self, deck: str, **kw):
+        """Set plain deck attributes (volume, eq, tempo, keylock, sync, ...)."""
+        self._send("call", "eng", "set", (deck,), kw, hold=tuple(("deck", deck, k) for k in kw))
 
     def start(self, device_label=None, block=None, master_chans=(0, 1), phones_chans=None, phones_label=None):
         """Open the sound card(s) in the audio process; raises when it cannot."""
@@ -910,8 +953,8 @@ def _prop(name):
         return self._local[name]
 
     def set_(self, v):
+        self._send("set", "eng", name, v if not isinstance(v, set) else set(v), hold=(("eng", name),))
         self._local[name] = v
-        self._send("set", "eng", name, v if not isinstance(v, set) else set(v))
     return property(get, set_)
 
 

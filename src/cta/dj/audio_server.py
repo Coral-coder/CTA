@@ -253,6 +253,11 @@ class Server:
         self._load_events: dict[int, tuple[threading.Event, list]] = {}
         self._req = 0
         self._lock = threading.Lock()
+        # commands and snapshots are serialised: a snapshot's seq orders it against
+        # every command, and ack = the last client command it already includes
+        self._state_lock = threading.RLock()
+        self._seq = 0
+        self.acked = 0
         self.want_deck_scope = False
         self.alive = True
         self._snap_thread = threading.Thread(target=self._snapshots, daemon=True, name="audio-snap")
@@ -300,7 +305,17 @@ class Server:
                 self.event("error", traceback.format_exc()[-800:])
         self.shutdown()
 
-    def _dispatch(self, msg):
+    def _dispatch(self, msg, seq: int | None = None):
+        if msg[0] == "m":                              # ("m", seq, msg): a numbered client command
+            _, seq, msg = msg
+        with self._state_lock:
+            try:
+                self._dispatch1(msg)
+            finally:
+                if seq is not None:
+                    self.acked = seq
+
+    def _dispatch1(self, msg):
         kind = msg[0]
         if kind == "call":
             _, target, name, args, kwargs = msg
@@ -547,6 +562,13 @@ class Server:
     def _snapshot(self) -> dict:
         if not self.alive:
             return {}
+        with self._state_lock:
+            self._seq += 1
+            snap = self._snapshot1()
+            snap["seq"], snap["ack"] = self._seq, self.acked
+        return snap
+
+    def _snapshot1(self) -> dict:
         e, am = self.engine, self.automix
         snap = {k: getattr(e, k) for k in ENGINE_SCALARS}
         snap["decks"] = {n: self._deck_snap("eng", d) for n, d in e.decks.items()}
