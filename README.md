@@ -559,6 +559,13 @@ If the sound card stops responding, CTA reopens it by itself within a few
 seconds. The phone remote shows a red banner when the PC's mix has stopped
 or the phone has lost the connection.
 
+- **If the audio process ever crashes**, the watchdog starts a new one and
+  puts everything back where it was - every deck's track, position, play
+  state, cue, hot cues, loop and levels, the master deck and the auto-mix
+  queue - so it costs a moment of silence, not the mix. The status bar says
+  "Audio process restarted" and `audio.log` in the data folder has the
+  reason.
+
 ## Library bridge: your home collection, anywhere
 
 Your main collection lives on the computer at home; the laptop you take

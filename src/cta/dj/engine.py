@@ -608,6 +608,13 @@ class Engine:
                 d.feed_pos = d.play_pos
         self.cmd(f)
 
+    def set_hotcues(self, deck: str, cues: list):
+        self.cmd(lambda e: setattr(e.decks[deck], "hotcues", (list(cues) + [None] * 8)[:8]))
+
+    def set_loop(self, deck: str, loop):
+        """An exact loop (start, end) in source frames, or None."""
+        self.cmd(lambda e: setattr(e.decks[deck], "loop", tuple(loop) if loop else None))
+
     def loop_beats(self, deck: str, beats: float | None):
         def f(e):
             d = e.decks[deck]

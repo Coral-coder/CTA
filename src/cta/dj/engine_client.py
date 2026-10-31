@@ -70,20 +70,26 @@ class DeckView:
         self._snap_t: float | None = None     # monotonic time the snapshot's play_pos was true
         self._live = False                    # a real-time output is running: positions move between snapshots
         self._est: float | None = None        # the continuous position estimate (frames) at _snap_t
+        self._last_start = None               # start_pos of the last snapshot: a change = the deck jumped
 
     def _stamp(self, t: float | None, live: bool):
         """A new snapshot: carry the continuous position on. play_pos is the end
         of the last rendered block, so it jumps a block at a time; the estimate
-        runs smoothly and only steps when the deck really jumped (cue, loop,
-        seek), never backwards by a block's worth of quantisation."""
+        runs smoothly and never steps backwards - only when the deck really
+        jumped (cue, seek: a new start_pos) or ran ahead of it. When the audio
+        side is late (a busy machine) the playhead holds until it catches up."""
         meas = float(self.play_pos)
         est = meas
-        if (live and self.playing and not self.scratching and self._est is not None
+        jumped = self._last_start != self.start_pos
+        if (live and self.playing and not self.scratching and not jumped and self._est is not None
                 and self._snap_t is not None and t is not None):
             pred = self._est + max(t - self._snap_t, 0.0) * SR * self.rate
-            if 0.0 <= pred - meas < 0.03 * SR:
-                est = pred
-        self._est, self._snap_t, self._live = est, t, live
+            lp = self.loop
+            if lp is not None and lp[1] > lp[0] and pred >= lp[1]:
+                pred = lp[0] + (pred - lp[0]) % (lp[1] - lp[0])
+            if meas < pred < meas + 0.5 * SR:
+                est = pred                                    # hold: no step back
+        self._est, self._snap_t, self._live, self._last_start = est, t, live, self.start_pos
 
     @property
     def time(self) -> float:
@@ -92,7 +98,7 @@ class DeckView:
         see the stall)."""
         pos = self.play_pos
         if self._live and self.playing and self._snap_t is not None and not self.scratching:
-            dt = min(max(time.monotonic() - self._snap_t, 0.0), 0.25)
+            dt = min(max(time.perf_counter() - self._snap_t, 0.0), 0.25)
             pos = (self._est if self._est is not None else pos) + dt * SR * self.rate
             lp = self.loop
             if lp is not None and lp[1] > lp[0] and pos >= lp[1]:
@@ -542,9 +548,18 @@ class EngineClient:
         return self._proc is not None and self._proc.is_alive()
 
     def respawn(self):
-        """The audio process died: start a new one and put every deck's track
-        back (the GUI still holds them). The caller restarts the sound card."""
-        old_tracks = {n: d.track for n, d in self.decks.items()}
+        """The audio process died: start a new one and put everything back the
+        way the last snapshot had it - every deck's track, position, play
+        state, cue, hot cues, loop and levels, the master deck and the
+        auto-mix queue - so a crash costs a moment of silence, not the mix.
+        The caller restarts the sound card."""
+        old = {n: dict(track=d.track, play_pos=float(d.play_pos), playing=bool(d.playing and not d.cue_preview),
+                       cue=float(d.cue_point), hotcues=list(d.hotcues), loop=d.loop, volume=d.volume, gain=d.gain,
+                       trim=d.trim, filter=d.filter, eq=[float(x) for x in d.eq], tempo=d.tempo,
+                       tempo_range=d.tempo_range, keylock=d.keylock, sync=d.sync, loop_size=d.loop_size)
+               for n, d in self.decks.items()}
+        master = self.master_deck
+        am_queue, am_active = list(self.automix.queue), bool(self.automix.active)
         try:
             self._conn.close()
         except Exception:  # noqa: BLE001
@@ -560,10 +575,27 @@ class EngineClient:
         self._spawn()
         for name, v in self._local.items():
             self._send("set", "eng", name, v)
-        for n, track in old_tracks.items():
-            lt = self._registry.get(track) if track else None
-            if lt is not None:
-                self._load("eng", n, lt, False)
+        for n, st in old.items():
+            lt = self._registry.get(st["track"]) if st["track"] else None
+            if lt is None:
+                continue
+            self._load("eng", n, lt, False)
+            self.call("eng", "set", n, volume=st["volume"], gain=st["gain"], trim=st["trim"], filter=st["filter"],
+                      eq=st["eq"], tempo=st["tempo"], tempo_range=st["tempo_range"], keylock=st["keylock"],
+                      sync=st["sync"], loop_size=st["loop_size"])
+            self.call("eng", "set_cue", n, st["cue"] / SR)
+            self.call("eng", "set_hotcues", n, st["hotcues"])
+            self.call("eng", "seek", n, st["play_pos"] / SR)
+            if st["loop"] is not None:
+                self.call("eng", "set_loop", n, st["loop"])
+            if st["playing"]:
+                self.call("eng", "set_playing", n, True, False)    # exactly where it was: no beat snap
+        if master:
+            self.call("eng", "set_master", master)
+        if am_queue:
+            self.automix.set_queue(am_queue)
+        if am_active:
+            self.automix.start()
 
     def close(self):
         if not self.alive:
@@ -806,7 +838,8 @@ class EngineClient:
     # ---- the engine API ------------------------------------------------------------------------
     def __getattr__(self, name):
         if name in ("set_playing", "toggle_play", "cue_press", "cue_release", "seek", "set_cue",
-                    "set_markers", "loop_beats", "hotcue", "hotcue_delete", "set_hotcues", "loop_in", "loop_out",
+                    "set_markers", "loop_beats", "hotcue", "hotcue_delete", "set_hotcues", "set_loop", "loop_in",
+                    "loop_out",
                     "loop_resize", "beatjump", "key_sync", "set_grid", "grid_downbeat_here", "phase_snap",
                     "set_master", "jog", "scratch", "jog_release", "set_paused", "unload", "update_alignment",
                     "remove_output", "set_output_delay", "close_outputs", "stop"):

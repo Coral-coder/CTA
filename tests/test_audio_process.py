@@ -183,3 +183,36 @@ def test_positions_run_on_between_snapshots():
         assert d.time == t0
     finally:
         eng.close()
+
+
+def test_a_crashed_audio_process_comes_back_where_the_mix_was():
+    """The watchdog's respawn puts the decks back exactly: track, position,
+    playing, cue, hot cues, loop, levels, master deck, auto-mix queue."""
+    tracks = {0: _track("one", 124.0, 40, idx=0), 1: _track("two", 124.0, 40, idx=1)}
+    eng = EngineClient(block=512, inproc=False, load_fn=lambda item: tracks[int(item)])
+    try:
+        eng.start_virtual()
+        eng.load_track("A", tracks[0], only_if_stopped=False)
+        assert _wait(lambda: eng.decks["A"].loaded)
+        eng.seek("A", 5.0)
+        eng.set("A", volume=0.5, eq=(0.3, 1.0, 1.0), tempo=0.25, keylock=True)
+        eng.set_cue("A", 4.0)
+        eng.hotcue("A", 2)
+        eng.loop_beats("A", 8)
+        eng.set_playing("A", True)
+        eng.set_master("A")
+        eng.automix.set_queue([1])
+        d = eng.decks["A"]
+        assert _wait(lambda: d.playing and d.loop is not None and d.hotcues[2] is not None and d.time > 5.2)
+        t_before, loop, hc = d.time, d.loop, d.hotcues[2]
+        eng._proc.kill()                                  # the crash
+        assert _wait(lambda: not eng.process_alive, timeout=10)
+        eng.respawn()
+        eng.start_virtual()
+        assert _wait(lambda: d.loaded and d.playing and d.time > t_before, timeout=15)
+        assert d.time - t_before < 3.0                    # back where it was, not from the start
+        assert abs(d.volume - 0.5) < 1e-6 and abs(d.eq[0] - 0.3) < 1e-6 and abs(d.tempo - 0.25) < 1e-6
+        assert abs(d.cue_point / SR - 4.0) < 1e-6 and d.hotcues[2] == hc and d.loop == loop
+        assert eng.master_deck == "A" and list(eng.automix.queue) == [1]
+    finally:
+        eng.close()
