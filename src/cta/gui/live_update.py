@@ -417,7 +417,8 @@ class LiveUpdateGuest(QObject):
         if main.lib is None:
             return self._later()
         if getattr(main, "dj", None) is None:
-            main.open_dj()
+            if not getattr(main, "_dj_opening", False):
+                main.open_dj()
             return self._later(500)
         dj = main.dj
         if not getattr(self, "_loads_sent", False):

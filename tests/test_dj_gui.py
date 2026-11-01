@@ -901,3 +901,45 @@ def test_learned_mixes_dialog_edits_templates_and_round_trips_a_file(tmp_data_di
     dlg.close()
     dj.shutdown()
     w.close()
+
+
+def test_dj_mode_is_built_once_even_when_two_openers_overlap(tmp_data_dir, monkeypatch):
+    """At start-up DJ mode opens by itself and a live update opens it too; if one
+    runs while the other is still building the decks, there is still one set."""
+    from PySide6.QtCore import QEventLoop, QSettings, QTimer
+
+    import cta.gui.dj_window as DW
+    from cta.db import Database
+    from cta.dj.engine import Engine
+    from cta.gui.main_window import MainWindow
+    from cta.scanner import Scanner, ScanSettings
+
+    monkeypatch.setattr(Engine, "start", lambda self, *a, **k: None)
+    monkeypatch.setattr("cta.dj.engine.list_output_devices", lambda: [])
+    monkeypatch.setattr(DW, "list_output_devices", lambda: [])
+    monkeypatch.setattr(DW.Controller, "list_inputs", staticmethod(lambda: []))
+    music = tmp_data_dir / "music"
+    music.mkdir()
+    write_audio(str(music / "a.flac"), synth_track(124.0, 20))
+    db = Database(str(tmp_data_dir / "lib.sqlite3"))
+    Scanner(db, ScanSettings(workers=1, use_ai=False)).run([str(music)])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = MainWindow(db, QSettings(str(tmp_data_dir / "s.ini"), QSettings.IniFormat))
+    w.show()
+    for _ in range(100):
+        if w.lib is not None:
+            break
+        loop = QEventLoop()
+        QTimer.singleShot(50, loop.quit)
+        loop.exec()
+    real_init = DW.DJPanel.__init__
+
+    def init(self, main):
+        real_init(self, main)
+        main.open_dj()                     # the other opener, while the first is still building
+    monkeypatch.setattr(DW.DJPanel, "__init__", init)
+    w.open_dj()
+    assert len(w.findChildren(DW.DJPanel)) == 1
+    assert [w.tabs.tabText(i) for i in range(w.tabs.count())].count("Auto-mix queue") == 1
+    w.dj.shutdown()
+    w.close()

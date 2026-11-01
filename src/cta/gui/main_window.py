@@ -1039,13 +1039,19 @@ class MainWindow(QMainWindow):
         """Show the DJ decks docked above the library (Traktor layout)."""
         if self.lib is None:
             return
+        if getattr(self, "_dj_opening", False):
+            return                               # being built right now (two openers at start-up): once only
         if getattr(self, "dj", None) is None:
             try:
                 from .dj_window import DJPanel
             except Exception as e:  # noqa: BLE001
                 QMessageBox.critical(self, "DJ Mode", f"DJ Mode is unavailable:\n{e}")
                 return
-            self.dj = DJPanel(self)
+            self._dj_opening = True
+            try:
+                self.dj = DJPanel(self)
+            finally:
+                self._dj_opening = False
             quiet_memory()
             self.dj_dock = self.dj                # the decks live in the top half of the splitter
             self.tabs.addTab(self.scrolled(self.dj.queue_panel), "Auto-mix queue")
