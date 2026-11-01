@@ -52,58 +52,52 @@ def paint(full_bleed: bool) -> Image.Image:
     r = np.hypot(x, y)
     th = np.arctan2(y, x)
 
-    # ---- the storm: noise twisted into a spiral, tighter towards the eye ----
-    twist = 4.2 * np.exp(-r * 1.8) + 1.1 * np.log(r + 0.05)
-    a = th + twist
-    base = fbm(M)
-    detail = fbm(M, octaves=(8, 16, 32, 64), gain=0.55)
-    sx = (np.cos(a) * r * 0.5 + 0.5) * (M - 1)
-    sy = (np.sin(a) * r * 0.5 + 0.5) * (M - 1)
-    clouds = map_coordinates(base, [sy, sx], order=1, mode="mirror")
-    fine = map_coordinates(detail, [sy * 1.0, sx * 1.0], order=1, mode="mirror")
-    # spiral rain bands (four arms) give the hurricane its structure
-    arms = 0.5 + 0.5 * np.cos(3 * th + 7.5 * np.log(r + 0.08) + 1.6 * (clouds - 0.5))
-    arms = arms ** 1.6
-    # billows: ridged noise gives cumulus-like puffs along the bands
-    puff = fbm(M, octaves=(12, 24, 48, 96), gain=0.5)
-    puff = map_coordinates(puff, [sy, sx], order=1, mode="mirror")
-    billow = 1 - np.abs(2 * puff - 1)
-    density = 0.40 * clouds + 0.10 * fine + 0.55 * arms + 0.30 * billow * (0.4 + 0.6 * arms)
-    # the eye: clear in the middle, a tall wall of cloud round it
-    eye_r, wall_r = 0.37, 0.49
-    wall = np.exp(-((r - wall_r) / 0.075) ** 2)
-    density = density * smooth(eye_r - 0.02, wall_r, r) + 0.55 * wall
-    density = gaussian_filter(density, 1.8 * SS)
+    # ---- a hurricane as a satellite sees it: arms of cloud spiralling into the eye ----
+    eye_r = 0.33
+    swirl = th + 3.4 * np.exp(-r * 2.2)                     # the wind twists the texture round the eye
+    sx = (np.cos(swirl) * r * 0.5 + 0.5) * (M - 1)
+    sy = (np.sin(swirl) * r * 0.5 + 0.5) * (M - 1)
+    n1 = map_coordinates(fbm(M, octaves=(6, 12, 24, 48, 96), gain=0.55), [sy, sx], order=1, mode="mirror")
+    n2 = map_coordinates(fbm(M, octaves=(24, 48, 96, 192), gain=0.55), [sy, sx], order=1, mode="mirror")
+    lr_ = np.log(r + 0.04)
+    # two main arms + thinner feeder bands, each a logarithmic spiral
+    main = 0.5 + 0.5 * np.cos(2 * th - 5.6 * lr_ + 1.8 * (n1 - 0.5))
+    feed = 0.5 + 0.5 * np.cos(5 * th - 9.5 * lr_ + 2.5 * (n1 - 0.5))
+    arms = smooth(0.50, 0.92, main) * (1.05 - smooth(0.55, 1.05, r)) \
+        + 0.55 * smooth(0.62, 0.95, feed) * smooth(0.45, 0.70, r) * (1 - smooth(0.85, 1.15, r))
+    # the dense cloud ring round the eye
+    cdo = smooth(eye_r - 0.01, eye_r + 0.07, r) * (1 - smooth(0.50, 0.68, r))
+    density = np.clip(np.maximum(cdo * (0.85 + 0.25 * n1), arms * (0.55 + 0.6 * n1)), 0, 1)
+    density = density * (0.82 + 0.30 * n2)                  # texture in the cloud tops
+    density = gaussian_filter(density, 1.4 * SS)
+    density = density * smooth(eye_r - 0.02, eye_r + 0.03, r)
 
-    # ---- light it: the density is a height field, the sun is up and to the left ----
-    h = density * 30.0
-    gy, gx = np.gradient(h)
-    nz = np.ones_like(h) * 1.0
+    # ---- light: soft sun from the top left on the cloud tops ----
+    h = density * 22.0
+    gy, gx = np.gradient(gaussian_filter(h, 2 * SS))
+    nz = np.ones_like(h)
     norm = np.sqrt(gx * gx + gy * gy + nz * nz)
-    lx, ly, lz = -0.55, -0.62, 0.56
+    lx, ly, lz = -0.5, -0.6, 0.62
     lam = np.clip((-gx * lx - gy * ly + nz * lz) / norm, 0, 1)
-    # soft self shadow: low ground in the lee of tall cloud
-    shade = gaussian_filter(h, 6 * SS)
-    occl = np.clip(1.0 - (np.roll(np.roll(shade, 10 * SS, 0), 10 * SS, 1) - h) * 0.08, 0.55, 1.0)
+    # the clouds' shadow on the sea, offset away from the sun
+    shadow = gaussian_filter(np.roll(np.roll(density, 14 * SS, 0), 12 * SS, 1), 6 * SS)
 
-    deep = np.array([0.105, 0.125, 0.145])        # gaps between the bands: dark sea-slate
-    mid = np.array([0.38, 0.42, 0.45])            # storm grey
-    top = np.array([0.90, 0.91, 0.90])            # sunlit cloud tops
-    warm = np.array([0.95, 0.93, 0.88])           # a touch of late-day warmth on the highlights
-    d = smooth(0.18, 0.85, density)
-    col = mix(deep, mid, d)
-    col = mix(col, top, smooth(0.45, 1.0, d * lam * 1.25))
-    col = mix(col, warm, smooth(0.80, 1.0, lam) * d * 0.5)
-    col *= (0.42 + 0.62 * lam)[..., None] * occl[..., None]
-    # the eye floor: dark, calm water far below
-    floor = np.array([0.07, 0.085, 0.10])
-    col = mix(col, floor, 1 - smooth(eye_r - 0.03, eye_r + 0.06, r))
-    # the outer edge of the storm falls off into dark sky
-    sky = np.array([0.09, 0.105, 0.12])
-    col = mix(col, sky, smooth(0.86, 1.25, r))
+    sea_deep = np.array([0.055, 0.105, 0.140])
+    sea_lit = np.array([0.090, 0.165, 0.205])
+    sea = mix(sea_deep, sea_lit, smooth(0.0, 1.0, 1 - r * 0.6) * (0.6 + 0.4 * n2))
+    sea = sea * (1 - 0.45 * shadow)[..., None]
+    cloud_dark = np.array([0.52, 0.56, 0.58])
+    cloud_lit = np.array([0.95, 0.955, 0.95])
+    cloud = mix(cloud_dark, cloud_lit, smooth(0.25, 0.95, lam * (0.65 + 0.45 * density)))
+    col = mix(sea, cloud, smooth(0.05, 0.75, density))
+    # the eye: calm, dark water, the eyewall falling away into it
+    eye = mix(np.array([0.04, 0.075, 0.10]), sea_deep, smooth(0.0, eye_r, r))
+    col = mix(col, eye, 1 - smooth(eye_r - 0.04, eye_r + 0.02, r))
+    col = mix(col, col * 0.85, smooth(0.9, 1.3, r))          # darker towards the tile edge
+    lam = lam
 
     # ---- the record in the eye ----
-    vr = 0.305
+    vr = 0.255
     # its shadow on the eye floor (down-right of the light)
     sh = np.hypot(x - 0.035, y - 0.045)
     col *= (1 - 0.55 * (1 - smooth(vr - 0.02, vr + 0.07, sh)))[..., None]
@@ -115,11 +109,11 @@ def paint(full_bleed: bool) -> Image.Image:
     vinyl = vinyl + (sheen * (0.20 + 0.08 * grooves))[..., None]
     rim = np.exp(-((r - vr) / 0.006) ** 2)
     vinyl = vinyl + (rim * 0.12)[..., None]
-    lr = 0.105
-    label = np.array([0.78, 0.71, 0.60])          # aged paper
+    lr = 0.088
+    label = np.array([0.86, 0.85, 0.82])          # plain off-white paper
     label_on = 1 - smooth(lr - 0.003, lr + 0.003, r)
     vinyl = mix(vinyl, label * (0.88 + 0.12 * lam.mean()), label_on)
-    vinyl = mix(vinyl, np.array([0.55, 0.47, 0.38]), np.exp(-((r - lr * 0.72) / 0.004) ** 2) * label_on)
+    vinyl = mix(vinyl, np.array([0.45, 0.46, 0.47]), np.exp(-((r - lr * 0.72) / 0.004) ** 2) * label_on)
     hole = 1 - smooth(0.010, 0.014, r)
     vinyl = mix(vinyl, np.array([0.05, 0.05, 0.05]), hole)
     col = mix(col, vinyl, on)

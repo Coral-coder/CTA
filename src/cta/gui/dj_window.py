@@ -65,6 +65,11 @@ CUE_COLORS = [QColor(c) for c in ("#e53935", "#fb8c00", "#fdd835", "#43a047",
                                   "#00acc1", "#1e88e5", "#8e24aa", "#d81b60")]
 
 
+# live numbers (BPM, times, pitch) use fixed-width digits: a 1 is as wide as an 8, so the
+# readouts never jump as they count. A monospace face that every system has.
+DIGITS = 'font-family: "SF Mono", "Menlo", "Consolas", "DejaVu Sans Mono", monospace;'
+
+
 def fmt_time(s: float) -> str:
     s = max(0.0, s)
     return f"{int(s // 60)}:{int(s % 60):02d}.{int((s * 10) % 10)}"
@@ -1618,10 +1623,11 @@ class DeckPanel(QFrame):
         bpmbox.setSpacing(0)
         self.bpm_lbl = QLabel("")
         self.bpm_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.bpm_lbl.setStyleSheet("font-size: 19px; font-weight: 800; color: #ffffff;")
+        self.bpm_lbl.setStyleSheet(DIGITS + "font-size: 24px; font-weight: 800; color: #ffffff;")
+        self.bpm_lbl.setMinimumWidth(104)
         self.pct_lbl = QLabel("")
         self.pct_lbl.setAlignment(Qt.AlignRight)
-        self.pct_lbl.setStyleSheet("font-size: 10px; color: #8d8f97;")
+        self.pct_lbl.setStyleSheet(DIGITS + "font-size: 12px; color: #a3a5ad;")
         bpmbox.addWidget(self.bpm_lbl)
         bpmbox.addWidget(self.pct_lbl)
         head.addLayout(bpmbox)
@@ -1629,11 +1635,11 @@ class DeckPanel(QFrame):
         timebox.setSpacing(0)
         self.remain_lbl = QLabel("")
         self.remain_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.remain_lbl.setMinimumWidth(70)
-        self.remain_lbl.setStyleSheet("font-size: 16px; font-weight: 700; color: #f2f2f5;")
+        self.remain_lbl.setMinimumWidth(128)
+        self.remain_lbl.setStyleSheet(DIGITS + "font-size: 24px; font-weight: 700; color: #f2f2f5;")
         self.time_lbl = QLabel("")
         self.time_lbl.setAlignment(Qt.AlignRight)
-        self.time_lbl.setStyleSheet("font-size: 10px; color: #8d8f97;")
+        self.time_lbl.setStyleSheet(DIGITS + "font-size: 13px; color: #a3a5ad;")
         timebox.addWidget(self.remain_lbl)
         timebox.addWidget(self.time_lbl)
         head.addLayout(timebox)
@@ -2102,7 +2108,7 @@ class DeckPanel(QFrame):
         _set_text(self.remain_lbl, f"-{fmt_time(remain)}")
         _set_text(self.time_lbl, fmt_time(t_vis))
         warn = d.playing and remain < 30
-        _set_ss(self.remain_lbl, "font-size: 20px; font-weight: 700; color: "
+        _set_ss(self.remain_lbl, DIGITS + "font-size: 24px; font-weight: 700; color: "
                                       + ("#ff5050;" if warn else "#f2f2f5;"))
         for wv in (self.zoom, self.over):
             wv.pos = t_vis
@@ -3871,7 +3877,8 @@ class DJPanel(QWidget):
         cap = QLabel("MASTER BPM")
         cap.setStyleSheet("font-size: 9px; color: #8d8f97; font-weight: 800;")
         self.clock_bpm = QLabel("—")
-        self.clock_bpm.setStyleSheet("font-size: 18px; font-weight: 800; color: #ffffff;")
+        self.clock_bpm.setStyleSheet(DIGITS + "font-size: 22px; font-weight: 800; color: #ffffff;")
+        self.clock_bpm.setMinimumWidth(96)
         col.addWidget(cap)
         col.addWidget(self.clock_bpm)
         lay.addLayout(col)
