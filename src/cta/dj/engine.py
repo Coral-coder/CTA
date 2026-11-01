@@ -391,8 +391,18 @@ class Engine:
 
     def load_track(self, deck: str, lt, only_if_stopped: bool = True):
         """Install a LoadedTrack (from dj.loader) on a deck."""
+        rb = None
+        if self.decks[deck]._rb is None:
+            try:
+                rb = _rb_new(1.0)              # built here, not inside an audio block (it takes ~12 ms)
+            except Exception:  # noqa: BLE001
+                rb = None
+
         def f(e):
             d = e.decks[deck]
+            if rb is not None and d._rb is None:
+                d._rb, d._rb_drop = rb
+                d._rb_ratio, d._pitch, d._rb_reset = 1.0, 1.0, True
             if only_if_stopped and d.playing and not d.cue_preview:
                 return                         # never replaces a track that is on air
             # holding CUE (a preview) or scrubbing a stopped deck is not "on air": the load wins
@@ -1064,6 +1074,7 @@ class Engine:
             return None
         if not d.playing and not d.scratching:     # a hand on a stopped record still scrubs audibly
             d._scr_gain = 0.0
+            d._mode = "vinyl"                      # the next start (a CUE tap) is instant again
             tail, d._tail = d._tail, None
             if tail is not None and np.any(tail):
                 # just stopped: fade from where the waveform was instead of a hard cut (no click)
@@ -1076,9 +1087,15 @@ class Engine:
         # phase lock's tiny rate corrections never toggle modes and click
         # the stretcher only when it changes something: at the original tempo (and
         # key) the plain path starts on the very first sample - instant CUE taps
-        use_stretch = ((d.keylock and abs(d.base_rate - 1.0) > 1e-3) or abs(d.key_shift) > 1e-6) \
-            and not d.scratching and rate > 0.25
+        # key lock holds the key whatever moves the speed: the tempo fader, a jog
+        # nudge, sync's phase corrections. Once the stretcher is in it stays in
+        # while the deck plays (no flipping between paths, no click, no pitch bend)
+        locked = d.keylock and (abs(d.base_rate - 1.0) > 1e-3 or d.nudge != 0.0 or abs(d.phase_corr) > 1e-6
+                                or d._mode == "stretch")
+        use_stretch = (locked or abs(d.key_shift) > 1e-6) and not d.scratching and rate > 0.25
         if use_stretch:
+            if d._mode != "stretch":
+                d._rb_reset = True             # coming from the plain path: start the stretcher here
             d._mode = "stretch"
             y = self._render_stretched(d, n, rate)
         else:

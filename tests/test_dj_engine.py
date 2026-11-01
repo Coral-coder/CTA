@@ -888,3 +888,28 @@ def test_a_rehearsal_with_the_incoming_fader_down_never_mutes_the_track():
     base = {"out_vol": 0.0, "in_vol": 1.0, "out_eq": [1, 1, 1], "in_eq": [1, 1, 1]}
     apply(r, 16.0, din, dout, eng, base)
     assert din.volume == 1.0 and eng._xf_gain(din.xf_side) == 1.0
+
+
+def test_key_lock_holds_the_key_through_a_jog_nudge():
+    """Key lock at the track's own tempo: a jog nudge moves the speed, never the key."""
+    eng = Engine()
+    t = np.arange(SR * 20) / SR
+    y = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+    eng.load("A", np.stack([y, y]), BeatGrid(120.0, 0.0, 20.0), TrackInfo(loudness=-10))
+    eng.set("A", keylock=True, volume=1.0)
+    eng.set_playing("A", True)
+    eng.render(4096)
+
+    def peak_hz(nudge):
+        out = []
+        for _ in range(16):
+            eng.set("A", nudge=nudge)                    # the jog keeps pushing
+            m, _ = eng.render(2048)
+            out.append(m[0])
+        x = np.concatenate(out)[-16384:]
+        f = np.fft.rfftfreq(len(x), 1 / SR)
+        return f[np.argmax(np.abs(np.fft.rfft(x * np.hanning(len(x)))))]
+    assert abs(peak_hz(0.12) - 440.0) < 8.0              # vinyl would be 440 * 1.12 = 493 Hz
+    assert eng.decks["A"]._mode == "stretch"
+    eng.set("A", keylock=False)
+    assert abs(peak_hz(0.12) - 493.0) < 10.0             # key lock off: the record pitches, as it should
