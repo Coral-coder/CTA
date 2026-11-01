@@ -90,8 +90,11 @@ def test_the_new_version_takes_over_the_running_mix(tmp_data_dir, monkeypatch):
     old.open_dj()
     od = old.dj
     od.load_index("A", 0)
+    if os.environ.get("LU_FOUR"):
+        od.show_cd.setChecked(True)
+        od.load_index("C", 1)
     for _ in range(200):
-        if od.engine.decks["A"].loaded:
+        if od.engine.decks["A"].loaded and (not os.environ.get("LU_FOUR") or od.engine.decks["C"].loaded):
             break
         wait(50)
     od.engine.set("A", volume=0.8, eq=(1.0, 0.5, 1.0), keylock=True)
@@ -131,7 +134,11 @@ def test_the_new_version_takes_over_the_running_mix(tmp_data_dir, monkeypatch):
 
     # ---- the new version ----
     monkeypatch.setenv("TEMPEST_HANDOVER", launched["env"])
-    new = window("new")
+    monkeypatch.delenv("CTA_NO_AUTO_DJ", raising=False)  # as in real life: DJ mode opens by itself too
+    st = QSettings(str(tmp_data_dir / "new.ini"), QSettings.IniFormat)
+    st.setValue("auto_update_check", "false")
+    new = MainWindow(db, st)                           # as in real life: the hand-over starts at once,
+    new.show()                                         # before the library has loaded
     pump.new = new
     guest = LU.LiveUpdateGuest(new, launched["env"])
     gave_up = {}
@@ -143,6 +150,13 @@ def test_the_new_version_takes_over_the_running_mix(tmp_data_dir, monkeypatch):
         wait(50)
     assert not gave_up, gave_up
     assert "t" in finished                             # the old version faded out and let go
+    if os.environ.get("LU_SHOT"):
+        new.resize(1500, 950)
+        wait(300)
+        new.grab().save(os.environ["LU_SHOT"])
+    print("DJ panels in the new window:", len(new.findChildren(DW.DJPanel)),
+          "deck panels:", len(new.findChildren(DW.DeckPanel)))
+    assert len(new.findChildren(DW.DJPanel)) == 1      # one set of decks, never two
     nd = new.dj.engine.decks["A"]
     assert nd.loaded and nd.info.path == od.engine.decks["A"].info.path
     assert nd.playing and nd.keylock and abs(nd.volume - 0.8) < 1e-6 and abs(nd.eq[1] - 0.5) < 1e-6
