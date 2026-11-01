@@ -225,6 +225,11 @@ class LiveUpdateHost(QObject):
 
         dj = self.main.dj
         try:
+            dj._handing_over = True
+            dj.keepawake.off(restore=False)    # the new version keeps the computer awake from here
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             if dj.controller is not None:
                 dj.controller.close()          # the new version opens the controller next
                 dj.controller = None

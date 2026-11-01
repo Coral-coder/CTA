@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 import uuid
@@ -3518,6 +3519,14 @@ class DJPanel(QWidget):
                                        load_fn=self._automix_load)
         self.automix = self.engine.automix
         self._handover = bool(os.environ.get("TEMPEST_HANDOVER"))
+        # the music never stops: no sleep - idle or lid closed - while it plays
+        from ..keepawake import KeepAwake, restore_after_crash
+
+        if not self._handover:                # (in a live update the running version holds it)
+            restore_after_crash(self.settings)
+        self.keepawake = KeepAwake(self.settings)
+        self._last_play = 0.0
+        self._awake_check = 0.0
         if self._handover:
             # a live update: silent until the running version hands the mix over
             self.engine.handover_fade(float("inf"), 0.15, True)
@@ -3697,6 +3706,7 @@ class DJPanel(QWidget):
         lmenu.setToolTipsVisible(True)
         from . import theme as _apptheme
 
+        menu.addAction("Keep playing with the lid closed…", self.lid_setup)
         tmenu = menu.addMenu("App theme")
         tgrp = QActionGroup(tmenu)
         current = str(self.settings.value("app_theme", _apptheme.DEFAULT) or _apptheme.DEFAULT)
@@ -5033,7 +5043,60 @@ class DJPanel(QWidget):
                if (r := self.rehearsals.template(g)) is not None}
         self.engine.push_rehearsals([r.to_dict() for r in self.rehearsals.items() if r.enabled], tpl)
 
+    def _keep_awake(self):
+        """On while music plays (or auto-mix runs), off five minutes after it stopped."""
+        import time as _t
+
+        now = _t.monotonic()
+        playing = self.automix.active or any(d.playing and not d.cue_preview for d in self.engine.decks.values())
+        ka = self.keepawake
+        if playing:
+            self._last_play = now
+            if not ka.active:
+                lid = ka.on()
+                if not lid and sys.platform == "darwin" and self.settings.value("lid_setup_asked") != "true":
+                    self.settings.setValue("lid_setup_asked", "true")
+                    QTimer.singleShot(500, self.lid_setup)
+            elif now - self._awake_check > 10.0:
+                self._awake_check = now
+                ka.reassert()
+        elif ka.active and now - self._last_play > 300.0:
+            ka.off()
+
+    def lid_setup(self):
+        """Keep playing with the lid closed: on a Mac this needs the password once."""
+        from .. import keepawake
+
+        if sys.platform != "darwin":
+            QMessageBox.information(self, "Lid closed", "Tempest keeps playing with the lid closed while music "
+                                    "plays - nothing to set up on this computer.")
+            return
+        if keepawake.mac_lid_ready():
+            QMessageBox.information(self, "Lid closed", "Already set up: the music keeps playing when you close "
+                                    "the lid.")
+            return
+        if QMessageBox.question(
+                self, "Keep playing with the lid closed",
+                "Closing a MacBook's lid makes it sleep, which stops the music.\n\n"
+                "Tempest can keep it awake while music plays (and lets it sleep again when you stop). macOS "
+                "asks for your password once to allow exactly that - nothing else.\n\nSet it up now?") \
+                != QMessageBox.Yes:
+            return
+        ok, why = keepawake.mac_lid_setup()
+        if ok:
+            if self.keepawake.active:
+                self.keepawake.off(restore=False)
+                self.keepawake.on()
+            self.main.status_label.setText("Set up: the music keeps playing with the lid closed")
+        else:
+            QMessageBox.warning(self, "Lid closed", f"Not set up ({why}). Options -> Keep playing with the lid "
+                                "closed tries again.")
+
     def _tick(self):
+        try:
+            self._keep_awake()
+        except Exception:  # noqa: BLE001
+            log.exception("keep awake")
         self._offer_unload()
         for deck, (path, t0) in list(self._load_pending.items()):
             if self.engine.decks[deck].info.path == path:
@@ -5103,6 +5166,11 @@ class DJPanel(QWidget):
             return
         self._shut = True
         self._closing = True
+        try:
+            if not getattr(self, "_handing_over", False):
+                self.keepawake.off()             # the computer may sleep again
+        except Exception:  # noqa: BLE001
+            pass
         ts = getattr(self, "_timeshift", None)
         if ts is not None:
             ts.close()

@@ -10,6 +10,7 @@ os.environ["CTA_NO_DEVICE_WATCH"] = "1"
 os.environ["CTA_NO_AUTO_DJ"] = "1"          # tests open DJ mode themselves (with audio stubbed)
 # the GUI tests drive the engine through the client, in-process (no child, deterministic)
 os.environ["CTA_AUDIO_INPROC"] = "1"
+os.environ["CTA_NO_KEEPAWAKE"] = "1"           # tests never change the machine's sleep / lid settings
 
 SR = 22050
 
