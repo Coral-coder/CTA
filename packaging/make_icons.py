@@ -1,4 +1,4 @@
-"""Render packaging/icon/cta.svg into icon.ico (Windows), icon.icns (macOS)
+"""Render packaging/icon/tempest.svg into icon.ico (Windows), icon.icns (macOS)
 and the in-app window icon. Run after editing the SVG:
 
     python packaging/make_icons.py
@@ -35,25 +35,12 @@ def png_bytes(renderer: QSvgRenderer, size: int, opaque: bool = False) -> bytes:
 
 def app_svg(src: str) -> str:
     """Home-screen version (iPhone/Android): full-bleed square (the phone
-    rounds the corners), artwork a little larger, on-air waves round the meter."""
-    import math
-
+    rounds the corners) and the artwork a little larger."""
     s = re.sub(r'\s*<rect x="32" y="32"[^>]*/>', "", src)
     i = s.index("<!-- tile -->")
     j = s.rindex("</svg>")
-    arcs = []
-    for r, op in ((165, 0.9), (215, 0.55)):
-        for side in (1, -1):
-            a = math.radians(28)
-            x0, y0 = 512 + side * r * math.cos(a), 812 - r * math.sin(a)
-            x1, y1 = 512 + side * r * math.cos(a), 812 + r * math.sin(a)
-            arcs.append(f'<path d="M{x0:.1f} {y0:.1f} A{r} {r} 0 0 {1 if side > 0 else 0} {x1:.1f} {y1:.1f}" '
-                        f'fill="none" stroke="#20e3ff" stroke-opacity="{op}" stroke-width="16" '
-                        'stroke-linecap="round"/>')
-    body = s[i:j]
     return (s[:i] + '<rect x="0" y="0" width="1024" height="1024" fill="url(#bg)"/>\n'
-            '<g transform="translate(512 520) scale(1.12) translate(-512 -540)">' + body + "".join(arcs) + "</g>\n"
-            + s[j:])
+            '<g transform="translate(512 512) scale(1.08) translate(-512 -512)">' + s[i:j] + "</g>\n" + s[j:])
 
 
 def write_ico(path: str, images: dict[int, bytes]):
@@ -82,7 +69,7 @@ def write_icns(path: str, images: dict[int, bytes]):
 
 def main() -> int:
     _app = QGuiApplication(sys.argv)
-    r = QSvgRenderer(os.path.join(HERE, "icon", "cta.svg"))
+    r = QSvgRenderer(os.path.join(HERE, "icon", "tempest.svg"))
     if not r.isValid():
         print("invalid SVG")
         return 1
@@ -91,7 +78,7 @@ def main() -> int:
     write_icns(os.path.join(HERE, "icon.icns"), imgs)
     with open(os.path.join(ROOT, "src", "cta", "icon.png"), "wb") as f:
         f.write(imgs[256])
-    with open(os.path.join(HERE, "icon", "cta.svg"), encoding="utf-8") as f:
+    with open(os.path.join(HERE, "icon", "tempest.svg"), encoding="utf-8") as f:
         ra = QSvgRenderer(QByteArray(app_svg(f.read()).encode()))
     for size in (180, 512):              # apple-touch-icon / web app manifest
         with open(os.path.join(ROOT, "src", "cta", f"app-icon-{size}.png"), "wb") as f:
