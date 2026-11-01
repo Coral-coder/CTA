@@ -10,32 +10,6 @@ import traceback
 log = logging.getLogger(__name__)
 
 
-def _dark_palette(app):
-    from PySide6.QtGui import QColor, QPalette
-
-    p = QPalette()
-    base = QColor(30, 31, 34)
-    alt = QColor(38, 39, 43)
-    text = QColor(225, 226, 230)
-    hl = QColor(52, 120, 220)
-    p.setColor(QPalette.Window, QColor(36, 37, 40))
-    p.setColor(QPalette.WindowText, text)
-    p.setColor(QPalette.Base, base)
-    p.setColor(QPalette.AlternateBase, alt)
-    p.setColor(QPalette.ToolTipBase, QColor(50, 51, 56))
-    p.setColor(QPalette.ToolTipText, text)
-    p.setColor(QPalette.Text, text)
-    p.setColor(QPalette.Button, QColor(46, 47, 52))
-    p.setColor(QPalette.ButtonText, text)
-    p.setColor(QPalette.BrightText, QColor(255, 80, 80))
-    p.setColor(QPalette.Highlight, hl)
-    p.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
-    p.setColor(QPalette.PlaceholderText, QColor(130, 132, 138))
-    for role in (QPalette.Text, QPalette.ButtonText, QPalette.WindowText):
-        p.setColor(QPalette.Disabled, role, QColor(110, 111, 116))
-    app.setPalette(p)
-
-
 def app_settings():
     """The app's QSettings; the first time, everything saved under the old
     Tempest name is carried over."""
@@ -162,10 +136,13 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(APP_NAME)
     app.setStyle("Fusion")
-    _dark_palette(app)
-    from .theme import QSS
+    from . import theme
 
-    app.setStyleSheet(QSS)
+    try:
+        chosen = str(app_settings().value("app_theme", theme.DEFAULT) or theme.DEFAULT)
+    except Exception:  # noqa: BLE001
+        chosen = theme.DEFAULT
+    theme.apply(app, chosen)
     try:
         from importlib import resources
 

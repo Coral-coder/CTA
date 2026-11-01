@@ -3632,6 +3632,18 @@ class DJPanel(QWidget):
             lgrp.addAction(a)
             self.layout_acts[key] = a
         lmenu.setToolTipsVisible(True)
+        from . import theme as _apptheme
+
+        tmenu = menu.addMenu("App theme")
+        tgrp = QActionGroup(tmenu)
+        current = str(self.settings.value("app_theme", _apptheme.DEFAULT) or _apptheme.DEFAULT)
+        self.theme_acts = {}
+        for name in _apptheme.THEMES:
+            a = tmenu.addAction(name, lambda name=name: self.set_app_theme(name))
+            a.setCheckable(True)
+            a.setChecked(name == current)
+            tgrp.addAction(a)
+            self.theme_acts[name] = a
         wmenu = menu.addMenu("Waveform colours")
         grp = QActionGroup(wmenu)
         for name in WAVE_THEMES:
@@ -4907,6 +4919,16 @@ class DJPanel(QWidget):
         self._dj_outer.setStretchFactor(self._decks_w, 0 if mode == "stacked" else 1)
         for key, a in getattr(self, "layout_acts", {}).items():
             a.setChecked(key == mode)
+
+    def set_app_theme(self, name: str):
+        """Switch the whole app's colours live (remembered for the next start)."""
+        from . import theme as _apptheme
+
+        name = _apptheme.apply(QApplication.instance(), name)
+        self.settings.setValue("app_theme", name)
+        for key, a in getattr(self, "theme_acts", {}).items():
+            a.setChecked(key == name)
+        self.main.status_label.setText(f"Theme: {name}")
 
     def set_wave_theme(self, name: str):
         set_wave_theme(name)
