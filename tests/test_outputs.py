@@ -276,3 +276,45 @@ def test_speakers_rejoin_and_new_bluetooth_is_offered(tmp_path, monkeypatch):
     dj._accept_offer()
     assert "Party Speaker BT (Core Audio, 2 ch)" in [o.label for o in eng.extra_outputs]
     assert len(dj.wanted_extras()) == 2
+
+
+def test_audio_delays_change_live_and_apply_keeps_the_window(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6.QtWidgets")
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    import cta.dj.outputs as O
+    import cta.gui.dj_window as DW
+
+    QApplication.instance() or QApplication([])
+    known = [(3, "DDJ-T1 (Core Audio, 4 ch)", 4)]
+    monkeypatch.setattr(DW, "list_output_devices", lambda: list(known))
+    monkeypatch.setattr(O, "scan_devices", lambda timeout=15.0: [
+        {"label": known[0][1], "name": "DDJ-T1", "channels": 4, "bluetooth": False}])
+    aligned = []
+    eng = SimpleNamespace(running=True, master_delay_s=None, phones_delay_s=None, extra_outputs=[],
+                          output_delay_s={}, update_alignment=lambda: aligned.append((eng.master_delay_s,
+                                                                                     eng.phones_delay_s)))
+    applied = []
+    dj = SimpleNamespace(engine=eng, apply_clock=lambda: None, apply_extras=lambda: None,
+                         stored_delays=lambda: (None, None), apply_audio_settings=lambda dlg: applied.append(dlg))
+    st = QSettings(str(tmp_path / "a.ini"), QSettings.IniFormat)
+    st.setValue("dj_device_name", known[0][1])
+    dlg = DW.AudioSettings(st, None, dj=dj)
+    dlg.dev.setCurrentIndex(dlg.dev.findText(known[0][1]))
+    dlg.m_auto.setChecked(False)
+    dlg.mdelay.setValue(40)                                     # heard at once, no OK needed
+    assert eng.master_delay_s == 0.04 and aligned
+    dlg.reject()                                                # Cancel: back to what was saved
+    assert eng.master_delay_s is None and not applied
+    dlg = DW.AudioSettings(st, None, dj=dj)
+    dlg.dev.setCurrentIndex(dlg.dev.findText(known[0][1]))
+    dlg.m_auto.setChecked(False)
+    dlg.mdelay.setValue(55)
+    dlg.apply()                                                 # Apply: saved and used, the window stays
+    assert applied and "55" in str(st.value("dj_output_delays"))    # kept (headphones on the same card)
+    dj.stored_delays = lambda: (0.055, None)
+    dlg.reject()                                                # Cancel after Apply keeps what was applied
+    assert eng.master_delay_s == 0.055

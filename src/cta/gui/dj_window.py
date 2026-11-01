@@ -2640,12 +2640,19 @@ class AudioSettings(QDialog):
                       "3-4. Use a bigger buffer if you hear crackles.</small>")
         note.setWordWrap(True)
         lay.addWidget(note)
-        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Apply | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
+        bb.button(QDialogButtonBox.Apply).setToolTip("Use these settings now and keep this window open")
+        bb.button(QDialogButtonBox.Apply).clicked.connect(self.apply)
         lay.addWidget(bb)
         self.dev.currentIndexChanged.connect(self._dev_changed)
         self.pdev.currentIndexChanged.connect(self._dev_changed)
+        # delays are heard as they change (the music keeps playing; Cancel puts them back)
+        for w_ in (self.mdelay, self.pdelay):
+            w_.valueChanged.connect(lambda _v: self._delay_live())
+        for w_ in (self.m_auto, self.p_auto):
+            w_.toggled.connect(lambda _on: self._delay_live())
         self.rescan(force=False)
 
     # ---- clock ------------------------------------------------------------------------------
@@ -2713,7 +2720,43 @@ class AudioSettings(QDialog):
             self.clock_info.setText("  ".join(f"{names.get(k, k).split(' (')[0]}: +{v * 1000:.0f} ms"
                                               for k, v in d.items()))
 
+    def _delay_live(self):
+        """Master / headphone delay changes are heard at once - only for the cards
+        playing right now (a delay for another card waits for OK / Apply)."""
+        dj = self.dj
+        if dj is None or not dj.engine.running:
+            return
+        chosen = self.dev.currentText() if self.dev.currentData() is not None else ""
+        if chosen != str(self.s.value("dj_device_name", "") or ""):
+            return                                # another card: its delay applies with OK / Apply
+        eng = dj.engine
+        eng.master_delay_s = None if self.m_auto.isChecked() else self.mdelay.value() / 1000.0
+        if self.pdev.currentData():
+            eng.phones_delay_s = None if self.p_auto.isChecked() else self.pdelay.value() / 1000.0
+        else:
+            eng.phones_delay_s = eng.master_delay_s            # same card: one delay
+        eng.update_alignment()
+        self._delays_live = True
+        self._clock_live()
+
+    def apply(self):
+        """OK without closing: save, apply, and make this the state Cancel returns to."""
+        self._commit()
+        if self.dj is not None:
+            self.dj.apply_audio_settings(self)
+        self._before = self._snapshot()
+        self.restart_needed = self.reinit_needed = False
+        self._clock_before = (self.s.value("dj_clock", "auto"), self.s.value("dj_sync_outputs", ""),
+                              self.s.value("dj_clock_adjust_ms", 0))
+        self._delays_live = False
+
     def reject(self):
+        if getattr(self, "_delays_live", False) and self.dj is not None:
+            # put the delays back as they were saved
+            eng = self.dj.engine
+            eng.master_delay_s, eng.phones_delay_s = self.dj.stored_delays()
+            eng.update_alignment()
+            self.dj.apply_extras()
         # put the clock back as it was
         c, so, adj = self._clock_before
         self.s.setValue("dj_clock", c)
@@ -2863,6 +2906,12 @@ class AudioSettings(QDialog):
             return
         self.extras[r]["delay_ms"] = None if self.e_auto.isChecked() else self.edelay.value()
         self.edelay.setEnabled(not self.e_auto.isChecked())
+        if self.dj is not None:
+            label = self.extras[r]["label"]
+            if any(o.label == label for o in self.dj.engine.extra_outputs):
+                d = self.extras[r]["delay_ms"]
+                self.dj.engine.set_output_delay(label, None if d is None else d / 1000.0)
+                self._delays_live = True
         self.extra_list.item(r).setText(self.extra_list.item(r).text().split(" · ")[0] + " · "
                                         + ("auto" if self.e_auto.isChecked() else f"{self.edelay.value()} ms"))
 
@@ -2941,8 +2990,13 @@ class AudioSettings(QDialog):
         self.s.setValue("dj_safety", self.safety.currentData())
         self.s.setValue("dj_audio_process", "true" if self.own_proc.isChecked() else "false")
         delays = self._delays()
-        for combo, sp, auto in ((self.dev, self.mdelay, self.m_auto),
-                                (self.pdev if self.pdev.currentData() else self.dev, self.pdelay, self.p_auto)):
+        rows = [(self.dev, self.mdelay, self.m_auto)]
+        if self.pdev.currentData():
+            # headphones on their own card: their own delay. On the master's card (DDJ-T1
+            # outputs 3-4) the card has one delay - the master's - which the headphones
+            # row must not overwrite
+            rows.append((self.pdev, self.pdelay, self.p_auto))
+        for combo, sp, auto in rows:
             label = combo.currentText() if combo.currentData() is not None else ""
             if auto.isChecked():
                 delays.pop(label, None)
@@ -2955,6 +3009,10 @@ class AudioSettings(QDialog):
         self.s.setValue("stream_port", self.port.value())
 
     def accept(self):
+        self._commit()
+        super().accept()
+
+    def _commit(self):
         self.save()
         # only the main sound card, its channels or the buffer need an audio restart;
         # delays and extra speakers are changed live
@@ -2966,7 +3024,6 @@ class AudioSettings(QDialog):
                 known = set()
             chosen = [x for x in (self.dev.currentData(), self.pdev.currentData()) if x]
             self.reinit_needed = any(c[0] not in known for c in chosen)
-        super().accept()
 
 
 class TapCalibration(QDialog):
