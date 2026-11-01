@@ -235,13 +235,38 @@ class LiveUpdateHost(QObject):
         except Exception:  # noqa: BLE001
             log.exception("could not schedule the install - the new version still runs from its copy")
         log.info("live update: handed the mix to the new version")
+        try:
+            self.main.hide()                   # gone from the screen at once: one Tempest, the new one
+            if getattr(self.main, "tray", None) is not None:
+                self.main.tray.hide()
+        except Exception:  # noqa: BLE001
+            pass
+        # last resort: whatever holds this process up (a stuck close, a thread that will
+        # not end), it goes - it is silent and has let go of everything
+        t = threading.Timer(8.0, self._hard_exit)
+        t.daemon = True
+        t.start()
         QTimer.singleShot(1500, self._exit)
 
     def _exit(self):
         from PySide6.QtWidgets import QApplication
 
-        self.main.quit_app()
+        try:
+            self.main.quit_app()
+        except Exception:  # noqa: BLE001
+            log.exception("closing the old version after the live update")
         QApplication.instance().quit()
+
+    def _hard_exit(self):
+        log.warning("live update: the old version did not close by itself - ending it")
+        try:
+            self.main.dj.engine.close()        # the audio process goes with it
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            logging.shutdown()
+        finally:
+            os._exit(0)
 
     def _timeout(self):
         if not self.switched and not self.done:
