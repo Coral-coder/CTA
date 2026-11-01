@@ -913,3 +913,29 @@ def test_key_lock_holds_the_key_through_a_jog_nudge():
     assert eng.decks["A"]._mode == "stretch"
     eng.set("A", keylock=False)
     assert abs(peak_hz(0.12) - 493.0) < 10.0             # key lock off: the record pitches, as it should
+
+
+def test_key_lock_uses_the_clean_path_unless_the_stretch_is_audible():
+    """Sync's small phase corrections never send a key-locked deck through the
+    stretcher (it smears transients: a faint reverb on everything); a real jog
+    nudge does, and the deck comes back to the clean path once it has settled."""
+    eng = Engine()
+    _load(eng, "A", 124.0)
+    _load(eng, "B", 124.0, offset=0.05)
+    eng.set_playing("A", True)
+    _run(eng, 1)
+    eng.set("B", sync=True, keylock=True)
+    eng.set_playing("B", True)
+    modes = []
+    for _ in range(int(4 * SR / 512)):                     # sync pulls B onto the beat: small corrections
+        eng.render(512)
+        modes.append(eng.decks["B"]._mode)
+    assert "stretch" not in modes
+    for _ in range(20):                                    # a real nudge: key held
+        eng.set("B", nudge=0.1)
+        eng.render(512)
+    assert eng.decks["B"]._mode == "stretch"
+    _run(eng, 0.5)
+    assert eng.decks["B"]._mode == "stretch"               # no flip-flop straight after
+    _run(eng, 3.0)
+    assert eng.decks["B"]._mode == "vinyl"                 # settled: back on the clean path

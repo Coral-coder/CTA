@@ -182,6 +182,7 @@ class Deck:
     _rb_drop: int = 0
     _rb_reset: bool = False                  # jump / cue / loop: start the stretcher afresh (reused)
     _mode: str = "vinyl"
+    _calm_frames: int = 0                    # how long the speed has been back at normal (stretcher exit)
     _eq: ThreeBandEQ | None = None
     _last_gain: float = 0.0
     _tail: object = None                     # last output frame: a stop fades from it instead of cutting
@@ -1092,11 +1093,20 @@ class Engine:
         # phase lock's tiny rate corrections never toggle modes and click
         # the stretcher only when it changes something: at the original tempo (and
         # key) the plain path starts on the very first sample - instant CUE taps
-        # key lock holds the key whatever moves the speed: the tempo fader, a jog
-        # nudge, sync's phase corrections. Once the stretcher is in it stays in
-        # while the deck plays (no flipping between paths, no click, no pitch bend)
-        locked = d.keylock and (abs(d.base_rate - 1.0) > 1e-3 or d.nudge != 0.0 or abs(d.phase_corr) > 1e-6
-                                or d._mode == "stretch")
+        # key lock: the stretcher only when its job is audible - the tempo fader moved, or a
+        # jog nudge / a big sync correction (more than ~20 cents). Sync's small, short phase
+        # corrections play through the clean path: the stretcher smears transients (a
+        # faint "reverb" on everything), and a few cents for half a second is inaudible.
+        # Once in, it stays until the speed has been back at normal for ~1.5 s (no flip-flop).
+        moved = abs(d.base_rate - 1.0) > 1e-3
+        bent = abs(d.nudge) > 0.012 or abs(d.phase_corr) > 0.012
+        calm = abs(d.nudge) < 0.003 and abs(d.phase_corr) < 0.003
+        if d._mode == "stretch" and not moved and calm:
+            d._calm_frames += n
+        else:
+            d._calm_frames = 0
+        stay = d._mode == "stretch" and d._calm_frames < 1.5 * SR
+        locked = d.keylock and (moved or bent or stay)
         use_stretch = (locked or abs(d.key_shift) > 1e-6) and not d.scratching and rate > 0.25
         if use_stretch:
             if d._mode != "stretch":
