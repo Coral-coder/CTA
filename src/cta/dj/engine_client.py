@@ -851,11 +851,16 @@ class EngineClient:
                     "loop_out",
                     "loop_resize", "beatjump", "key_sync", "set_grid", "grid_downbeat_here", "phase_snap",
                     "set_master", "jog", "scratch", "jog_release", "set_paused", "unload", "update_alignment",
+                    "handover_fade", "handover_align",
                     "remove_output", "set_output_delay", "close_outputs", "stop"):
             return lambda *a, **k: self.call("eng", name, *a, **k)
         if name in ("start_virtual",):
             return lambda *a, **k: self.call("eng", name, *a, **k)
         raise AttributeError(name)
+
+    def handover_clock(self):
+        """Where the decks are on the shared clock (live update)."""
+        return self.rpc("eng", "handover_clock", timeout=5.0)
 
     def set(self, deck: str, **kw):
         """Set plain deck attributes (volume, eq, tempo, keylock, sync, ...).

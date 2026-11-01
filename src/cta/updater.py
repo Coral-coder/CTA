@@ -105,7 +105,10 @@ def update_target() -> str | None:
     an app opened straight from Downloads runs from a hidden read-only copy
     ("App Translocation") or a place the user can't write to: then the update
     goes to /Applications (or ~/Applications) instead - and from there on
-    Tempest updates itself in place."""
+    Tempest updates itself in place. A version started by a live update runs
+    from a copy: the install it replaced is still the target."""
+    if os.environ.get("TEMPEST_INSTALL_TARGET"):
+        return os.environ["TEMPEST_INSTALL_TARGET"]
     root = install_root()
     if root is None:
         return None

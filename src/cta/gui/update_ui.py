@@ -47,7 +47,7 @@ class UpdateController(QObject):
             QMessageBox.warning(self.win, "Update",
                                 f"The last update could not be installed ({result[7:]}).\n"
                                 f"Tempest {__version__} is still installed and working.")
-        if os.environ.get("CTA_SMOKE_EXIT_MS"):
+        if os.environ.get("CTA_SMOKE_EXIT_MS") or os.environ.get("TEMPEST_HANDOVER"):
             return
         if self.auto_enabled() and time.time() - float(self.settings.value("update_last_check", 0)) > CHECK_INTERVAL:
             QTimer.singleShot(4000, lambda: self.check(manual=False))
@@ -179,6 +179,15 @@ class UpdateController(QObject):
                                 f"The update could not be prepared:\n{err}\n\n"
                                 "Nothing was changed; Tempest keeps running as before.")
             return
+        from . import live_update
+
+        dj = getattr(self.win, "dj", None)
+        if live_update.supported() and live_update.playing(dj):
+            self._live(new_root)                 # music playing: hand the mix over, no stop
+            return
+        self._install_now(new_root)              # decks stopped (or Linux): the restart way
+
+    def _install_now(self, new_root):
         try:
             updater.launch_swap(new_root, relaunch=True)
         except Exception as e:  # noqa: BLE001
@@ -187,3 +196,39 @@ class UpdateController(QObject):
         self.win.status_label.setText("Installing update - Tempest will restart…")
         self.win.quit_app()
         QApplication.instance().quit()
+
+    # ---- live update (Windows, macOS) ------------------------------------------------
+    def _live(self, new_root):
+        from . import live_update
+
+        dj = self.win.dj
+        if dj.automix.tr is not None and dj.automix.tr.started:
+            # never in the middle of an auto-mix blend: right after it
+            self.win.status_label.setText("Update ready - it goes live after this blend")
+            QTimer.singleShot(2000, lambda: self._live(new_root))
+            return
+        if not live_update.playing(dj):
+            self._install_now(new_root)
+            return
+        self._host = live_update.LiveUpdateHost(self.win, new_root,
+                                                on_fail=lambda why: self._when_stopped(new_root, why))
+        self._host.start()
+
+    def _when_stopped(self, new_root, why: str):
+        """The live hand-over did not work: install the restart way once the decks stop."""
+        from . import live_update
+
+        self.win.status_label.setText(f"Live update did not go through ({why}) - "
+                                      "it installs when the decks are stopped")
+        self._stopped_since = None
+
+        def poll():
+            if live_update.playing(getattr(self.win, "dj", None)):
+                self._stopped_since = None
+            elif self._stopped_since is None:
+                self._stopped_since = time.monotonic()
+            elif time.monotonic() - self._stopped_since > 3.0:
+                self._install_now(new_root)
+                return
+            QTimer.singleShot(1000, poll)
+        QTimer.singleShot(1000, poll)

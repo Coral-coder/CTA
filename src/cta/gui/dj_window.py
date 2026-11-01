@@ -3454,6 +3454,10 @@ class DJPanel(QWidget):
             self.engine = EngineClient(block=block, inproc=True, automix_settings=am_cfg,
                                        load_fn=self._automix_load)
         self.automix = self.engine.automix
+        self._handover = bool(os.environ.get("TEMPEST_HANDOVER"))
+        if self._handover:
+            # a live update: silent until the running version hands the mix over
+            self.engine.handover_fade(float("inf"), 0.15, True)
         from ..dj.learn import MixLearner
 
         self._downloading: dict[str, str] = {}
@@ -3777,8 +3781,9 @@ class DJPanel(QWidget):
         self.dev_timer.start(10000)
         QTimer.singleShot(3000, self._scan_devices_bg)
         self._refresh_midi_ports()
-        QTimer.singleShot(200, self.start_audio)
-        QTimer.singleShot(400, self._auto_connect_midi)
+        QTimer.singleShot(200, lambda: self.start_audio(quiet=self._handover))
+        if not self._handover:                       # (the running version holds the controller)
+            QTimer.singleShot(400, self._auto_connect_midi)
 
     def _automix_panel(self) -> QWidget:
         """Centre of the global row: master tempo, auto-mix transport, blend

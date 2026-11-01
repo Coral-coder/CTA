@@ -293,6 +293,11 @@ class Engine:
         self.preview_route = "phones"          # phones | master
         self.preview_level = 1.0
         self._driven = False                   # True: rendered by another engine (commands queue)
+        # live update (one version hands the running mix to the next): where every deck
+        # was at the start of the last block, on the perf_counter clock both processes share,
+        # and a scheduled fade of the whole output (start time, seconds, fading in?)
+        self.ho_clock: tuple | None = None
+        self._ho: tuple | None = None
         self._stream = None
         self._error_logged = False
         self.hooks: list = []          # callables(engine, n) run before each block (automix)
@@ -1154,9 +1159,53 @@ class Engine:
         x = float(np.clip((self.crossfader * side + 1.0) / 2.0, 0.0, 1.0))  # 1 = towards this side
         return 1.0 if x >= 0.5 else float(np.sin(x * np.pi))
 
+    # ---- live update ----------------------------------------------------------------
+    def handover_clock(self):
+        """(t, {deck: (frame at t, frames per second)}) - where the decks are, for the next version."""
+        return self.ho_clock
+
+    def handover_fade(self, t_start: float, seconds: float, fade_in: bool):
+        """Fade the whole output in or out starting at perf_counter time t_start
+        (inf: hold - muted when fading in, as is when fading out)."""
+        self._ho = (float(t_start), max(float(seconds), 1e-3), bool(fade_in))
+
+    def handover_align(self, clock):
+        """Put every deck where the other version's decks are right now (from its
+        handover_clock): positions run on at each deck's speed since that clock."""
+        def f(e):
+            import time as _t
+
+            if not clock:
+                return
+            t_ref, pos = clock
+            now = _t.perf_counter()
+            for name, (frame, fps) in pos.items():
+                d = e.decks.get(name)
+                if d is not None and d.loaded:
+                    e._seek(d, float(frame) + (now - float(t_ref)) * float(fps))
+        self.cmd(f)
+
+    def _ho_gain(self, t0: float, n: int):
+        if self._ho is None:
+            return None
+        t_start, dur, fade_in = self._ho
+        t = t0 + np.arange(n, dtype=np.float64) / SR
+        k = np.clip((t - t_start) / dur, 0.0, 1.0) if np.isfinite(t_start) else np.zeros(n)
+        g = np.sin(k * np.pi / 2) if fade_in else np.cos(k * np.pi / 2)      # equal power
+        g[k >= 1.0] = 1.0 if fade_in else 0.0                                 # exact ends: truly silent
+        g[k <= 0.0] = 0.0 if fade_in else 1.0
+        if fade_in and np.isfinite(t_start) and t0 > t_start + dur:
+            self._ho = None                                                  # done: full level from now
+        return g.astype(np.float32)
+
     def render(self, n: int) -> tuple[np.ndarray, np.ndarray]:
         """Mix n frames; returns (master (2,n), phones (2,n))."""
+        import time as _t
+
         self._drain()
+        t_block = _t.perf_counter()
+        self.ho_clock = (t_block, {name: (float(d.play_pos), float(d.rate) * SR if d.playing else 0.0)
+                                   for name, d in self.decks.items() if d.loaded})
         for h in list(self.hooks):
             try:
                 h(self, n)
@@ -1223,7 +1272,12 @@ class Engine:
         for tap in self.taps:
             tap.write(master)
         self.frames_rendered += n
-        return master, np.tanh(phones)
+        phones = np.tanh(phones)
+        g = self._ho_gain(t_block, n)
+        if g is not None:
+            master = master * g
+            phones = phones * g
+        return master, phones
 
     # ---- device -------------------------------------------------------------------
     def _clicks(self, master: np.ndarray, phones: np.ndarray, n: int, t0: float):

@@ -198,7 +198,8 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
     threading.excepthook = thread_hook
 
     name = _instance_name()
-    if not os.environ.get("CTA_SMOKE_EXIT_MS") and \
+    handover = os.environ.get("TEMPEST_HANDOVER")         # a live update: the old version is still running
+    if not os.environ.get("CTA_SMOKE_EXIT_MS") and not handover and \
             _signal_running_instance(name, "background" if background else "show"):
         log.info("Tempest is already running - asked it to show itself")
         return 0
@@ -215,7 +216,22 @@ def run_gui(db_path: str | None = None, background: bool = False) -> int:
 
         w.tray = Tray(w)
         app.setQuitOnLastWindowClosed(False)
-    single = _listen_for_instances(name, lambda msg: msg == "show" and w.show_from_tray())  # noqa: F841
+    w._instance_name = name
+    if handover:
+        from PySide6.QtCore import QTimer
+
+        from .live_update import LiveUpdateGuest
+
+        w._guest = LiveUpdateGuest(w, handover)
+        QTimer.singleShot(0, w._guest.start)
+    else:
+        w.claim_single_instance()
+        try:
+            from .live_update import cleanup_old_copies
+
+            cleanup_old_copies()
+        except Exception:  # noqa: BLE001
+            pass
     if background and w.tray is not None:
         log.info("started in the background (system tray)")
     elif background:

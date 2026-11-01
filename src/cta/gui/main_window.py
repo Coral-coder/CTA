@@ -1327,6 +1327,20 @@ class MainWindow(QMainWindow):
         if self.lib is not None and self.lib.n == 0 and not self.db.folders():
             QTimer.singleShot(300, self._first_run)
 
+    def claim_single_instance(self, tries: int = 6):
+        """Answer "show yourself" from a second launch. After a live update the old
+        version still holds the name for a moment: try again until it is free."""
+        from .app import _listen_for_instances
+
+        name = getattr(self, "_instance_name", None)
+        if name is None or getattr(self, "_single", None) is not None:
+            return
+        srv = _listen_for_instances(name, lambda msg: msg == "show" and self.show_from_tray())
+        if srv is not None and srv.isListening():
+            self._single = srv
+        elif tries > 1:
+            QTimer.singleShot(3000, lambda: self.claim_single_instance(tries - 1))
+
     def quit_app(self):
         self._quitting = True
         self.close()
