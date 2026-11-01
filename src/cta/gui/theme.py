@@ -1,5 +1,5 @@
 """Application themes: one style sheet, several colour sets. Every theme is
-dark (club lighting); "Contrast" is for daylight and bright rooms. Switched
+dark (a DJ booth); "Contrast" is for daylight and bright rooms. Switched
 live from DJ Options -> App theme, remembered in the settings."""
 
 from __future__ import annotations
@@ -17,8 +17,39 @@ GRAPHITE = dict(
     cue_fg="#ffb547", cue_bg="#2f2a22", cue_on="#c98516", warm_on="#c9701a", pad_fg="#7f8189",
 )
 
+def _hex(rgb) -> str:
+    return "#%02x%02x%02x" % tuple(max(0, min(255, int(round(v)))) for v in rgb)
+
+
+def _dark(tint=(0, 0, 0), accent=(150, 150, 150), text=(214, 214, 216), base: float = 1.0) -> dict:
+    """A booth-dark theme: near-black panels with a faint tint, one muted accent.
+    base scales how dark it is (1.0 = like Graphite, 0.6 = blacker)."""
+    def g(level):                      # grey at this level (0-255), tinted
+        return _hex(tuple(level * base + t for t in tint))
+
+    def a(f):                          # the accent, scaled
+        return _hex(tuple(c * f for c in accent))
+    tx = tuple(text)
+    return {**GRAPHITE,
+            "text": _hex(tx), "text2": _hex(tuple(c * 0.95 for c in tx)), "btn_text": _hex(tx),
+            "dim": _hex(tuple(c * 0.58 for c in tx)), "disabled": _hex(tuple(c * 0.36 for c in tx)),
+            "bg": g(14), "line": g(5), "toolbar": g(20), "hover": g(34), "pressed": g(22),
+            "button": g(30), "btn_hover": g(40), "border": g(6), "field": g(24), "field_hover": a(0.55),
+            "panel": g(21), "table": g(16), "table_alt": g(21), "grid": g(30), "header": g(25),
+            "tab": g(21), "scroll": g(58), "groove": g(4),
+            "accent": a(1.0), "accent_soft": a(0.55), "accent_dim": a(0.24), "accent_text": a(1.35),
+            "focus": a(1.0), "split_hover": a(0.8), "sync_bg": a(0.16)}
+
+
 THEMES: dict[str, dict] = {
     "Graphite": GRAPHITE,
+    # booth-dark: near black, muted natural accents - nothing that glares in a dark room
+    "Blackout": _dark(accent=(150, 150, 152), text=(196, 196, 198), base=0.55),
+    "Carbon": _dark(tint=(1, 1, 2), accent=(120, 135, 150), base=0.8),
+    "Deep Sea": _dark(tint=(0, 4, 6), accent=(60, 140, 140), text=(200, 214, 214), base=0.75),
+    "Forest": _dark(tint=(1, 4, 1), accent=(110, 140, 85), text=(206, 214, 200), base=0.75),
+    "Amber Night": _dark(tint=(3, 2, 0), accent=(200, 140, 50), text=(222, 210, 190), base=0.7),
+    "Slate": _dark(tint=(2, 4, 7), accent=(110, 130, 160), text=(206, 212, 220), base=0.95),
     "Midnight": {**GRAPHITE,
                  "text": "#c9d1d9", "text2": "#c2cad4", "dim": "#7d8896", "bg": "#0b1018", "line": "#05080d",
                  "toolbar": "#111823", "hover": "#1b2534", "pressed": "#0e141d", "button": "#18212e",
